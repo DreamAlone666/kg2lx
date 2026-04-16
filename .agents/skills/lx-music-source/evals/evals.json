@@ -1,0 +1,23 @@
+{
+  "skill_name": "lx-music-source",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "帮我写一个 LX Music 自定义音源脚本，对接一个现成后端接口 `https://example.com/url?source={source}&songId={songId}&quality={quality}`。要求支持 `kw`、`kg`、`tx`、`wy` 四个源，只要 `musicUrl`，音质只开 `128k` 和 `320k`，并且请求头里带上基于 `env` 和 `version` 生成的 `User-Agent`。",
+      "expected_output": "产出一个可读的静态代理脚本，包含头部元信息、Promise 风格 request 封装、sources 注册、musicUrl handler、request 分发和 inited 事件。",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "我已经有一个 `local` 源脚本，能拿到本地歌曲直链。现在要补上歌词和封面能力。请按 LX Music 官方返回结构把 `lyric` 和 `pic` 接好，并检查 actions、qualitys、返回值是否符合宿主契约。",
+      "expected_output": "正确识别 `local` 可以支持 `musicUrl`、`lyric`、`pic`，并返回标准 lyric 对象与图片 URL，同时修正 sources 配置。",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "帮我 review 一个洛雪音源脚本。它导入后直接报初始化失败，而且作者还给 `kw` 源加了 `lyric` action。请先从宿主契约角度找问题，再给最小修复方案。",
+      "expected_output": "优先指出 inited 前异常、request handler 未返回 Promise、非 local 源错误暴露 lyric/pic、qualitys 与实现不一致等高优先级问题，并给出最小修复建议。",
+      "files": []
+    }
+  ]
+}
