@@ -1,6 +1,6 @@
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
-use axum::Json;
 
 use crate::app_state::AppState;
 use crate::error::AppError;
@@ -33,10 +33,7 @@ pub async fn poll_qr_login(
     Path(session_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     verify_admin(&headers, &state.config.admin_token)?;
-    let resp = state
-        .login
-        .poll_kugou_lite_qr_login(&session_id)
-        .await?;
+    let resp = state.login.poll_kugou_lite_qr_login(&session_id).await?;
     Ok(Json(serde_json::to_value(resp).unwrap()))
 }
 

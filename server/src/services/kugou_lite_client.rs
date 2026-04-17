@@ -1,7 +1,9 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::config::Config;
-use crate::domain::cookie_store::{merge_cookies_from_body_if_present, merge_cookies_from_headers, CookieStore};
+use crate::domain::cookie_store::{
+    CookieStore, merge_cookies_from_body_if_present, merge_cookies_from_headers,
+};
 use crate::error::AppError;
 
 #[derive(Debug, serde::Deserialize)]
@@ -188,7 +190,11 @@ impl KugouLiteClient {
 
     pub async fn request_qr_key(&self, cookies: &CookieStore) -> Result<QrKeyResult, AppError> {
         let mut merged = cookies.clone();
-        let url = format!("{}/login/qr/key?timestamp={}", self.base_url, timestamp_ms());
+        let url = format!(
+            "{}/login/qr/key?timestamp={}",
+            self.base_url,
+            timestamp_ms()
+        );
         let resp = self
             .client
             .get(&url)
@@ -197,7 +203,10 @@ impl KugouLiteClient {
             .await
             .map_err(|e| AppError::upstream_request_failed(format!("qr key: {}", e)))?;
         merge_cookies_from_headers(&mut merged, resp.headers());
-        let body = resp.text().await.map_err(|e| AppError::upstream_request_failed(format!("qr key body: {}", e)))?;
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| AppError::upstream_request_failed(format!("qr key body: {}", e)))?;
         merge_cookies_from_body_if_present(&mut merged, &body);
 
         let parsed: QrKeyResponse = serde_json::from_str(&body)
@@ -233,7 +242,10 @@ impl KugouLiteClient {
             .await
             .map_err(|e| AppError::upstream_request_failed(format!("qr create: {}", e)))?;
         merge_cookies_from_headers(&mut merged, resp2.headers());
-        let body2 = resp2.text().await.map_err(|e| AppError::upstream_request_failed(format!("qr create body: {}", e)))?;
+        let body2 = resp2
+            .text()
+            .await
+            .map_err(|e| AppError::upstream_request_failed(format!("qr create body: {}", e)))?;
         merge_cookies_from_body_if_present(&mut merged, &body2);
 
         let parsed2: QrCreateResponse = serde_json::from_str(&body2)
@@ -269,7 +281,10 @@ impl KugouLiteClient {
             .await
             .map_err(|e| AppError::upstream_request_failed(format!("qr check: {}", e)))?;
         merge_cookies_from_headers(&mut merged, resp.headers());
-        let body = resp.text().await.map_err(|e| AppError::upstream_request_failed(format!("qr check body: {}", e)))?;
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| AppError::upstream_request_failed(format!("qr check body: {}", e)))?;
         merge_cookies_from_body_if_present(&mut merged, &body);
 
         let parsed: QrCheckResponse = serde_json::from_str(&body)
@@ -303,10 +318,7 @@ impl KugouLiteClient {
         })
     }
 
-    pub async fn refresh_login(
-        &self,
-        cookies: &CookieStore,
-    ) -> Result<RefreshResult, AppError> {
+    pub async fn refresh_login(&self, cookies: &CookieStore) -> Result<RefreshResult, AppError> {
         let mut merged = cookies.clone();
         let url = format!("{}/login/token", self.base_url);
         let resp = self
@@ -318,10 +330,13 @@ impl KugouLiteClient {
             .map_err(|e| AppError::upstream_login_failed(format!("token refresh: {}", e)))?;
         let status = resp.status().as_u16();
         merge_cookies_from_headers(&mut merged, resp.headers());
-        let body = resp.text().await.map_err(|e| AppError::upstream_login_failed(format!("token body: {}", e)))?;
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| AppError::upstream_login_failed(format!("token body: {}", e)))?;
         merge_cookies_from_body_if_present(&mut merged, &body);
 
-        if status < 200 || status >= 300 {
+        if !(200..300).contains(&status) {
             return Err(AppError::upstream_login_failed(format!(
                 "token refresh status {}: {}",
                 status,
@@ -335,10 +350,7 @@ impl KugouLiteClient {
         Ok(RefreshResult { cookies: merged })
     }
 
-    pub async fn ensure_dfid(
-        &self,
-        cookies: &CookieStore,
-    ) -> Result<CookieStore, AppError> {
+    pub async fn ensure_dfid(&self, cookies: &CookieStore) -> Result<CookieStore, AppError> {
         let mut merged = cookies.clone();
         let url = format!("{}/register/dev", self.base_url);
         let resp = self
@@ -349,7 +361,10 @@ impl KugouLiteClient {
             .await
             .map_err(|e| AppError::upstream_request_failed(format!("register dev: {}", e)))?;
         merge_cookies_from_headers(&mut merged, resp.headers());
-        let body = resp.text().await.map_err(|e| AppError::upstream_request_failed(format!("register dev body: {}", e)))?;
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| AppError::upstream_request_failed(format!("register dev body: {}", e)))?;
         merge_cookies_from_body_if_present(&mut merged, &body);
 
         Ok(merged)
@@ -370,10 +385,13 @@ impl KugouLiteClient {
             .map_err(|e| AppError::upstream_vip_check_failed(format!("vip detail: {}", e)))?;
         let status = resp.status().as_u16();
         merge_cookies_from_headers(&mut merged, resp.headers());
-        let body = resp.text().await.map_err(|e| AppError::upstream_vip_check_failed(format!("vip body: {}", e)))?;
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| AppError::upstream_vip_check_failed(format!("vip body: {}", e)))?;
         merge_cookies_from_body_if_present(&mut merged, &body);
 
-        if status < 200 || status >= 300 {
+        if !(200..300).contains(&status) {
             return Err(AppError::upstream_vip_check_failed(format!(
                 "vip detail status {}: {}",
                 status,
@@ -434,7 +452,10 @@ impl KugouLiteClient {
             .map_err(|e| AppError::upstream_request_failed(format!("song url: {}", e)))?;
         let status = resp.status().as_u16();
         merge_cookies_from_headers(&mut merged, resp.headers());
-        let body = resp.text().await.map_err(|e| AppError::upstream_request_failed(format!("song url body: {}", e)))?;
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| AppError::upstream_request_failed(format!("song url body: {}", e)))?;
         merge_cookies_from_body_if_present(&mut merged, &body);
 
         let parsed: SongUrlResponse = serde_json::from_str(&body)

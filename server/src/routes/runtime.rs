@@ -1,6 +1,6 @@
+use axum::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;
-use axum::Json;
 
 use crate::app_state::AppState;
 use crate::error::AppError;

@@ -11,7 +11,10 @@ pub struct ScriptService {
 
 impl ScriptService {
     pub fn new(config: Arc<Config>, source_repo: Arc<dyn SourceRepo>) -> Self {
-        Self { config, source_repo }
+        Self {
+            config,
+            source_repo,
+        }
     }
 
     pub async fn render_script_by_token(
@@ -32,7 +35,8 @@ impl ScriptService {
         let runtime_token = &source.runtime_token;
         let source_name = &self.config.source_name_prefix;
 
-        let script = format!(r#"/**
+        let script = format!(
+            r#"/**
  * @name {source_name}
  * @description Per-account Kugou Concept VIP source
  * @version 0.1.0
@@ -83,7 +87,8 @@ send(EVENT_NAMES.inited, {{
     }},
   }},
 }})
-"#);
+"#
+        );
 
         let mut headers = axum::http::HeaderMap::new();
         headers.insert(

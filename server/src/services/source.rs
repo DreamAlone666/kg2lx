@@ -79,10 +79,7 @@ impl SourceService {
                 Some(ref a) => (a.upstream_userid.clone(), a.vip_active),
                 None => (String::new(), false),
             };
-            let script_url = format!(
-                "{}/s/{}.js",
-                self.config.public_base_url, s.script_token
-            );
+            let script_url = format!("{}/s/{}.js", self.config.public_base_url, s.script_token);
             items.push(SourceListItem {
                 source_id: s.source_id,
                 account_id: s.account_id,
@@ -110,10 +107,7 @@ impl SourceService {
             .await?
             .ok_or_else(AppError::account_not_found)?;
 
-        let script_url = format!(
-            "{}/s/{}.js",
-            self.config.public_base_url, s.script_token
-        );
+        let script_url = format!("{}/s/{}.js", self.config.public_base_url, s.script_token);
 
         let rt_preview = if s.runtime_token.len() > 8 {
             format!("{}...", &s.runtime_token[..8])

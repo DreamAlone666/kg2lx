@@ -173,7 +173,8 @@ impl LoginService {
                 session.updated_at = now;
                 self.session_repo.save(&session).await?;
                 return Err(AppError::upstream_login_failed(
-                    poll.message.unwrap_or_else(|| "unknown qr check error".into()),
+                    poll.message
+                        .unwrap_or_else(|| "unknown qr check error".into()),
                 ));
             }
         }
@@ -194,10 +195,7 @@ impl LoginService {
             self.session_repo.save(&session).await?;
         }
 
-        let vip = self
-            .client
-            .fetch_vip_status(&session.temp_cookies)
-            .await?;
+        let vip = self.client.fetch_vip_status(&session.temp_cookies).await?;
         session.temp_cookies = vip.cookies.clone();
         session.updated_at = login_session::now_ts();
         self.session_repo.save(&session).await?;
@@ -214,7 +212,9 @@ impl LoginService {
             .temp_cookies
             .get("userid")
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| AppError::upstream_login_failed("missing userid after qr authorization"))?
+            .ok_or_else(|| {
+                AppError::upstream_login_failed("missing userid after qr authorization")
+            })?
             .to_string();
 
         let existing = self
@@ -258,7 +258,10 @@ impl LoginService {
             }
         };
 
-        let existing_source = self.source_repo.find_by_account_id(&account.account_id).await?;
+        let existing_source = self
+            .source_repo
+            .find_by_account_id(&account.account_id)
+            .await?;
 
         let src = match existing_source {
             Some(s) => s,
@@ -289,10 +292,7 @@ impl LoginService {
         session.updated_at = now2;
         self.session_repo.save(&session).await?;
 
-        let script_url = format!(
-            "{}/s/{}.js",
-            self.config.public_base_url, src.script_token
-        );
+        let script_url = format!("{}/s/{}.js", self.config.public_base_url, src.script_token);
 
         Ok(QrLoginPollResponse {
             session_id: session_id.into(),
@@ -332,10 +332,7 @@ impl LoginService {
             .await?
             .ok_or_else(AppError::source_not_found)?;
 
-        let script_url = format!(
-            "{}/s/{}.js",
-            self.config.public_base_url, src.script_token
-        );
+        let script_url = format!("{}/s/{}.js", self.config.public_base_url, src.script_token);
 
         Ok(QrLoginPollResponse {
             session_id: session.session_id.clone(),

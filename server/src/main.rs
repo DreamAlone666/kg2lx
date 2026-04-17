@@ -6,8 +6,8 @@ mod repos;
 mod routes;
 mod services;
 
-use axum::routing::{get, post};
 use axum::Router;
+use axum::routing::{get, post};
 use tower_http::trace::TraceLayer;
 
 use crate::app_state::AppState;

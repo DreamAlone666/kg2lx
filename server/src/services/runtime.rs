@@ -5,8 +5,8 @@ use crate::config::Config;
 use crate::domain::account::{self, AccountStatus};
 use crate::domain::provider::ProviderKind;
 use crate::domain::runtime_log::RuntimeLog;
-use crate::error::ErrorCode;
 use crate::error::AppError;
+use crate::error::ErrorCode;
 use crate::repos::account::AccountRepo;
 use crate::repos::runtime_log::RuntimeLogRepo;
 use crate::repos::source::SourceRepo;
@@ -123,7 +123,13 @@ impl RuntimeService {
                             Ok(()) => {}
                             Err(e) => {
                                 return self
-                                    .log_and_err(&source, &account, &req, mr.status_code, &e.to_string())
+                                    .log_and_err(
+                                        &source,
+                                        &account,
+                                        &req,
+                                        mr.status_code,
+                                        &e.to_string(),
+                                    )
                                     .await;
                             }
                         }
@@ -205,7 +211,10 @@ impl RuntimeService {
         }
     }
 
-    async fn do_refresh(&self, account: &mut crate::domain::account::ProviderAccount) -> Result<(), AppError> {
+    async fn do_refresh(
+        &self,
+        account: &mut crate::domain::account::ProviderAccount,
+    ) -> Result<(), AppError> {
         let result: Result<(), AppError> = async {
             let refresh = self.client.refresh_login(&account.cookies).await?;
             account.cookies = refresh.cookies;

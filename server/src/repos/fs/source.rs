@@ -39,10 +39,7 @@ impl SourceRepo for FsSourceRepo {
         self.find_by_index("script_token", script_token).await
     }
 
-    async fn find_by_runtime_token(
-        &self,
-        runtime_token: &str,
-    ) -> Result<Option<Source>, AppError> {
+    async fn find_by_runtime_token(&self, runtime_token: &str) -> Result<Option<Source>, AppError> {
         self.find_by_index("runtime_token", runtime_token).await
     }
 
