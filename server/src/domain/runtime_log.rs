@@ -17,3 +17,28 @@ pub struct RuntimeLog {
     pub error: Option<String>,
     pub created_at: i64,
 }
+
+impl RuntimeLog {
+    pub fn sanitized(mut self) -> Self {
+        self.error = sanitize_runtime_log_error(self.error.as_deref());
+        self
+    }
+}
+
+pub fn sanitize_runtime_log_error(error: Option<&str>) -> Option<String> {
+    error.map(|_| "upstream error".to_string())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RuntimeLogView {
+    All,
+    Errors,
+}
+
+#[derive(Debug, Clone)]
+pub struct ListRuntimeLogsQuery {
+    pub source_id: String,
+    pub limit: usize,
+    pub view: RuntimeLogView,
+}

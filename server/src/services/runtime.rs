@@ -4,7 +4,7 @@ use std::time::Instant;
 use crate::config::Config;
 use crate::domain::account::{self, AccountStatus};
 use crate::domain::provider::ProviderKind;
-use crate::domain::runtime_log::RuntimeLog;
+use crate::domain::runtime_log::{RuntimeLog, sanitize_runtime_log_error};
 use crate::error::AppError;
 use crate::error::ErrorCode;
 use crate::repos::account::AccountRepo;
@@ -280,7 +280,7 @@ impl RuntimeService {
             ok: input.ok,
             status_code: input.status_code,
             latency_ms: input.latency_ms,
-            error: input.error.map(|s| s.into()),
+            error: sanitize_runtime_log_error(input.error),
             created_at: now,
         };
         let _ = self.log_repo.append(&log).await;

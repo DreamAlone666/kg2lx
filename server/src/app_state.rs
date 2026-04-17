@@ -51,6 +51,7 @@ impl AppState {
             client.clone(),
             account_repo.clone(),
             source_repo.clone(),
+            log_repo.clone(),
         ));
 
         let runtime_service = Arc::new(RuntimeService::new(

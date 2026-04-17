@@ -36,6 +36,10 @@ async fn main() {
         .route(
             "/sources/{source_id}/refresh",
             post(routes::admin::refresh_source),
+        )
+        .route(
+            "/sources/{source_id}/logs",
+            get(routes::admin::list_source_logs),
         );
 
     let runtime_routes = Router::new().route("/music-url", post(routes::runtime::music_url));

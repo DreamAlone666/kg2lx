@@ -1,8 +1,9 @@
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 
 use crate::app_state::AppState;
+use crate::domain::runtime_log::RuntimeLogView;
 use crate::error::AppError;
 
 fn verify_admin(headers: &HeaderMap, token: &str) -> Result<(), AppError> {
@@ -63,5 +64,38 @@ pub async fn refresh_source(
 ) -> Result<Json<serde_json::Value>, AppError> {
     verify_admin(&headers, &state.config.admin_token)?;
     let resp = state.source.refresh_source(&source_id).await?;
+    Ok(Json(serde_json::to_value(resp).unwrap()))
+}
+
+#[derive(serde::Deserialize)]
+pub struct ListLogsParams {
+    pub limit: Option<String>,
+    pub view: Option<String>,
+}
+
+pub async fn list_source_logs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(source_id): Path<String>,
+    Query(params): Query<ListLogsParams>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    verify_admin(&headers, &state.config.admin_token)?;
+
+    let limit = match params.limit.as_deref() {
+        None => 20,
+        Some(s) => s
+            .parse::<usize>()
+            .ok()
+            .filter(|&n| n >= 1 && n <= 100)
+            .ok_or_else(|| AppError::invalid_request("invalid limit"))?,
+    };
+
+    let view = match params.view.as_deref() {
+        None | Some("all") => RuntimeLogView::All,
+        Some("errors") => RuntimeLogView::Errors,
+        _ => return Err(AppError::invalid_request("invalid view")),
+    };
+
+    let resp = state.source.list_source_logs(&source_id, limit, view).await?;
     Ok(Json(serde_json::to_value(resp).unwrap()))
 }

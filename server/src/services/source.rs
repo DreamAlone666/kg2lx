@@ -2,8 +2,10 @@ use std::sync::Arc;
 
 use crate::config::Config;
 use crate::domain::account::{self, AccountStatus};
+use crate::domain::runtime_log::{ListRuntimeLogsQuery, RuntimeLog, RuntimeLogView};
 use crate::error::AppError;
 use crate::repos::account::AccountRepo;
+use crate::repos::runtime_log::RuntimeLogRepo;
 use crate::repos::source::SourceRepo;
 use crate::services::kugou_lite_client::KugouLiteClient;
 
@@ -48,11 +50,20 @@ pub struct RefreshResponse {
     pub updated_at: i64,
 }
 
+#[derive(serde::Serialize)]
+pub struct SourceLogsResponse {
+    pub source_id: String,
+    pub view: RuntimeLogView,
+    pub limit: usize,
+    pub items: Vec<RuntimeLog>,
+}
+
 pub struct SourceService {
     config: Arc<Config>,
     client: Arc<KugouLiteClient>,
     account_repo: Arc<dyn AccountRepo>,
     source_repo: Arc<dyn SourceRepo>,
+    log_repo: Arc<dyn RuntimeLogRepo>,
 }
 
 impl SourceService {
@@ -61,12 +72,14 @@ impl SourceService {
         client: Arc<KugouLiteClient>,
         account_repo: Arc<dyn AccountRepo>,
         source_repo: Arc<dyn SourceRepo>,
+        log_repo: Arc<dyn RuntimeLogRepo>,
     ) -> Self {
         Self {
             config,
             client,
             account_repo,
             source_repo,
+            log_repo,
         }
     }
 
@@ -192,6 +205,32 @@ impl SourceService {
             source_id: source_id.into(),
             vip_active: account.vip_active,
             updated_at: now,
+        })
+    }
+
+    pub async fn list_source_logs(
+        &self,
+        source_id: &str,
+        limit: usize,
+        view: RuntimeLogView,
+    ) -> Result<SourceLogsResponse, AppError> {
+        self.source_repo
+            .find_by_id(source_id)
+            .await?
+            .ok_or_else(AppError::source_not_found)?;
+
+        let query = ListRuntimeLogsQuery {
+            source_id: source_id.into(),
+            limit,
+            view,
+        };
+        let items = self.log_repo.list_by_source(&query).await?;
+
+        Ok(SourceLogsResponse {
+            source_id: source_id.into(),
+            view: query.view,
+            limit: query.limit,
+            items: items.into_iter().map(RuntimeLog::sanitized).collect(),
         })
     }
 }
