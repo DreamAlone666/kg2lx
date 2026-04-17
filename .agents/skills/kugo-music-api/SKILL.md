@@ -1,6 +1,6 @@
 ---
 name: kugo-music-api
-description: Help users call `KuGouMusicApi` / 酷狗 API from this workspace with minimal repo reading. Use this skill whenever the user asks how to call a KuGouMusicApi endpoint, which endpoint to use for a goal, how to log in, how to pass cookie or token, what query/body params are required, or wants a `curl`/`fetch`/Axios example for search, lyric, song URL, playlist, user, album, rank, video, radio, QR login, WeChat login, or related 酷狗接口. Also use it for Chinese prompts like “这个接口怎么调”, “要传什么参数”, “怎么拿歌曲 url”, “歌词怎么取”, “歌单详情调哪个接口”, or “这个请求为什么不通” when the question is about calling the repo's exposed API rather than analyzing backend internals. Prefer `references/quick-reference.md`, `KuGouMusicApi/docs/README.md`, `KuGouMusicApi/interface.d.ts`, and `KuGouMusicApi/README.md`; avoid source digging unless docs conflict or omit a calling detail that would block a real request.
+description: Help users call `KuGouMusicApi` / 酷狗 API from this workspace with minimal repo reading. Use this skill whenever the user asks how to call a KuGouMusicApi endpoint, which endpoint to use for a goal, how to log in, how to pass cookie or token, what query/body params are required, what response fields to expect, or wants a `curl`/`fetch`/Axios example for search, lyric, song URL, playlist, user, album, rank, video, radio, QR login, WeChat login, or related 酷狗接口. Also use it for Chinese prompts like “这个接口怎么调”, “要传什么参数”, “怎么拿歌曲 url”, “歌词怎么取”, “歌单详情调哪个接口”, “为什么返回 Parameter Error”, or “这个请求为什么不通” when the question is about calling the repo's exposed API rather than analyzing backend internals. Prefer `references/quick-reference.md`, `KuGouMusicApi/docs/README.md`, `KuGouMusicApi/interface.d.ts`, and `KuGouMusicApi/README.md`; avoid source digging unless docs conflict or omit a calling detail that would block a real request.
 ---
 
 # Kugo Music API
@@ -40,6 +40,7 @@ Use this order and stop early if the answer is already clear:
 ## Conflict handling
 
 - Separate external API parameters from upstream or internal field names.
+- Treat response payload fields the same way: docs and typings may describe the route correctly while the local service returns a different field shape at runtime.
 - If docs and typings conflict, prefer the documented route example first, then minimally verify the exact external parameter in code only if that difference would make the request fail.
 - Do not surface an internal normalized field name to the user as if it were the public HTTP parameter.
 - If you code-verify a conflict, state the final result plainly and keep the explanation to one line.
@@ -49,6 +50,12 @@ Current verified examples you should remember:
 - In this repo, `酷狗概念版` means `platform=lite`.
 - The external search routes use `keywords` in HTTP requests, even though internal request mapping converts that to upstream `keyword`.
 - `/playlist/track/all/new` uses external `listid`; `lisdid` in `interface.d.ts` is stale for HTTP callers.
+- QR login routes are especially cache-sensitive; use a unique `timestamp` on `/login/qr/key`, `/login/qr/create`, and `/login/qr/check` when freshness matters.
+- `/login/qr/key` may return `data.qrcode` and `data.qrcode_img`, not just `data.key`.
+- `/login/qr/create` may return `data.url` and `data.base64`, not just `data.qrurl` and `data.qrimg`.
+- `/login/qr/check` can return `userid` as either an integer or a string.
+- `/song/url` may expose playable links at top-level `url`, often as an array, not only under `data.url`.
+- `/user/vip/detail` can report Concept membership inside `data.busi_vip[]` even when top-level `is_vip` and `vip_type` are both `0`.
 
 ## When code fallback is allowed
 
@@ -60,6 +67,7 @@ Only fall back to source when documentation still does not settle one of these:
 - auth requirement
 - base URL or route prefix ambiguity
 - a direct conflict between docs and typings
+- a runtime response-shape mismatch that is causing parse failures or bad integration assumptions
 
 When fallback is necessary:
 
@@ -97,6 +105,7 @@ Use this structure when it helps:
 
 - Include only invocation-relevant caveats.
 - Mention cache, `timestamp`, `register/dev`, cross-origin credentials, login risk-control, and lite-platform caveats only when relevant to the route.
+- If the user is debugging a runtime failure, mention verified response-shape gotchas only when they directly explain the failure.
 
 ### Source basis
 
@@ -115,6 +124,7 @@ If the user wants search:
 - Start with `/search` or `/search/complex`.
 - Mention `keywords`, `type`, `page`, and `pagesize` when relevant.
 - Do not rewrite the user-facing query parameter to `keyword`.
+- If the user is debugging `error_code: 152` or `Parameter Error` on `/search`, do not assume the docs example still works unchanged; verify the current route behavior against the implementation before giving a confident fix.
 
 If the user wants lyrics:
 

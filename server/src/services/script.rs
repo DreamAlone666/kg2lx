@@ -52,7 +52,8 @@ const httpPost = (url, body) => new Promise((resolve, reject) => {{
   }}, (err, resp) => {{
     if (err) return reject(err)
     try {{
-      const data = JSON.parse(resp.body)
+      const data = typeof resp.body === 'string' ? JSON.parse(resp.body) : (resp.body || {{}})
+      if (resp.statusCode && resp.statusCode >= 400) return reject(new Error(data.message || `request failed: ${{resp.statusCode}}`))
       if (!data.url) return reject(new Error('empty url'))
       resolve(data.url)
     }} catch (e) {{
@@ -63,10 +64,12 @@ const httpPost = (url, body) => new Promise((resolve, reject) => {{
 on(EVENT_NAMES.request, ({{ source, action, info }}) => {{
   if (source !== 'kg' || action !== 'musicUrl') return Promise.reject(new Error('unsupported action'))
   const musicInfo = info.musicInfo || {{}}
+  const quality = qualityMap[info.type]
+  if (!quality) return Promise.reject(new Error(`unsupported quality: ${{info.type}}`))
   return httpPost(API, {{
     hash: musicInfo.hash,
     album_audio_id: musicInfo.album_audio_id || musicInfo.albumAudioId || null,
-    quality: qualityMap[info.type],
+    quality,
   }})
 }})
 send(EVENT_NAMES.inited, {{

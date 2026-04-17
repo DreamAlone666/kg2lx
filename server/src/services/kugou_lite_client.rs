@@ -1,8 +1,26 @@
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::config::Config;
 use crate::domain::cookie_store::{merge_cookies_from_body_if_present, merge_cookies_from_headers, CookieStore};
 use crate::error::AppError;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(untagged)]
+enum StringOrInt {
+    String(String),
+    Int(i64),
+    Uint(u64),
+}
+
+impl StringOrInt {
+    fn to_string_value(&self) -> String {
+        match self {
+            Self::String(value) => value.clone(),
+            Self::Int(value) => value.to_string(),
+            Self::Uint(value) => value.to_string(),
+        }
+    }
+}
 
 #[derive(Debug, serde::Deserialize)]
 struct QrKeyResponse {
@@ -13,6 +31,7 @@ struct QrKeyResponse {
 #[derive(Debug, serde::Deserialize)]
 struct QrKeyData {
     #[serde(default)]
+    #[serde(alias = "qrcode")]
     key: Option<String>,
 }
 
@@ -25,8 +44,10 @@ struct QrCreateResponse {
 #[derive(Debug, serde::Deserialize)]
 struct QrCreateData {
     #[serde(default)]
+    #[serde(alias = "url")]
     qrurl: Option<String>,
     #[serde(default)]
+    #[serde(alias = "base64")]
     qrimg: Option<String>,
 }
 
@@ -37,9 +58,9 @@ struct QrCheckResponse {
     #[serde(default)]
     message: Option<String>,
     #[serde(default)]
-    token: Option<String>,
+    token: Option<StringOrInt>,
     #[serde(default)]
-    userid: Option<String>,
+    userid: Option<StringOrInt>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -47,9 +68,9 @@ struct QrCheckData {
     #[serde(default)]
     status: Option<i64>,
     #[serde(default)]
-    token: Option<String>,
+    token: Option<StringOrInt>,
     #[serde(default)]
-    userid: Option<String>,
+    userid: Option<StringOrInt>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -66,18 +87,46 @@ struct VipDetailData {
     is_vip: Option<i64>,
     #[serde(default)]
     is_music_vip: Option<i64>,
+    #[serde(default)]
+    busi_vip: Vec<VipBusinessEntry>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct VipBusinessEntry {
+    #[serde(default)]
+    busi_type: Option<String>,
+    #[serde(default)]
+    is_vip: Option<i64>,
 }
 
 #[derive(Debug, serde::Deserialize)]
 struct SongUrlResponse {
     #[serde(default)]
     data: Option<SongUrlData>,
+    #[serde(default)]
+    url: Option<StringOrStrings>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(untagged)]
+enum StringOrStrings {
+    String(String),
+    Strings(Vec<String>),
+}
+
+impl StringOrStrings {
+    fn first_non_empty(self) -> Option<String> {
+        match self {
+            Self::String(value) => (!value.is_empty()).then_some(value),
+            Self::Strings(values) => values.into_iter().find(|value| !value.is_empty()),
+        }
+    }
 }
 
 #[derive(Debug, serde::Deserialize)]
 struct SongUrlData {
     #[serde(default)]
-    url: Option<String>,
+    url: Option<StringOrStrings>,
 }
 
 pub struct QrKeyResult {
@@ -139,7 +188,7 @@ impl KugouLiteClient {
 
     pub async fn request_qr_key(&self, cookies: &CookieStore) -> Result<QrKeyResult, AppError> {
         let mut merged = cookies.clone();
-        let url = format!("{}/login/qr/key", self.base_url);
+        let url = format!("{}/login/qr/key?timestamp={}", self.base_url, timestamp_ms());
         let resp = self
             .client
             .get(&url)
@@ -170,7 +219,12 @@ impl KugouLiteClient {
         cookies: &CookieStore,
     ) -> Result<QrCreateResult, AppError> {
         let mut merged = cookies.clone();
-        let url = format!("{}/login/qr/create?key={}&qrimg=1", self.base_url, qr_key);
+        let url = format!(
+            "{}/login/qr/create?key={}&qrimg=1&timestamp={}",
+            self.base_url,
+            qr_key,
+            timestamp_ms()
+        );
         let resp2 = self
             .client
             .get(&url)
@@ -201,7 +255,12 @@ impl KugouLiteClient {
         cookies: &CookieStore,
     ) -> Result<QrPollResult, AppError> {
         let mut merged = cookies.clone();
-        let url = format!("{}/login/qr/check?key={}", self.base_url, qr_key);
+        let url = format!(
+            "{}/login/qr/check?key={}&timestamp={}",
+            self.base_url,
+            qr_key,
+            timestamp_ms()
+        );
         let resp = self
             .client
             .get(&url)
@@ -220,20 +279,20 @@ impl KugouLiteClient {
         let userid = parsed
             .data
             .as_ref()
-            .and_then(|d| d.userid.as_deref())
-            .or(parsed.userid.as_deref())
+            .and_then(|d| d.userid.as_ref().map(|value| value.to_string_value()))
+            .or(parsed.userid.as_ref().map(|value| value.to_string_value()))
             .filter(|value| !value.is_empty());
         let token = parsed
             .data
             .as_ref()
-            .and_then(|d| d.token.as_deref())
-            .or(parsed.token.as_deref())
+            .and_then(|d| d.token.as_ref().map(|value| value.to_string_value()))
+            .or(parsed.token.as_ref().map(|value| value.to_string_value()))
             .filter(|value| !value.is_empty());
 
-        if let Some(userid) = userid {
+        if let Some(userid) = userid.as_deref() {
             merged.insert("userid", userid);
         }
-        if let Some(token) = token {
+        if let Some(token) = token.as_deref() {
             merged.insert("token", token);
         }
 
@@ -257,9 +316,18 @@ impl KugouLiteClient {
             .send()
             .await
             .map_err(|e| AppError::upstream_login_failed(format!("token refresh: {}", e)))?;
+        let status = resp.status().as_u16();
         merge_cookies_from_headers(&mut merged, resp.headers());
         let body = resp.text().await.map_err(|e| AppError::upstream_login_failed(format!("token body: {}", e)))?;
         merge_cookies_from_body_if_present(&mut merged, &body);
+
+        if status < 200 || status >= 300 {
+            return Err(AppError::upstream_login_failed(format!(
+                "token refresh status {}: {}",
+                status,
+                summarize_upstream_body(&body)
+            )));
+        }
 
         let _parsed: serde_json::Value = serde_json::from_str(&body)
             .map_err(|e| AppError::upstream_login_failed(format!("parse token: {}", e)))?;
@@ -300,10 +368,18 @@ impl KugouLiteClient {
             .send()
             .await
             .map_err(|e| AppError::upstream_vip_check_failed(format!("vip detail: {}", e)))?;
-        let _status = resp.status().as_u16();
+        let status = resp.status().as_u16();
         merge_cookies_from_headers(&mut merged, resp.headers());
         let body = resp.text().await.map_err(|e| AppError::upstream_vip_check_failed(format!("vip body: {}", e)))?;
         merge_cookies_from_body_if_present(&mut merged, &body);
+
+        if status < 200 || status >= 300 {
+            return Err(AppError::upstream_vip_check_failed(format!(
+                "vip detail status {}: {}",
+                status,
+                summarize_upstream_body(&body)
+            )));
+        }
 
         let parsed: VipDetailResponse = serde_json::from_str(&body)
             .map_err(|e| AppError::upstream_vip_check_failed(format!("parse vip: {}", e)))?;
@@ -312,10 +388,20 @@ impl KugouLiteClient {
             vip_type: None,
             is_vip: None,
             is_music_vip: None,
+            busi_vip: Vec::new(),
         });
 
+        let top_level_vip = data.is_vip.unwrap_or(0) == 1 || data.is_music_vip.unwrap_or(0) == 1;
+        let concept_vip = data.busi_vip.iter().any(|entry| {
+            entry.is_vip.unwrap_or(0) == 1
+                && entry
+                    .busi_type
+                    .as_deref()
+                    .map(|value| value.eq_ignore_ascii_case("concept"))
+                    .unwrap_or(false)
+        });
         let vip_type = data.vip_type.unwrap_or(0) as i32;
-        let vip_active = data.is_vip.unwrap_or(0) == 1 || data.is_music_vip.unwrap_or(0) == 1;
+        let vip_active = top_level_vip || concept_vip;
 
         Ok(VipStatusResult {
             vip_type,
@@ -358,7 +444,8 @@ impl KugouLiteClient {
         let play_url = parsed
             .data
             .and_then(|d| d.url)
-            .filter(|u| !u.is_empty());
+            .or(parsed.url)
+            .and_then(|u| u.first_non_empty());
 
         match play_url {
             Some(u) => Ok(MusicUrlResult {
@@ -377,6 +464,13 @@ impl KugouLiteClient {
     }
 }
 
+fn timestamp_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
 fn map_quality(quality: &str) -> &str {
     match quality {
         "128k" => "128",
@@ -391,5 +485,23 @@ pub fn is_auth_failure(status_code: u16, body: &str) -> bool {
     if status_code == 401 || status_code == 403 {
         return true;
     }
-    body.contains("\"code\":301") || body.contains("\"code\":302") || body.contains("token")
+
+    let body_lower = body.to_ascii_lowercase();
+    body.contains("\"code\":301")
+        || body.contains("\"code\":302")
+        || body_lower.contains("token")
+        || body_lower.contains("dfid")
+        || body.contains("本次请求需要验证")
+        || body.contains("需要验证")
+}
+
+fn summarize_upstream_body(body: &str) -> String {
+    const MAX_LEN: usize = 200;
+
+    let trimmed = body.trim();
+    if trimmed.len() <= MAX_LEN {
+        trimmed.to_string()
+    } else {
+        format!("{}...", &trimmed[..MAX_LEN])
+    }
 }

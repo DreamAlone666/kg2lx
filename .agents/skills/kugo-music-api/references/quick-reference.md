@@ -37,6 +37,7 @@ Use this file first. Open the larger repo docs only when you need endpoint-speci
 - Docs show GET examples, but the service supports both GET and POST
 - For POST requests, add a unique `timestamp` in the URL so the request URL is not cached
 - Identical URLs are cached for about 2 minutes
+- QR login is especially sensitive to cache reuse; add a unique `timestamp` to `/login/qr/key`, `/login/qr/create`, and `/login/qr/check`
 - Cross-origin calls should include credentials such as `withCredentials: true` or `credentials: 'include'`, or pass cookies manually
 - Preserve cookies or token after login for authenticated endpoints
 - Do not spam login endpoints; docs warn repeated login calls may trigger risk control
@@ -77,6 +78,9 @@ Use this file first. Open the larger repo docs only when you need endpoint-speci
 - `/login/qr/check`: requires `key`
 - `/login/wx/check`: requires `uuid`; `timestamp` is recommended to avoid cache delay
 - `/login/token`: accepts `token` and `userid`
+- In this workspace, `/login/qr/key` has been observed returning `data.qrcode` and `data.qrcode_img` instead of only `data.key`
+- In this workspace, `/login/qr/create` has been observed returning `data.url` and `data.base64` instead of `data.qrurl` and `data.qrimg`
+- In this workspace, `/login/qr/check` has been observed returning `userid` as either an integer or a string
 
 ### Search and lyric
 
@@ -95,10 +99,12 @@ Use this file first. Open the larger repo docs only when you need endpoint-speci
 - Both URL routes currently need `/register/dev` first, otherwise docs warn about `本次请求需要验证`
 - `interface.d.ts` lists quality values including `128`, `320`, `flac`, `high`, `piano`, `acappella`, `subwoofer`, `ancient`, `surnay`, `dj`, `viper_atmos`, `viper_clear`, and `viper_tape`
 - Docs warn `/song/url/new` may return encrypted audio that is not currently decodable
+- In this workspace, `/song/url` has been observed returning playable links at top-level `url`, often as an array, not only under `data.url`
 
 ### Playlist and user
 
 - `/user/detail`: authenticated user info
+- `/user/vip/detail`: Concept membership may show up in `data.busi_vip[]` even when top-level `is_vip` and `vip_type` are `0`
 - `/user/playlist`: supports `page` and `pagesize`
 - `/user/follow`: authenticated follow list
 - `/playlist/tags`: playlist categories
@@ -182,6 +188,8 @@ const data = await res.json();
 
 - Docs usually say `keywords`, while `interface.d.ts` often uses `keyword` for search-related functions. External HTTP callers should use `keywords`.
 - Docs example for `/playlist/track/all/new` uses `listid`, while typings use `lisdid`. External HTTP callers should use `listid`.
+- Some runtime response payloads drift from docs and typings, especially QR login, song URL, and Concept VIP status. When a user is debugging parse failures, verify the current runtime shape before giving field names.
+- In this workspace, documented `/search` examples have been observed returning `error_code: 152` (`Parameter Error`). If the user is debugging that exact failure, do not assume the docs example is still sufficient without code verification.
 - Response payload schemas are not formally specified
 - Some endpoints are marked as test-only, concept-only, or currently limited
 - When an answer depends on one of these mismatches, verify only that exact detail instead of reading broad source files

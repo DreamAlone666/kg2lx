@@ -9,6 +9,8 @@ Common structure:
 
 - Constants such as `DEV_ENABLE`, `API_URL`, `API_KEY`, and `MUSIC_QUALITY`.
 - `httpFetch()` to wrap `request()` in a Promise.
+- `normalizeJsonBody()` to handle `resp.body` being either a string or an object.
+- `extractMusicUrl()` to turn backend payload variants into one final URL string.
 - `handleGetMusicUrl()` to map `source`, a song identifier, and `quality` into backend requests.
 - Optional `checkUpdate()` for update metadata.
 - `musicSources` generated from `MUSIC_QUALITY` keys.
@@ -16,6 +18,29 @@ Common structure:
 - `send(EVENT_NAMES.inited, ...)` to register the sources.
 
 Prefer this pattern first. It is the most readable, easiest to debug, and closest to the official minimal example.
+
+Typical helpers for proxy-style scripts:
+
+```js
+const normalizeJsonBody = (resp) => {
+  if (typeof resp.body === 'string') return JSON.parse(resp.body)
+  return resp.body || {}
+}
+
+const extractMusicUrl = (data) => {
+  const raw = data.data?.url ?? data.url
+  if (Array.isArray(raw)) return raw.find(Boolean) || ''
+  return typeof raw === 'string' ? raw : ''
+}
+```
+
+Static proxy watch-outs:
+
+- Check `resp.statusCode` before assuming the proxy call succeeded.
+- Do not assume `resp.body` is always a JSON string.
+- Do not assume the backend always returns `data.url`; top-level `url` and URL arrays are both common.
+- If LX still cannot play while backend logs show `200`, inspect the script's parsing and final `Promise` return value before debugging the backend.
+- Do not auto-upgrade audio URLs from `http` to `https` unless you verified the CDN host has a valid certificate for that hostname.
 
 ## Pattern 2: Dynamic Config
 Use this when supported sources, qualities, switches, or update metadata come from a remote config instead of being hard-coded.

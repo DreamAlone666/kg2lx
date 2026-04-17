@@ -1,6 +1,6 @@
 ---
 name: lx-music-source
-description: Understand, review, explain, and write LX Music / 洛雪音乐 custom source scripts in this workspace. Use this whenever the user mentions 洛雪音乐、自定义音源、音源脚本、洛雪音源, LX Music custom source, `globalThis.lx`, `EVENT_NAMES`, `musicUrl`, `lyric`, `pic`, `qualitys`, source registration, or wants to port a music API into an LX Music script, even if they only provide a JavaScript file or casually say “洛雪音源”.
+description: Understand, review, explain, and write LX Music / 洛雪音乐 custom source scripts in this workspace. Use this whenever the user mentions 洛雪音乐、自定义音源、音源脚本、洛雪音源, LX Music custom source, `globalThis.lx`, `EVENT_NAMES`, `musicUrl`, `lyric`, `pic`, `qualitys`, source registration, wants to port a music API into an LX Music script, or is debugging why LX still cannot play even though the backend returns `200` or a valid URL, even if they only provide a JavaScript file or casually say “洛雪音源”.
 ---
 
 Use this skill to keep LX Music custom source work aligned with the host contract, common implementation patterns, and a minimal review checklist. Default to the desktop documentation unless the user explicitly asks about mobile-specific behavior.
@@ -22,23 +22,31 @@ Put the request into one of these buckets and only read the minimum needed files
 - Any exception before `send(EVENT_NAMES.inited, ...)` can make script import fail, so keep initialization conservative.
 - Only call `updateAlert` when there is a real update flow, and only once per run.
 - Treat the official docs as authoritative. If example scripts use extra qualities or fields, only reuse them when the current target version is known to support them.
+- Normalize `request()` callback payloads defensively. `resp.body` may already be an object, not always a JSON string.
+- Do not assume a backend `200` guarantees LX playback. Script-side parse mistakes and wrong return shapes can still make playback fail.
 
 ## Implementation Flow
 1. Decide which source keys are needed: only use `kw`, `kg`, `tx`, `wy`, `mg`, and `local`.
 2. Define `sources`, plus `actions` and `qualitys` for each source.
 3. Wrap `request(url, options, callback)` with a Promise-style `httpFetch` helper.
 4. Write separate handlers per action, for example `handleGetMusicUrl`, `handleGetLyric`, and `handleGetPic`.
-5. Normalize request parameters, response payloads, and upstream errors inside the handlers.
+5. Normalize request parameters, `resp.statusCode`, response payloads, and upstream errors inside the handlers.
 6. Route everything through `on(EVENT_NAMES.request, ...)`.
 7. Only after successful initialization, call `send(EVENT_NAMES.inited, { openDevTools, sources })`.
 
 ## Mapping Rules
 - `info.type` is the LX-requested quality. Only continue if that quality is actually declared for the source.
 - Choose the song identifier from real script or API data. Common candidates are `musicInfo.hash`, `musicInfo.songmid`, and `musicInfo.id`.
-- `musicUrl` must return an HTTP or HTTPS URL string.
+- `musicUrl` must finally resolve to one HTTP or HTTPS URL string, even if the backend returns `{ url }`, `{ data: { url } }`, or an array of candidate URLs.
 - `lyric` must return `{ lyric, tlyric, rlyric, lxlyric }`, with missing fields set to `null`.
 - `pic` must return an HTTP or HTTPS URL string.
 - If the upstream API exposes many status codes, normalize them into a smaller set of clear script-level errors before rejecting.
+
+## Debugging Playback Failures
+- If backend logs show `200` but LX still cannot play, inspect the script before blaming the backend.
+- Check `resp.statusCode`, body normalization, quality mapping, and the exact value returned from the `musicUrl` Promise.
+- Common proxy mistakes are `JSON.parse(resp.body)` when `resp.body` is already an object, assuming `data.url` when the backend returns top-level `url`, and forgetting to unwrap a URL array.
+- Do not blindly rewrite `http` audio URLs to `https`. Verify that the CDN host actually has a valid certificate for that hostname first.
 
 ## Pattern Selection
 - If the task is just wrapping an existing backend endpoint, use the static proxy pattern from `references/patterns.md`.
@@ -54,6 +62,8 @@ Before finishing, verify at least these points:
 - `sources` keys, `actions`, and `qualitys` match the official contract.
 - Non-`local` sources do not incorrectly expose `lyric` or `pic`.
 - `inited` is sent at the right time and initialization does not contain obvious pre-init failures.
+- `request()` response handling works whether `resp.body` is a string or an object.
+- Backend proxy handlers check `resp.statusCode` and normalize nested or array URL payloads into one final string.
 - Headers, auth, UA strings, timeouts, and logging exist because the task needs them, not because example scripts had them.
 - If the script uses `env`, `version`, `currentScriptInfo`, or `utils`, only read the fields that are actually needed.
 

@@ -8,12 +8,16 @@ mod services;
 
 use axum::routing::{get, post};
 use axum::Router;
+use tower_http::trace::TraceLayer;
 
 use crate::app_state::AppState;
 use crate::config::Config;
 
 #[tokio::main]
 async fn main() {
+    dotenvy::dotenv().ok();
+    tracing_subscriber::fmt::init();
+
     let config = Config::from_env();
     let listen_addr = config.listen_addr.clone();
     let state = AppState::new(config);
@@ -38,9 +42,10 @@ async fn main() {
 
     let app = Router::new()
         .route("/healthz", get(routes::health::healthz))
-        .route("/s/{script_token}.js", get(routes::script::get_script))
+        .route("/s/{script_path}", get(routes::script::get_script))
         .nest("/api/v1/admin", admin_routes)
         .nest("/api/v1/runtime", runtime_routes)
+        .layer(TraceLayer::new_for_http())
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&listen_addr)
