@@ -89,3 +89,36 @@ export type ApiErrorPayload = {
   code?: string;
   message?: string;
 };
+
+export type RuntimeLogView = 'all' | 'errors';
+
+export type RuntimeLogListItem = {
+  log_id: string;
+  source_id: string;
+  account_id: string;
+  provider: 'kugou_lite';
+  action: 'musicUrl';
+  track_title: string | null;
+  artist_name: string | null;
+  album_name: string | null;
+  request_hash: string;
+  album_audio_id: string | null;
+  requested_quality: string;
+  upstream_endpoint: string;
+  stage: 'precheck' | 'ensure_dfid' | 'refresh_login' | 'fetch_music_url';
+  refresh_attempted: boolean;
+  retry_count: number;
+  ok: boolean;
+  status_code: number | null;
+  error_code: string | null;
+  latency_ms: number;
+  error: string | null;
+  created_at: number;
+};
+
+export type SourceLogsResponse = {
+  source_id: string;
+  view: RuntimeLogView;
+  limit: number;
+  items: RuntimeLogListItem[];
+};

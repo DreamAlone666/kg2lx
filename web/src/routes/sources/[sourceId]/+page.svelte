@@ -5,6 +5,7 @@
   import { sourcesController } from '$lib/features/sources/controller.svelte';
   import { goto } from '$app/navigation';
   import { Button, Badge, Card, CardHeader, CardContent } from '$lib/components/ui';
+  import LogsPanel from '$lib/components/source-logs/LogsPanel.svelte';
 
   let sourceId = $derived(page.params.sourceId ?? '');
 
@@ -124,5 +125,7 @@
         </div>
       </CardContent>
     </Card>
+
+    <LogsPanel {sourceId} />
   {/if}
 </div>

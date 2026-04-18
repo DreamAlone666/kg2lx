@@ -5,6 +5,8 @@ import type {
   QrLoginStartResponse,
   QrLoginPollResponse,
   RefreshSourceResponse,
+  SourceLogsResponse,
+  RuntimeLogView,
 } from './types';
 
 export class AdminApi {
@@ -20,6 +22,18 @@ export class AdminApi {
 
   async getSource(sourceId: string, signal?: AbortSignal): Promise<SourceDetail> {
     return this.http.get(`/api/v1/admin/sources/${sourceId}`, { signal });
+  }
+
+  async listSourceLogs(
+    sourceId: string,
+    query?: { limit?: number; view?: RuntimeLogView },
+    signal?: AbortSignal,
+  ): Promise<SourceLogsResponse> {
+    const params = new URLSearchParams();
+    if (query?.limit) params.set('limit', query.limit.toString());
+    if (query?.view) params.set('view', query.view);
+    const queryString = params.toString();
+    return this.http.get(`/api/v1/admin/sources/${sourceId}/logs${queryString ? `?${queryString}` : ''}`, { signal });
   }
 
   async startQrLogin(signal?: AbortSignal): Promise<QrLoginStartResponse> {
