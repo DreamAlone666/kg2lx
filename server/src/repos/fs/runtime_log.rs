@@ -38,7 +38,10 @@ impl RuntimeLogRepo for FsRuntimeLogRepo {
         Ok(())
     }
 
-    async fn list_by_source(&self, query: &ListRuntimeLogsQuery) -> Result<Vec<RuntimeLog>, AppError> {
+    async fn list_by_source(
+        &self,
+        query: &ListRuntimeLogsQuery,
+    ) -> Result<Vec<RuntimeLog>, AppError> {
         let mut entries = match fs::read_dir(&self.dir).await {
             Ok(rd) => {
                 let mut v = Vec::new();

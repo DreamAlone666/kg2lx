@@ -101,13 +101,15 @@ impl RuntimeService {
                             &source,
                             &account,
                             &req,
-                            RuntimeLogStage::EnsureDfid,
-                            false,
-                            0,
-                            "ensure_dfid",
+                            LogErrorContext {
+                                stage: RuntimeLogStage::EnsureDfid,
+                                refresh_attempted: false,
+                                retry_count: 0,
+                                upstream_endpoint: "ensure_dfid",
+                                status_code: None,
+                                latency_ms: 0,
+                            },
                             &e,
-                            None,
-                            0,
                         )
                         .await;
                 }
@@ -119,7 +121,7 @@ impl RuntimeService {
             .last_refresh_at
             .is_none_or(|t| now - t > self.config.refresh_interval_secs as i64);
 
-                if needs_refresh {
+        if needs_refresh {
             refresh_attempted = true;
             if let Err(e) = self.do_refresh(&mut account).await {
                 return self
@@ -127,13 +129,15 @@ impl RuntimeService {
                         &source,
                         &account,
                         &req,
-                        RuntimeLogStage::RefreshLogin,
-                        true,
-                        0,
-                        "refresh_login",
+                        LogErrorContext {
+                            stage: RuntimeLogStage::RefreshLogin,
+                            refresh_attempted: true,
+                            retry_count: 0,
+                            upstream_endpoint: "refresh_login",
+                            status_code: None,
+                            latency_ms: 0,
+                        },
                         &e,
-                        None,
-                        0,
                     )
                     .await;
             }
@@ -166,13 +170,15 @@ impl RuntimeService {
                                     &source,
                                     &account,
                                     &req,
-                                    RuntimeLogStage::RefreshLogin,
-                                    true,
-                                    1,
-                                    "refresh_login",
+                                    LogErrorContext {
+                                        stage: RuntimeLogStage::RefreshLogin,
+                                        refresh_attempted: true,
+                                        retry_count: 1,
+                                        upstream_endpoint: "refresh_login",
+                                        status_code: Some(mr.status_code),
+                                        latency_ms: start.elapsed().as_millis(),
+                                    },
                                     &e,
-                                    Some(mr.status_code),
-                                    start.elapsed().as_millis(),
                                 )
                                 .await;
                         }
@@ -187,19 +193,19 @@ impl RuntimeService {
                                 account.cookies = rr.cookies;
                                 self.account_repo.upsert(&account).await?;
                                 if rr.url.is_empty() {
-                                self.append_log(AppendLogInput {
-                                    source: &source,
-                                    account: &account,
-                                    req: &req,
-                                    stage: RuntimeLogStage::FetchMusicUrl,
-                                    refresh_attempted,
-                                    retry_count: 1,
-                                    upstream_endpoint: "song/url",
-                                    ok: false,
-                                    status_code: Some(rr.status_code),
-                                    latency_ms: retry_latency,
-                                    error: Some("empty url after retry"),
-                                    error_code: Some(error_code_string(
+                                    self.append_log(AppendLogInput {
+                                        source: &source,
+                                        account: &account,
+                                        req: &req,
+                                        stage: RuntimeLogStage::FetchMusicUrl,
+                                        refresh_attempted,
+                                        retry_count: 1,
+                                        upstream_endpoint: "song/url",
+                                        ok: false,
+                                        status_code: Some(rr.status_code),
+                                        latency_ms: retry_latency,
+                                        error: Some("empty url after retry"),
+                                        error_code: Some(error_code_string(
                                             ErrorCode::UpstreamPlayUrlEmpty,
                                         )),
                                     })
@@ -229,13 +235,15 @@ impl RuntimeService {
                                         &source,
                                         &account,
                                         &req,
-                                        RuntimeLogStage::FetchMusicUrl,
-                                        refresh_attempted,
-                                        1,
-                                        "song/url",
+                                        LogErrorContext {
+                                            stage: RuntimeLogStage::FetchMusicUrl,
+                                            refresh_attempted,
+                                            retry_count: 1,
+                                            upstream_endpoint: "song/url",
+                                            status_code: None,
+                                            latency_ms: start.elapsed().as_millis(),
+                                        },
                                         &e,
-                                        None,
-                                        start.elapsed().as_millis(),
                                     )
                                     .await;
                             }
@@ -281,13 +289,15 @@ impl RuntimeService {
                     &source,
                     &account,
                     &req,
-                    RuntimeLogStage::FetchMusicUrl,
-                    refresh_attempted,
-                    0,
-                    "song/url",
+                    LogErrorContext {
+                        stage: RuntimeLogStage::FetchMusicUrl,
+                        refresh_attempted,
+                        retry_count: 0,
+                        upstream_endpoint: "song/url",
+                        status_code: None,
+                        latency_ms: latency,
+                    },
                     &e,
-                    None,
-                    latency,
                 )
                 .await
             }
@@ -381,13 +391,8 @@ impl RuntimeService {
         source: &crate::domain::source::Source,
         account: &crate::domain::account::ProviderAccount,
         req: &RuntimeMusicUrlRequest,
-        stage: RuntimeLogStage,
-        refresh_attempted: bool,
-        retry_count: u8,
-        upstream_endpoint: &str,
+        ctx: LogErrorContext<'_>,
         err: &AppError,
-        status_code: Option<u16>,
-        latency_ms: u128,
     ) -> Result<RuntimeMusicUrlResponse, AppError> {
         let err_code = error_code_string(err.code);
         let err_msg = err.to_string();
@@ -395,13 +400,13 @@ impl RuntimeService {
             source,
             account,
             req,
-            stage,
-            refresh_attempted,
-            retry_count,
-            upstream_endpoint,
+            stage: ctx.stage,
+            refresh_attempted: ctx.refresh_attempted,
+            retry_count: ctx.retry_count,
+            upstream_endpoint: ctx.upstream_endpoint,
             ok: false,
-            status_code,
-            latency_ms,
+            status_code: ctx.status_code,
+            latency_ms: ctx.latency_ms,
             error: Some(&err_msg),
             error_code: Some(err_code),
         })
@@ -423,4 +428,13 @@ struct AppendLogInput<'a> {
     latency_ms: u128,
     error: Option<&'a str>,
     error_code: Option<String>,
+}
+
+struct LogErrorContext<'a> {
+    stage: RuntimeLogStage,
+    refresh_attempted: bool,
+    retry_count: u8,
+    upstream_endpoint: &'a str,
+    status_code: Option<u16>,
+    latency_ms: u128,
 }

@@ -86,7 +86,7 @@ pub async fn list_source_logs(
         Some(s) => s
             .parse::<usize>()
             .ok()
-            .filter(|&n| n >= 1 && n <= 100)
+            .filter(|&n| (1..=100).contains(&n))
             .ok_or_else(|| AppError::invalid_request("invalid limit"))?,
     };
 
@@ -96,6 +96,9 @@ pub async fn list_source_logs(
         _ => return Err(AppError::invalid_request("invalid view")),
     };
 
-    let resp = state.source.list_source_logs(&source_id, limit, view).await?;
+    let resp = state
+        .source
+        .list_source_logs(&source_id, limit, view)
+        .await?;
     Ok(Json(serde_json::to_value(resp).unwrap()))
 }
