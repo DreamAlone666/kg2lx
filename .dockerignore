@@ -1,0 +1,16 @@
+.git
+.gitmodules
+.vscode
+
+spec/
+
+server/.env
+server/data/
+server/target/
+
+web/.env
+web/.svelte-kit/
+web/build/
+web/node_modules/
+
+KuGouMusicApi/
