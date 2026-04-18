@@ -4,7 +4,7 @@ use std::time::Instant;
 use crate::config::Config;
 use crate::domain::account::{self, AccountStatus};
 use crate::domain::provider::ProviderKind;
-use crate::domain::runtime_log::{RuntimeLog, sanitize_runtime_log_error};
+use crate::domain::runtime_log::{RuntimeLog, RuntimeLogStage, sanitize_runtime_log_error};
 use crate::error::AppError;
 use crate::error::ErrorCode;
 use crate::repos::account::AccountRepo;
@@ -17,6 +17,9 @@ pub struct RuntimeMusicUrlRequest {
     pub hash: String,
     pub album_audio_id: Option<String>,
     pub quality: String,
+    pub track_title: Option<String>,
+    pub artist_name: Option<String>,
+    pub album_name: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -30,6 +33,13 @@ pub struct RuntimeService {
     source_repo: Arc<dyn SourceRepo>,
     account_repo: Arc<dyn AccountRepo>,
     log_repo: Arc<dyn RuntimeLogRepo>,
+}
+
+fn error_code_string(code: ErrorCode) -> String {
+    serde_json::to_string(&code)
+        .unwrap_or_default()
+        .trim_matches('"')
+        .to_string()
 }
 
 impl RuntimeService {
@@ -77,10 +87,31 @@ impl RuntimeService {
             return Err(AppError::account_not_vip());
         }
 
+        let mut refresh_attempted = false;
+
         if account.cookies.is_empty("dfid") {
-            let with_dfid = self.client.ensure_dfid(&account.cookies).await?;
-            account.cookies = with_dfid;
-            self.account_repo.upsert(&account).await?;
+            match self.client.ensure_dfid(&account.cookies).await {
+                Ok(with_dfid) => {
+                    account.cookies = with_dfid;
+                    self.account_repo.upsert(&account).await?;
+                }
+                Err(e) => {
+                    return self
+                        .log_and_err(
+                            &source,
+                            &account,
+                            &req,
+                            RuntimeLogStage::EnsureDfid,
+                            false,
+                            0,
+                            "ensure_dfid",
+                            &e,
+                            None,
+                            0,
+                        )
+                        .await;
+                }
+            }
         }
 
         let now = account::now_ts();
@@ -88,14 +119,23 @@ impl RuntimeService {
             .last_refresh_at
             .is_none_or(|t| now - t > self.config.refresh_interval_secs as i64);
 
-        if needs_refresh {
-            match self.do_refresh(&mut account).await {
-                Ok(()) => {}
-                Err(e) => {
-                    return self
-                        .log_and_err(&source, &account, &req, 0, &e.to_string())
-                        .await;
-                }
+                if needs_refresh {
+            refresh_attempted = true;
+            if let Err(e) = self.do_refresh(&mut account).await {
+                return self
+                    .log_and_err(
+                        &source,
+                        &account,
+                        &req,
+                        RuntimeLogStage::RefreshLogin,
+                        true,
+                        0,
+                        "refresh_login",
+                        &e,
+                        None,
+                        0,
+                    )
+                    .await;
             }
         }
 
@@ -119,19 +159,22 @@ impl RuntimeService {
 
                 if mr.url.is_empty() {
                     if mr.auth_failed {
-                        match self.do_refresh(&mut account).await {
-                            Ok(()) => {}
-                            Err(e) => {
-                                return self
-                                    .log_and_err(
-                                        &source,
-                                        &account,
-                                        &req,
-                                        mr.status_code,
-                                        &e.to_string(),
-                                    )
-                                    .await;
-                            }
+                        refresh_attempted = true;
+                        if let Err(e) = self.do_refresh(&mut account).await {
+                            return self
+                                .log_and_err(
+                                    &source,
+                                    &account,
+                                    &req,
+                                    RuntimeLogStage::RefreshLogin,
+                                    true,
+                                    1,
+                                    "refresh_login",
+                                    &e,
+                                    Some(mr.status_code),
+                                    start.elapsed().as_millis(),
+                                )
+                                .await;
                         }
 
                         let retry = self
@@ -144,15 +187,21 @@ impl RuntimeService {
                                 account.cookies = rr.cookies;
                                 self.account_repo.upsert(&account).await?;
                                 if rr.url.is_empty() {
-                                    self.append_log(AppendLogInput {
-                                        source: &source,
-                                        account: &account,
-                                        req: &req,
-                                        endpoint: "song/url",
-                                        ok: false,
-                                        status_code: rr.status_code,
-                                        latency_ms: retry_latency,
-                                        error: Some("empty url after retry"),
+                                self.append_log(AppendLogInput {
+                                    source: &source,
+                                    account: &account,
+                                    req: &req,
+                                    stage: RuntimeLogStage::FetchMusicUrl,
+                                    refresh_attempted,
+                                    retry_count: 1,
+                                    upstream_endpoint: "song/url",
+                                    ok: false,
+                                    status_code: Some(rr.status_code),
+                                    latency_ms: retry_latency,
+                                    error: Some("empty url after retry"),
+                                    error_code: Some(error_code_string(
+                                            ErrorCode::UpstreamPlayUrlEmpty,
+                                        )),
                                     })
                                     .await;
                                     return Err(AppError::upstream_play_url_empty());
@@ -161,18 +210,33 @@ impl RuntimeService {
                                     source: &source,
                                     account: &account,
                                     req: &req,
-                                    endpoint: "song/url",
+                                    stage: RuntimeLogStage::FetchMusicUrl,
+                                    refresh_attempted,
+                                    retry_count: 1,
+                                    upstream_endpoint: "song/url",
                                     ok: true,
-                                    status_code: rr.status_code,
+                                    status_code: Some(rr.status_code),
                                     latency_ms: retry_latency,
                                     error: None,
+                                    error_code: None,
                                 })
                                 .await;
                                 return Ok(RuntimeMusicUrlResponse { url: rr.url });
                             }
                             Err(e) => {
                                 return self
-                                    .log_and_err(&source, &account, &req, 0, &e.to_string())
+                                    .log_and_err(
+                                        &source,
+                                        &account,
+                                        &req,
+                                        RuntimeLogStage::FetchMusicUrl,
+                                        refresh_attempted,
+                                        1,
+                                        "song/url",
+                                        &e,
+                                        None,
+                                        start.elapsed().as_millis(),
+                                    )
                                     .await;
                             }
                         }
@@ -181,11 +245,15 @@ impl RuntimeService {
                         source: &source,
                         account: &account,
                         req: &req,
-                        endpoint: "song/url",
+                        stage: RuntimeLogStage::FetchMusicUrl,
+                        refresh_attempted,
+                        retry_count: 0,
+                        upstream_endpoint: "song/url",
                         ok: false,
-                        status_code: mr.status_code,
+                        status_code: Some(mr.status_code),
                         latency_ms: latency,
                         error: Some("empty play url"),
+                        error_code: Some(error_code_string(ErrorCode::UpstreamPlayUrlEmpty)),
                     })
                     .await;
                     return Err(AppError::upstream_play_url_empty());
@@ -195,18 +263,33 @@ impl RuntimeService {
                     source: &source,
                     account: &account,
                     req: &req,
-                    endpoint: "song/url",
+                    stage: RuntimeLogStage::FetchMusicUrl,
+                    refresh_attempted,
+                    retry_count: 0,
+                    upstream_endpoint: "song/url",
                     ok: true,
-                    status_code: mr.status_code,
+                    status_code: Some(mr.status_code),
                     latency_ms: latency,
                     error: None,
+                    error_code: None,
                 })
                 .await;
                 Ok(RuntimeMusicUrlResponse { url: mr.url })
             }
             Err(e) => {
-                self.log_and_err(&source, &account, &req, 0, &e.to_string())
-                    .await
+                self.log_and_err(
+                    &source,
+                    &account,
+                    &req,
+                    RuntimeLogStage::FetchMusicUrl,
+                    refresh_attempted,
+                    0,
+                    "song/url",
+                    &e,
+                    None,
+                    latency,
+                )
+                .await
             }
         }
     }
@@ -273,12 +356,19 @@ impl RuntimeService {
             account_id: input.account.account_id.clone(),
             provider: ProviderKind::KugouLite,
             action: "musicUrl".into(),
+            track_title: input.req.track_title.clone(),
+            artist_name: input.req.artist_name.clone(),
+            album_name: input.req.album_name.clone(),
             request_hash: input.req.hash.clone(),
             album_audio_id: input.req.album_audio_id.clone(),
             requested_quality: input.req.quality.clone(),
-            upstream_endpoint: input.endpoint.into(),
+            upstream_endpoint: input.upstream_endpoint.into(),
+            stage: input.stage,
+            refresh_attempted: input.refresh_attempted,
+            retry_count: input.retry_count,
             ok: input.ok,
             status_code: input.status_code,
+            error_code: input.error_code,
             latency_ms: input.latency_ms,
             error: sanitize_runtime_log_error(input.error),
             created_at: now,
@@ -291,21 +381,32 @@ impl RuntimeService {
         source: &crate::domain::source::Source,
         account: &crate::domain::account::ProviderAccount,
         req: &RuntimeMusicUrlRequest,
-        status_code: u16,
-        error: &str,
+        stage: RuntimeLogStage,
+        refresh_attempted: bool,
+        retry_count: u8,
+        upstream_endpoint: &str,
+        err: &AppError,
+        status_code: Option<u16>,
+        latency_ms: u128,
     ) -> Result<RuntimeMusicUrlResponse, AppError> {
+        let err_code = error_code_string(err.code);
+        let err_msg = err.to_string();
         self.append_log(AppendLogInput {
             source,
             account,
             req,
-            endpoint: "song/url",
+            stage,
+            refresh_attempted,
+            retry_count,
+            upstream_endpoint,
             ok: false,
             status_code,
-            latency_ms: 0,
-            error: Some(error),
+            latency_ms,
+            error: Some(&err_msg),
+            error_code: Some(err_code),
         })
         .await;
-        Err(AppError::upstream_request_failed(error))
+        Err(AppError::upstream_request_failed(err_msg))
     }
 }
 
@@ -313,9 +414,13 @@ struct AppendLogInput<'a> {
     source: &'a crate::domain::source::Source,
     account: &'a crate::domain::account::ProviderAccount,
     req: &'a RuntimeMusicUrlRequest,
-    endpoint: &'a str,
+    stage: RuntimeLogStage,
+    refresh_attempted: bool,
+    retry_count: u8,
+    upstream_endpoint: &'a str,
     ok: bool,
-    status_code: u16,
+    status_code: Option<u16>,
     latency_ms: u128,
     error: Option<&'a str>,
+    error_code: Option<String>,
 }
