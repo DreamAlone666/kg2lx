@@ -27,6 +27,7 @@
 - `UPSTREAM_TIMEOUT_MS`：请求上游 API 的超时时间（毫秒），默认值为 `10000`。
 - `SOURCE_NAME_PREFIX`：生成的音源名称前缀，默认值为 `Kugou Concept VIP`。
 - `REFRESH_INTERVAL_SECS`：账号状态刷新间隔（秒），默认值为 `21600`。
+- `WEB_DIST_DIR`：可选，管理后台前端构建产物目录。配置后，服务端将同时提供 API 和前端静态文件服务，未匹配到 API 路由的请求将回退到 `index.html`（SPA 模式）。未配置时仅提供 API 服务。配置后目录不存在将在启动时直接报错退出。
 
 **启动示例：**
 

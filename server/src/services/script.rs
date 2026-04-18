@@ -4,6 +4,8 @@ use crate::config::Config;
 use crate::error::AppError;
 use crate::repos::source::SourceRepo;
 
+const SCRIPT_VERSION: &str = "0.1.0";
+
 pub struct ScriptService {
     config: Arc<Config>,
     source_repo: Arc<dyn SourceRepo>,
@@ -39,7 +41,7 @@ impl ScriptService {
             r#"/**
  * @name {source_name}
  * @description Per-account Kugou Concept VIP source
- * @version 0.1.0
+         * @version {SCRIPT_VERSION}
  */
 const {{ EVENT_NAMES, request, on, send }} = globalThis.lx
 const API = '{public_base_url}/api/v1/runtime/music-url'

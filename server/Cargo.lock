@@ -757,6 +757,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "kg2lx-server"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "chrono",
+ "dotenvy",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1264,24 +1282,6 @@ dependencies = [
  "itoa",
  "ryu",
  "serde",
-]
-
-[[package]]
-name = "server"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "axum",
- "chrono",
- "dotenvy",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]

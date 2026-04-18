@@ -9,6 +9,7 @@ pub struct Config {
     pub upstream_timeout_ms: u64,
     pub source_name_prefix: String,
     pub refresh_interval_secs: u64,
+    pub web_dist_dir: Option<String>,
 }
 
 impl Config {
@@ -30,6 +31,7 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(6 * 3600),
+            web_dist_dir: env::var("WEB_DIST_DIR").ok(),
         }
     }
 }
