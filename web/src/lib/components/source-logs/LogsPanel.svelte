@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { sourceLogsController } from '../../features/source-logs/controller.svelte';
   import { Button, Badge, Card, CardHeader, CardContent } from '../ui';
 
@@ -6,8 +7,8 @@
 
   $effect(() => {
     if (!sourceId) return;
-    sourceLogsController.startPolling(sourceId);
-    return () => sourceLogsController.stopPolling();
+    untrack(() => sourceLogsController.startPolling(sourceId));
+    return () => untrack(() => sourceLogsController.stopPolling());
   });
 
   function formatTime(timestamp: number) {

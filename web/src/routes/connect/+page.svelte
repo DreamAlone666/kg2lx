@@ -6,9 +6,7 @@
   import { dev } from '$app/environment';
   import { Button, Input, Card, CardHeader, CardContent } from '$lib/components/ui';
 
-  const defaultBaseUrl = dev ? '/backend' : '';
-
-  let baseUrl = $state(adminSession.serverBaseUrl || defaultBaseUrl);
+  let baseUrl = $state(adminSession.serverBaseUrl || '');
   let token = $state(adminSession.adminToken);
   let loading = $state(false);
   let error = $state<string | null>(null);
@@ -51,11 +49,10 @@
             id="baseUrl"
             type="text"
             bind:value={baseUrl}
-            placeholder={dev ? '/backend 或 https://your-backend.example.com' : 'https://your-backend.example.com'}
-            required
+            placeholder="留空使用当前域名 (Same Origin)"
           />
           <p class="text-xs text-muted-foreground">
-            开发环境可直接填 <code>/backend</code>，由 Vite 代理到本地 Rust 服务。
+            留空将使用当前域名（Same Origin）。开发环境可填 <code>/backend</code> 快速连接本地服务。
           </p>
         </div>
 
