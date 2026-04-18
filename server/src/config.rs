@@ -26,7 +26,7 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(10000),
             source_name_prefix: env::var("SOURCE_NAME_PREFIX")
-                .unwrap_or_else(|_| "Kugou Concept VIP".into()),
+                .unwrap_or_else(|_| "酷狗概念版".into()),
             refresh_interval_secs: env::var("REFRESH_INTERVAL_SECS")
                 .ok()
                 .and_then(|v| v.parse().ok())

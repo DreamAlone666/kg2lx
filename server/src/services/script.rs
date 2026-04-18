@@ -35,13 +35,13 @@ impl ScriptService {
 
         let public_base_url = &self.config.public_base_url;
         let runtime_token = &source.runtime_token;
-        let source_name = &self.config.source_name_prefix;
+        let source_name = &source.name;
 
         let script = format!(
             r#"/**
  * @name {source_name}
- * @description Per-account Kugou Concept VIP source
-         * @version {SCRIPT_VERSION}
+ * @description kg2lx 专属酷狗概念版音源脚本，仅供通过 kg2lx 解析歌曲链接
+ * @version {SCRIPT_VERSION}
  */
 const {{ EVENT_NAMES, request, on, send }} = globalThis.lx
 const API = '{public_base_url}/api/v1/runtime/music-url'
