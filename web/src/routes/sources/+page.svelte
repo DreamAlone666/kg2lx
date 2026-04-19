@@ -22,6 +22,10 @@
   };
 </script>
 
+<svelte:head>
+  <title>音源管理 | kg2lx</title>
+</svelte:head>
+
 <div class="mx-auto max-w-5xl p-6">
   <div class="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
     <div>

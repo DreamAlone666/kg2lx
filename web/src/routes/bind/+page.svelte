@@ -80,6 +80,10 @@
   };
 </script>
 
+<svelte:head>
+  <title>绑定酷狗账号 | kg2lx</title>
+</svelte:head>
+
 <div class="mx-auto max-w-md p-6">
   <div class="mb-6">
     <Button variant="ghost" size="sm" href="/sources">

@@ -5,5 +5,9 @@
 	let { children } = $props();
 </script>
 
-<svelte:head><link rel="icon" href={favicon} /></svelte:head>
+<svelte:head>
+	<title>kg2lx</title>
+	<meta name="description" content="kg2lx 管理后台" />
+	<link rel="icon" href={favicon} />
+</svelte:head>
 {@render children()}

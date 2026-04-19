@@ -34,6 +34,10 @@
   }
 </script>
 
+<svelte:head>
+  <title>连接后端 | kg2lx</title>
+</svelte:head>
+
 <div class="flex min-h-screen flex-col items-center justify-center p-4 bg-slate-50">
   <Card class="w-full max-w-md">
     <CardHeader>

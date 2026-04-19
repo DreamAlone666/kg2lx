@@ -8,6 +8,10 @@
   import LogsPanel from '$lib/components/source-logs/LogsPanel.svelte';
 
   let sourceId = $derived(page.params.sourceId ?? '');
+  let pageTitle = $derived.by(() => {
+    const userid = sourcesController.currentSource?.account.userid;
+    return userid ? `${userid} | kg2lx` : '音源详情 | kg2lx';
+  });
 
   onMount(() => {
     if (!adminSession.adminToken) {
@@ -43,6 +47,10 @@
     kugou_lite: '酷狗概念版'
   };
 </script>
+
+<svelte:head>
+  <title>{pageTitle}</title>
+</svelte:head>
 
 <div class="mx-auto max-w-3xl p-6">
   <div class="mb-6 flex items-center gap-4">
