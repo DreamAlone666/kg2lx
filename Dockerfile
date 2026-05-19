@@ -9,8 +9,11 @@ RUN corepack enable
 
 WORKDIR /src/web
 
-COPY web/package.json web/pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
+COPY web/pnpm-lock.yaml ./
+RUN pnpm fetch --frozen-lockfile
+
+COPY web/package.json ./
+RUN pnpm install --frozen-lockfile --offline
 
 COPY web/ ./
 RUN pnpm build
@@ -24,8 +27,14 @@ RUN apt-get update \
 
 WORKDIR /src/server
 
-COPY server/ ./
-RUN cargo build --locked --release
+COPY server/Cargo.toml server/Cargo.lock ./
+RUN mkdir src \
+    && printf 'fn main() {}\n' > src/main.rs \
+    && cargo build --locked --release \
+    && rm -rf src
+
+COPY server/src ./src
+RUN touch src/main.rs && cargo build --locked --release
 
 
 FROM debian:bookworm-slim AS runtime
