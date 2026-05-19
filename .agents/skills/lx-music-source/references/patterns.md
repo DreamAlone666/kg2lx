@@ -39,6 +39,7 @@ Static proxy watch-outs:
 - Check `resp.statusCode` before assuming the proxy call succeeded.
 - Do not assume `resp.body` is always a JSON string.
 - Do not assume the backend always returns `data.url`; top-level `url` and URL arrays are both common.
+- For backends consumed by lx-music-mobile, accept both direct JSON object request bodies and JSON-string-wrapped object bodies. Mobile can double-serialize `options.body` when the script already used `JSON.stringify(payload)`.
 - If LX still cannot play while backend logs show `200`, inspect the script's parsing and final `Promise` return value before debugging the backend.
 - Do not auto-upgrade audio URLs from `http` to `https` unless you verified the CDN host has a valid certificate for that hostname.
 

@@ -186,5 +186,6 @@ Only handle these when the user explicitly asks about mobile:
 - Mobile `inited` does not support `openDevTools`.
 - Some `lx.utils` methods are unavailable on mobile.
 - Mobile has stricter limits around host APIs and built-in object mutation.
+- Mobile `request()` can serialize `options.body` differently from desktop. If a script sets `body: JSON.stringify(payload)`, a backend may receive a JSON string whose contents are the actual JSON object, for example `"{\"hash\":\"...\",\"quality\":\"flac\"}"` instead of `{ "hash": "...", "quality": "flac" }`. Treat `400`/`422` runtime API responses before business logs as a body-shape problem to verify with real request logs.
 
 For default workspace tasks, assume the desktop script model.

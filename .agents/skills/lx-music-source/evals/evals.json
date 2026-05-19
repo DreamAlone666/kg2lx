@@ -18,6 +18,12 @@
       "prompt": "帮我 review 一个洛雪音源脚本。它导入后直接报初始化失败，而且作者还给 `kw` 源加了 `lyric` action。请先从宿主契约角度找问题，再给最小修复方案。",
       "expected_output": "优先指出 inited 前异常、request handler 未返回 Promise、非 local 源错误暴露 lyric/pic、qualitys 与实现不一致等高优先级问题，并给出最小修复建议。",
       "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "这个洛雪音源在 lx-music-desktop 能播，但 lx-music-mobile 播放失败。服务端日志显示脚本能加载，`/api/v1/runtime/music-url` 也被调用了，但返回 422，没有进入上游取 URL 的业务日志。帮我判断下一步该查什么。",
+      "expected_output": "应优先判断这是移动端 request body 形状差异：确认 POST body 是否是 JSON-string-wrapped object，而不是直接归因于上游或播放 URL；建议用真实服务日志区分脚本加载、runtime 调用、body 解析和上游阶段。",
+      "files": []
     }
   ]
 }

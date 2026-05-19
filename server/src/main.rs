@@ -22,9 +22,8 @@ use crate::config::Config;
 
 fn validate_web_dist_dir(dir: &str) {
     let path = std::path::Path::new(dir);
-    std::fs::canonicalize(path).unwrap_or_else(|err| {
-        panic!("WEB_DIST_DIR is unreadable or missing: {dir}: {err}")
-    });
+    std::fs::canonicalize(path)
+        .unwrap_or_else(|err| panic!("WEB_DIST_DIR is unreadable or missing: {dir}: {err}"));
 
     std::fs::read_dir(path)
         .unwrap_or_else(|err| panic!("WEB_DIST_DIR is unreadable: {dir}: {err}"));
@@ -85,15 +84,13 @@ async fn main() {
             )
         })
         .on_request(())
-        .on_response(
-            |res: &Response<Body>, latency: Duration, _span: &Span| {
-                tracing::info!(
-                    status = %res.status(),
-                    latency_ms = latency.as_millis() as u64,
-                    "completed",
-                );
-            },
-        )
+        .on_response(|res: &Response<Body>, latency: Duration, _span: &Span| {
+            tracing::info!(
+                status = %res.status(),
+                latency_ms = latency.as_millis() as u64,
+                "completed",
+            );
+        })
         .on_failure(());
 
     let app = Router::new()

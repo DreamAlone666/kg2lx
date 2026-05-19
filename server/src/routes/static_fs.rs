@@ -5,10 +5,7 @@ use axum::response::IntoResponse;
 
 use crate::app_state::AppState;
 
-pub async fn serve(
-    State(state): State<AppState>,
-    req: Request<Body>,
-) -> Response<Body> {
+pub async fn serve(State(state): State<AppState>, req: Request<Body>) -> Response<Body> {
     let base = match &state.config.web_dist_dir {
         Some(d) => d.as_str(),
         None => return StatusCode::NOT_FOUND.into_response(),

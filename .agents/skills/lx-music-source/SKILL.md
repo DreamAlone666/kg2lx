@@ -24,6 +24,7 @@ Put the request into one of these buckets and only read the minimum needed files
 - Treat the official docs as authoritative. If example scripts use extra qualities or fields, only reuse them when the current target version is known to support them.
 - Normalize `request()` callback payloads defensively. `resp.body` may already be an object, not always a JSON string.
 - Do not assume a backend `200` guarantees LX playback. Script-side parse mistakes and wrong return shapes can still make playback fail.
+- When debugging mobile-only proxy failures, verify the exact backend request body. `lx-music-mobile` may send `options.body` as a JSON string containing the actual JSON object, while desktop sends the object shape the backend expects.
 
 ## Implementation Flow
 1. Decide which source keys are needed: only use `kw`, `kg`, `tx`, `wy`, `mg`, and `local`.
@@ -46,6 +47,7 @@ Put the request into one of these buckets and only read the minimum needed files
 - If backend logs show `200` but LX still cannot play, inspect the script before blaming the backend.
 - Check `resp.statusCode`, body normalization, quality mapping, and the exact value returned from the `musicUrl` Promise.
 - Common proxy mistakes are `JSON.parse(resp.body)` when `resp.body` is already an object, assuming `data.url` when the backend returns top-level `url`, and forgetting to unwrap a URL array.
+- If desktop works but mobile fails, first separate script loading from runtime execution: confirm `/s/*.js` is fetched, confirm `/api/.../music-url` is called, then inspect whether the POST body is an object or a JSON-string-wrapped object. A server-side `400`/`422` before business logs usually means request extraction failed, not upstream playback failed.
 - Do not blindly rewrite `http` audio URLs to `https`. Verify that the CDN host actually has a valid certificate for that hostname first.
 
 ## Pattern Selection
@@ -63,6 +65,7 @@ Before finishing, verify at least these points:
 - Non-`local` sources do not incorrectly expose `lyric` or `pic`.
 - `inited` is sent at the right time and initialization does not contain obvious pre-init failures.
 - `request()` response handling works whether `resp.body` is a string or an object.
+- Backend proxy handlers tolerate both direct JSON object bodies and JSON-string-wrapped bodies when targeting lx-music-mobile.
 - Backend proxy handlers check `resp.statusCode` and normalize nested or array URL payloads into one final string.
 - Headers, auth, UA strings, timeouts, and logging exist because the task needs them, not because example scripts had them.
 - If the script uses `env`, `version`, `currentScriptInfo`, or `utils`, only read the fields that are actually needed.
