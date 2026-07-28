@@ -186,6 +186,6 @@ Only handle these when the user explicitly asks about mobile:
 - Mobile `inited` does not support `openDevTools`.
 - Some `lx.utils` methods are unavailable on mobile.
 - Mobile has stricter limits around host APIs and built-in object mutation.
-- Mobile `request()` can serialize `options.body` differently from desktop. If a script sets `body: JSON.stringify(payload)`, a backend may receive a JSON string whose contents are the actual JSON object, for example `"{\"hash\":\"...\",\"quality\":\"flac\"}"` instead of `{ "hash": "...", "quality": "flac" }`. Treat `400`/`422` runtime API responses before business logs as a body-shape problem to verify with real request logs.
+- `request()` serializes `options.body` once. Mobile strictly follows — it JSON-encodes whatever you pass, so a `JSON.stringify`'d payload double-wraps as a JSON string (e.g. `"{\"hash\":\"...\",\"quality\":\"flac\"}"`). Desktop is lenient — it sends a string body raw, papering over the wrong type, so the same `JSON.stringify`'d payload arrives as a plain JSON object (`{ "hash": "...", "quality": "flac" }`). Always pass `body` as the object, never `JSON.stringify` it yourself; otherwise mobile double-wraps and object-expecting backends reject it with `400`/`422` before any business log. Verified by wire capture 2026-07-28 (four requests, both platforms).
 
 For default workspace tasks, assume the desktop script model.

@@ -4,7 +4,7 @@ use crate::config::Config;
 use crate::error::AppError;
 use crate::repos::source::SourceRepo;
 
-const SCRIPT_VERSION: &str = "0.1.0";
+const SCRIPT_VERSION: &str = "0.1.1";
 
 pub struct ScriptService {
     config: Arc<Config>,
@@ -54,7 +54,7 @@ const httpPost = (url, body) => new Promise((resolve, reject) => {{
       'content-type': 'application/json',
       authorization: `Bearer ${{TOKEN}}`,
     }},
-    body: JSON.stringify(body),
+    body: body,
   }}, (err, resp) => {{
     if (err) return reject(err)
     try {{

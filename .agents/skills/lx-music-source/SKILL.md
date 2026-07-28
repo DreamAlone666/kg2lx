@@ -24,7 +24,7 @@ Put the request into one of these buckets and only read the minimum needed files
 - Treat the official docs as authoritative. If example scripts use extra qualities or fields, only reuse them when the current target version is known to support them.
 - Normalize `request()` callback payloads defensively. `resp.body` may already be an object, not always a JSON string.
 - Do not assume a backend `200` guarantees LX playback. Script-side parse mistakes and wrong return shapes can still make playback fail.
-- When debugging mobile-only proxy failures, verify the exact backend request body. `lx-music-mobile` may send `options.body` as a JSON string containing the actual JSON object, while desktop sends the object shape the backend expects.
+- Pass `request()` `body` as an object, not a `JSON.stringify`'d string, and tolerate the JSON-string-wrapped body shape in backends; see `references/contract.md` (Mobile Differences) for why.
 
 ## Implementation Flow
 1. Decide which source keys are needed: only use `kw`, `kg`, `tx`, `wy`, `mg`, and `local`.
