@@ -23,7 +23,7 @@ LX Music 的跨平台体验很好，我的歌单在上面同步，恰好我也�
 
 ## Docker Compose 一键部署（推荐）
 
-项目提供预构建的多架构 Docker 镜像，发布在 GitHub Container Registry。需要部署两个服务：对外提供管理 UI 和运行时 API 的 `kg2lx`，以及仅供 Compose 网络内部访问的 `KuGouMusicApi`。
+项目提供预构建的 `linux/amd64` Docker 镜像，发布在 GitHub Container Registry。需要部署两个服务：对外提供管理 UI 和运行时 API 的 `kg2lx`，以及仅供 Compose 网络内部访问的 `KuGouMusicApi`。
 
 在任意目录下准备一个 `compose.yaml`，可以复制下面的示例，按需修改：
 
@@ -43,7 +43,7 @@ services:
     restart: unless-stopped
 
   kg2lx:
-    image: ghcr.io/dreamalone666/kg2lx:v0.1.2
+    image: ghcr.io/dreamalone666/kg2lx:v0.1.3
     # 有独立部署的 KuGouMusicApi 时，才需要删除
     depends_on:
       - kugou-api
