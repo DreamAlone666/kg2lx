@@ -23,62 +23,64 @@ LX Music 的跨平台体验很好，我的歌单在上面同步，恰好我也�
 
 ## Docker Compose 一键部署（推荐）
 
-暂不提供构建好的 Docker 镜像，下面的 `compose.yaml` 会进行本地构建。
+项目提供预构建的多架构 Docker 镜像，发布在 GitHub Container Registry。需要部署两个服务：对外提供管理 UI 和运行时 API 的 `kg2lx`，以及仅供 Compose 网络内部访问的 `KuGouMusicApi`。
 
-需要部署两个服务：对外提供管理 UI 和运行时 API 的 `kg2lx`，以及仅供内网访问的 `KuGouMusicApi`。
+在任意目录下准备一个 `compose.yaml`，可以复制下面的示例，按需修改：
 
-1. **克隆仓库（含子模块）：**
-   ```bash
-   git clone --recursive https://github.com/your-repo/kg2lx.git
-   cd kg2lx
-   ```
-2. **在根目录准备 `compose.yaml`：**
-   ```yaml
-   services:
-     # 上游 API，如果你有独立部署的 KuGouMusicApi，可以删掉
-     kugou-api:
-       build:
-         context: ./KuGouMusicApi
-       environment:
-         # 必须为 lite 才能支持概念版接口
-         platform: lite
-         PORT: 3000
-       expose:
-         # 仅在 Compose 网络内暴露
-         - "3000"
-       restart: unless-stopped
+```yaml
+services:
+  # 上游 API。如果有独立部署的 KuGouMusicApi，可以删除此服务，
+  kugou-api:
+    image: ghcr.io/dreamalone666/kugou-music-api:45f31fefe97b
+    environment:
+      # 必须为 lite 才能支持概念版接口
+      platform: lite
+      HOST: 0.0.0.0
+      PORT: 3000
+    expose:
+      # 仅在 Compose 网络内暴露
+      - "3000"
+    restart: unless-stopped
 
-     kg2lx:
-       build:
-         context: .
-       depends_on:
-         - kugou-api
-       environment:
-         # 【必填】本服务的对外访问地址，用于生成 LX 脚本链接
-         PUBLIC_BASE_URL: http://your-server-host:8787
-         # 【必填】管理后台登录 Token，建议修改为强密码
-         ADMIN_TOKEN: change-me
-         # 指向上游 API 地址，当你有独立部署的 KuGouMusicApi时，才需要修改
-         KUGOU_API_BASE_URL: http://kugou-api:3000
-         # 监听地址
-         LISTEN_ADDR: 0.0.0.0:8787
-         # 数据目录
-         DATA_DIR: /data
-       ports:
-         - "8787:8787"
-       volumes:
-         # 持久化存储账号、音源及日志数据
-         - ./server-data:/data
-       restart: unless-stopped
-   ```
-4. **启动：**
-   ```bash
-   docker compose up -d --build
-   ```
+  kg2lx:
+    # 快速部署使用 latest，不放心兼容性可以换成精确版本号
+    image: ghcr.io/dreamalone666/kg2lx:latest
+    # 有独立部署的 KuGouMusicApi 时，才需要删除
+    depends_on:
+      - kugou-api
+    environment:
+      # 【必填】本服务的对外访问地址，用于生成 LX 脚本链接
+      PUBLIC_BASE_URL: http://your-server-host:8787
+      # 【必填】管理后台登录 Token，建议修改为强密码
+      ADMIN_TOKEN: change-me
+      # 指向上游 API 地址，有独立部署的 KuGouMusicApi时，才需要修改
+      KUGOU_API_BASE_URL: http://kugou-api:3000
+      # 监听地址
+      LISTEN_ADDR: 0.0.0.0:8787
+      # 数据目录
+      DATA_DIR: /data
+    ports:
+      - "8787:8787"
+    volumes:
+      # 持久化存储账号、音源及日志数据
+      - kg2lx-data:/data
+    restart: unless-stopped
+
+volumes:
+  kg2lx-data:
+```
+
+启动：
+
+```bash
+docker compose up -d
+```
+
+`kg2lx:latest` 会跟随最新稳定发布，`KuGouMusicApi` 使用对应源码 commit 的短 SHA 作为镜像 tag。
 
 ## 使用方法
 
-1. **访问管理后台：** 浏览器打开管理后台。
+1. **访问管理后台：** 浏览器打开管理后台（比如 `PUBLIC_BASE_URL`）。
 2. **连接后端：** 在 UI 界面输入您的 `ADMIN_TOKEN` 完成鉴权。
 3. **添加音源：** 进入“添加音源”页面，扫描二维码完成酷狗概念版账号绑定。
 4. **导入 LX Music：**

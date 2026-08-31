@@ -1,0 +1,84 @@
+name: Publish Docker images
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  KG2LX_IMAGE: ghcr.io/dreamalone666/kg2lx
+  KUGOU_IMAGE: ghcr.io/dreamalone666/kugou-music-api
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check upstream image
+        id: upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sha="$(git -C KuGouMusicApi rev-parse HEAD)"
+          tag="${sha:0:12}"
+          echo "KuGouMusicApi: $sha"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+          if docker buildx imagetools inspect "$KUGOU_IMAGE:$tag" >/dev/null 2>&1; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "Image already exists; skipping KuGouMusicApi build."
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "Image does not exist; building KuGouMusicApi."
+          fi
+
+      - name: Build and push kg2lx
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.KG2LX_IMAGE }}:${{ github.ref_name }}
+            ${{ env.KG2LX_IMAGE }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=kg2lx
+          cache-to: type=gha,mode=max,scope=kg2lx
+
+      - name: Build and push KuGouMusicApi
+        if: steps.upstream.outputs.build == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: ./KuGouMusicApi
+          file: ./KuGouMusicApi/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.KUGOU_IMAGE }}:${{ steps.upstream.outputs.tag }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=kugou-music-api
+          cache-to: type=gha,mode=max,scope=kugou-music-api
