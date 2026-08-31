@@ -43,8 +43,7 @@ services:
     restart: unless-stopped
 
   kg2lx:
-    # 快速部署使用 latest，不放心兼容性可以换成精确版本号
-    image: ghcr.io/dreamalone666/kg2lx:latest
+    image: ghcr.io/dreamalone666/kg2lx:v0.1.2
     # 有独立部署的 KuGouMusicApi 时，才需要删除
     depends_on:
       - kugou-api
@@ -76,7 +75,7 @@ volumes:
 docker compose up -d
 ```
 
-`kg2lx:latest` 会跟随最新稳定发布，`KuGouMusicApi` 使用对应源码 commit 的短 SHA 作为镜像 tag。
+`kg2lx` 与 `KuGouMusicApi` 使用兼容的版本组合。更新版本时，将 `kg2lx` 镜像替换为目标 release tag，并将 `KuGouMusicApi` 替换为该 release 兼容的短 commit tag。
 
 ## 使用方法
 
