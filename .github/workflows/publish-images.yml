@@ -22,9 +22,6 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
-
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -54,12 +51,50 @@ jobs:
             echo "Image does not exist; building KuGouMusicApi."
           fi
 
+      - name: Apply temporary KuGouMusicApi Dockerfile fix
+        if: steps.upstream.outputs.build == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("KuGouMusicApi/Dockerfile")
+          old = "RUN pnpm install --prod --frozen-lockfile"
+          new = (
+              "RUN printf '%s\\n' 'allowBuilds:' '  esbuild: true' > pnpm-workspace.yaml \\\n"
+              "    && pnpm install --prod --frozen-lockfile \\\n"
+              "    && rm pnpm-workspace.yaml"
+          )
+
+          text = path.read_text()
+          if old not in text:
+              raise SystemExit(f"Expected patch target not found: {path}")
+
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+      - name: Build and push KuGouMusicApi
+        if: steps.upstream.outputs.build == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: ./KuGouMusicApi
+          file: ./KuGouMusicApi/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.KUGOU_IMAGE }}:${{ steps.upstream.outputs.tag }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=kugou-music-api
+          cache-to: type=gha,mode=max,scope=kugou-music-api
+
       - name: Build and push kg2lx
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: |
             ${{ env.KG2LX_IMAGE }}:${{ github.ref_name }}
@@ -68,17 +103,3 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           cache-from: type=gha,scope=kg2lx
           cache-to: type=gha,mode=max,scope=kg2lx
-
-      - name: Build and push KuGouMusicApi
-        if: steps.upstream.outputs.build == 'true'
-        uses: docker/build-push-action@v7
-        with:
-          context: ./KuGouMusicApi
-          file: ./KuGouMusicApi/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ env.KUGOU_IMAGE }}:${{ steps.upstream.outputs.tag }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-          cache-from: type=gha,scope=kugou-music-api
-          cache-to: type=gha,mode=max,scope=kugou-music-api
