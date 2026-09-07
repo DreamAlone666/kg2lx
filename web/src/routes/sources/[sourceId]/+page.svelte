@@ -30,10 +30,37 @@
     await sourcesController.refreshSource(sourceId);
   }
 
-  function copyToClipboard(text: string) {
-    navigator.clipboard.writeText(text);
-    // In a real app we'd use toast
-    alert('已复制到剪贴板！');
+  type CopyState = 'idle' | 'copied' | 'failed';
+  let copyState = $state<CopyState>('idle');
+  let copyTimer: ReturnType<typeof setTimeout> | null = null;
+
+  async function copyToClipboard(text: string) {
+    let ok = false;
+
+    try {
+      // Clipboard API 仅在 HTTPS/localhost 下可用
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    } catch {
+      // 纯 HTTP 内网部署时降级到 execCommand
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      try {
+        ok = document.execCommand('copy');
+      } catch {
+        ok = false;
+      }
+      textarea.remove();
+    }
+
+    copyState = ok ? 'copied' : 'failed';
+    if (copyTimer) clearTimeout(copyTimer);
+    copyTimer = setTimeout(() => (copyState = 'idle'), 2000);
   }
 
   const accountStatusMap: Record<string, string> = {
@@ -114,8 +141,12 @@
             <div class="flex-1 rounded-md border bg-muted px-3 py-2 font-mono text-xs truncate">
               {source.script_url}
             </div>
-            <Button size="sm" onclick={() => copyToClipboard(source.script_url)}>
-              复制
+            <Button
+              size="sm"
+              variant={copyState === 'failed' ? 'destructive' : 'outline'}
+              onclick={() => copyToClipboard(source.script_url)}
+            >
+              {copyState === 'copied' ? '已复制 ✓' : copyState === 'failed' ? '复制失败,请手动复制' : '复制'}
             </Button>
           </div>
         </div>
