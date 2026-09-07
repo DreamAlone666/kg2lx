@@ -41,7 +41,7 @@
 		variant?: Variant;
 		size?: Size;
 		href?: string;
-		ref?: any;
+		ref?: HTMLButtonElement | HTMLAnchorElement | null;
 	};
 
 	let {

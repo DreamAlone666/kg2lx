@@ -11,7 +11,8 @@ class QrLoginController {
   
   boundSource = $state<QrLoginPollResponse & { status: 'bound' } | null>(null);
 
-  private pollInterval: any = null;
+  private pollInterval: ReturnType<typeof setInterval> | null = null;
+  private pollInflight = false;
   private abortController: AbortController | null = null;
 
   async start() {
@@ -68,32 +69,36 @@ class QrLoginController {
 
   private beginPolling() {
     if (!this.sessionId) return;
-    
-    this.pollInterval = setInterval(async () => {
-      if (!this.sessionId) return;
-      if (!this.abortController) this.abortController = new AbortController();
-      
-      try {
-        const res = await adminSession.api.pollQrLogin(this.sessionId, this.abortController.signal);
-        this.status = res.status;
-        
-        if (res.status === 'bound') {
-          this.boundSource = res;
-          this.stop();
-        } else if (res.status === 'expired' || res.status === 'failed') {
-          this.message = (res as any).message || '会话已终止';
-          this.stop();
-        }
-      } catch (e: any) {
-        if (e.name === 'AbortError') return;
-        if (handleAuthError(e)) return;
-        if (e.status === 404) {
-          this.status = 'failed';
-          this.message = '会话未找到';
-          this.stop();
-        }
+    this.pollInterval = setInterval(() => this.poll(), 2000);
+  }
+
+  private async poll() {
+    if (!this.sessionId || this.pollInflight) return;
+    this.pollInflight = true;
+    if (!this.abortController) this.abortController = new AbortController();
+
+    try {
+      const res = await adminSession.api.pollQrLogin(this.sessionId, this.abortController.signal);
+      this.status = res.status;
+
+      if (res.status === 'bound') {
+        this.boundSource = res;
+        this.stop();
+      } else if (res.status === 'expired' || res.status === 'failed') {
+        this.message = res.message || '会话已终止';
+        this.stop();
       }
-    }, 2000);
+    } catch (e: any) {
+      if (e.name === 'AbortError') return;
+      if (handleAuthError(e)) return;
+      if (e.status === 404) {
+        this.status = 'failed';
+        this.message = '会话未找到';
+        this.stop();
+      }
+    } finally {
+      this.pollInflight = false;
+    }
   }
 }
 

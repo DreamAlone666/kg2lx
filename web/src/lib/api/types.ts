@@ -80,11 +80,6 @@ export type RefreshSourceResponse = {
   updated_at: number;
 };
 
-export type SessionConfig = {
-  serverBaseUrl: string;
-  adminToken: string;
-};
-
 export type ApiErrorPayload = {
   code?: string;
   message?: string;
