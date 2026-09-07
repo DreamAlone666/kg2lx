@@ -90,13 +90,19 @@
     <div class="flex h-64 items-center justify-center">
       <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
     </div>
-  {:else if sourcesController.error}
+  {:else if sourcesController.error && !sourcesController.currentSource}
     <div class="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-destructive">
       <p class="font-semibold">加载音源出错</p>
       <p class="text-sm">{sourcesController.error}</p>
     </div>
   {:else if sourcesController.currentSource}
     {@const source = sourcesController.currentSource}
+    {#if sourcesController.error}
+      <div class="mb-4 flex items-center justify-between gap-4 rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-destructive">
+        <p class="text-sm">{sourcesController.error}</p>
+        <Button variant="ghost" size="sm" onclick={() => sourcesController.clearError()}>关闭</Button>
+      </div>
+    {/if}
     <Card>
       <CardHeader class="border-b">
         <div class="flex items-center justify-between">

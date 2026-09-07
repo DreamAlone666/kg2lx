@@ -2,8 +2,8 @@
   import { adminSession } from '$lib/state/admin-session.svelte';
   import { goto } from '$app/navigation';
   import { AdminApi } from '$lib/api/admin';
+  import { AdminApiError } from '$lib/api/errors';
   import { HttpClient } from '$lib/api/http';
-  import { dev } from '$app/environment';
   import { Button, Input, Card, CardHeader, CardContent } from '$lib/components/ui';
 
   let baseUrl = $state(adminSession.serverBaseUrl || '');
@@ -20,17 +20,32 @@
       const serverBaseUrl = baseUrl.trim().replace(/\/$/, '');
       const adminToken = token.trim();
       const api = new AdminApi(new HttpClient({ baseUrl: serverBaseUrl, adminToken }));
+      const signal = AbortSignal.timeout(8000);
 
-      await api.healthz();
-      await api.listSources();
+      await api.healthz(signal);
+      await api.listSources(signal);
 
       adminSession.setSession(serverBaseUrl, adminToken);
       goto('/sources');
     } catch (e: any) {
-      error = e.message || '连接失败';
+      error = connectErrorMessage(e);
     } finally {
       loading = false;
     }
+  }
+
+  function connectErrorMessage(e: unknown): string {
+    if (e instanceof DOMException && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
+      return '连接超时，请确认后端服务正在运行。';
+    }
+    if (e instanceof AdminApiError && e.status === 401) {
+      return '管理员 Token 不正确（401）。';
+    }
+    if (e instanceof TypeError) {
+      // fetch 网络层失败统一抛 TypeError, 原始信息 (如 "Failed to fetch") 对用户无意义
+      return '无法连接到服务器：请确认地址以 http(s):// 开头、后端已启动，且浏览器可以访问（跨域 / 网络问题也会导致此错误）。';
+    }
+    return (e as Error)?.message || '连接失败';
   }
 </script>
 

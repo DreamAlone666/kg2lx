@@ -1,4 +1,4 @@
-import { adminSession } from '../../state/admin-session.svelte';
+import { adminSession, handleAuthError } from '../../state/admin-session.svelte';
 import type { SourceSummary, SourceDetail } from '../../api/types';
 
 class SourcesController {
@@ -20,6 +20,7 @@ class SourcesController {
       this.sources = res.items;
     } catch (e: any) {
       if (e.name === 'AbortError') return;
+      if (handleAuthError(e)) return;
       this.error = e.message;
     } finally {
       this.loading = false;
@@ -35,6 +36,7 @@ class SourcesController {
       this.currentSource = await adminSession.api.getSource(sourceId, this.abortController.signal);
     } catch (e: any) {
       if (e.name === 'AbortError') return;
+      if (handleAuthError(e)) return;
       this.error = e.message;
     } finally {
       this.loading = false;
@@ -49,10 +51,14 @@ class SourcesController {
       await this.loadSource(sourceId);
       await this.loadSources();
     } catch (e: any) {
-      this.error = e.message;
+      if (!handleAuthError(e)) this.error = e.message;
     } finally {
       this.refreshing[sourceId] = false;
     }
+  }
+
+  clearError() {
+    this.error = null;
   }
 
   stop() {

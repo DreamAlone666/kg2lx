@@ -1,4 +1,4 @@
-import { adminSession } from '../../state/admin-session.svelte';
+import { adminSession, handleAuthError } from '../../state/admin-session.svelte';
 import type { QrLoginStartResponse, QrLoginPollResponse, LoginSessionStatus } from '../../api/types';
 
 class QrLoginController {
@@ -29,6 +29,7 @@ class QrLoginController {
       this.beginPolling();
     } catch (e: any) {
       if (e.name === 'AbortError') return;
+      if (handleAuthError(e)) return;
       this.status = 'failed';
       this.message = e.message;
     }
@@ -53,6 +54,18 @@ class QrLoginController {
     }
   }
 
+  /** 清空全部会话状态, 回到未开始的干净界面 */
+  reset() {
+    this.stop();
+    this.sessionId = null;
+    this.status = 'pending';
+    this.qrBase64 = null;
+    this.qrUrl = null;
+    this.expiresAt = null;
+    this.message = null;
+    this.boundSource = null;
+  }
+
   private beginPolling() {
     if (!this.sessionId) return;
     
@@ -73,6 +86,7 @@ class QrLoginController {
         }
       } catch (e: any) {
         if (e.name === 'AbortError') return;
+        if (handleAuthError(e)) return;
         if (e.status === 404) {
           this.status = 'failed';
           this.message = '会话未找到';

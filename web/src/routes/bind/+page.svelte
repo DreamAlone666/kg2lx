@@ -17,6 +17,9 @@
     const sessionId = page.url.searchParams.get('session_id');
     if (sessionId) {
       qrLoginController.resume(sessionId);
+    } else {
+      // 单例 controller, 上次绑定的成功/失败状态需显式清理
+      qrLoginController.reset();
     }
   });
 
