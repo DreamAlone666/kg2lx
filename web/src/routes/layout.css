@@ -1,1 +1,33 @@
 @import 'tailwindcss';
+
+/*
+ * shadcn 语义化主题 token（zinc 色板，仅亮色方案）。
+ * 全站语义类（bg-primary / text-muted-foreground / border-input ...）均解析自此处；
+ * 后续定制视觉风格只需调整本块，无需改动组件类名。
+ */
+@theme {
+	--color-background: #ffffff;
+	--color-foreground: #09090b;
+
+	--color-card: #ffffff;
+	--color-card-foreground: #09090b;
+
+	--color-primary: #18181b;
+	--color-primary-foreground: #fafafa;
+
+	--color-secondary: #f4f4f5;
+	--color-secondary-foreground: #18181b;
+
+	--color-muted: #f4f4f5;
+	--color-muted-foreground: #71717a;
+
+	--color-accent: #f4f4f5;
+	--color-accent-foreground: #18181b;
+
+	--color-destructive: #dc2626;
+	--color-destructive-foreground: #fafafa;
+
+	--color-border: #e4e4e7;
+	--color-input: #e4e4e7;
+	--color-ring: #09090b;
+}
