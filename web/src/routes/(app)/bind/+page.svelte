@@ -1,145 +1,77 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
-  import { page } from '$app/state';
-  import { qrLoginController } from '$lib/features/qr-login/controller.svelte';
-  import { goto } from '$app/navigation';
-  import { Button, Badge, Card, CardHeader, CardContent } from '$lib/components/ui';
+	import { onDestroy, onMount } from 'svelte';
+	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
+	import QrLoginPanel from '$lib/components/qr-login/QrLoginPanel.svelte';
+	import { qrLoginController } from '$lib/features/qr-login/controller.svelte';
 
-  let redirectTimeout: ReturnType<typeof setTimeout> | null = null;
+	/** 绑定成功后停留片刻再跳转，让用户来得及看清结果。 */
+	const REDIRECT_DELAY_MS = 3000;
 
-  // 认证守卫已上提到 (app)/+layout.ts，页面只负责会话恢复
-  onMount(() => {
-    const sessionId = page.url.searchParams.get('session_id');
-    if (sessionId) {
-      qrLoginController.resume(sessionId);
-    } else {
-      // 单例 controller, 上次绑定的成功/失败状态需显式清理
-      qrLoginController.reset();
-    }
-  });
+	let redirectTimer: ReturnType<typeof setTimeout> | null = null;
 
-  onDestroy(() => {
-    qrLoginController.stop();
-    if (redirectTimeout) {
-      clearTimeout(redirectTimeout);
-      redirectTimeout = null;
-    }
-  });
+	// 认证守卫已上提到 (app)/+layout.ts，页面只负责会话恢复与 URL 同步
+	onMount(() => {
+		const sessionId = page.url.searchParams.get('session_id');
+		if (sessionId) {
+			qrLoginController.resume(sessionId);
+		} else {
+			// 控制器是单例，上一次绑定的终态需显式清理
+			qrLoginController.reset();
+		}
+	});
 
-  async function startNewLogin() {
-    await qrLoginController.start();
-    if (qrLoginController.sessionId) {
-      const url = new URL(window.location.href);
-      url.searchParams.set('session_id', qrLoginController.sessionId);
-      window.history.replaceState({}, '', url);
-    }
-  }
+	onDestroy(() => {
+		qrLoginController.stop();
+		clearRedirectTimer();
+	});
 
-  $effect(() => {
-    const status = qrLoginController.status;
-    const terminal = status === 'bound' || status === 'expired' || status === 'failed';
+	async function startNewLogin() {
+		await qrLoginController.start();
+		if (!qrLoginController.sessionId) return;
 
-    if (!terminal) return;
+		// 会话写进 URL，刷新页面后仍能续接同一个会话
+		const url = new URL(window.location.href);
+		url.searchParams.set('session_id', qrLoginController.sessionId);
+		window.history.replaceState({}, '', url);
+	}
 
-    const url = new URL(window.location.href);
-    if (url.searchParams.has('session_id')) {
-      url.searchParams.delete('session_id');
-      window.history.replaceState({}, '', url);
-    }
+	function clearRedirectTimer() {
+		if (redirectTimer !== null) {
+			clearTimeout(redirectTimer);
+			redirectTimer = null;
+		}
+	}
 
-    if (redirectTimeout) {
-      clearTimeout(redirectTimeout);
-      redirectTimeout = null;
-    }
+	/**
+	 * 会话进入终态时收尾：清掉 URL 里的 session_id（避免刷新后去轮询一个已结束的会话），
+	 * 绑定成功则稍后跳转到音源详情。
+	 */
+	$effect(() => {
+		if (!qrLoginController.isTerminal) return;
 
-    if (status === 'bound' && qrLoginController.boundSource) {
-      redirectTimeout = setTimeout(() => {
-        const sourceId = qrLoginController.boundSource?.source.source_id;
-        if (sourceId) goto(`/sources/${sourceId}`);
-      }, 3000);
+		const url = new URL(window.location.href);
+		if (url.searchParams.has('session_id')) {
+			url.searchParams.delete('session_id');
+			window.history.replaceState({}, '', url);
+		}
 
-      return () => {
-        if (redirectTimeout) {
-          clearTimeout(redirectTimeout);
-          redirectTimeout = null;
-        }
-      };
-    }
-  });
+		clearRedirectTimer();
 
-  const statusMap: Record<string, string> = {
-    pending: '准备中',
-    waiting_scan: '等待扫码',
-    waiting_confirm: '等待确认',
-    authorized: '已授权',
-    bound: '绑定成功',
-    expired: '已过期',
-    failed: '失败'
-  };
+		const bound = qrLoginController.boundSource;
+		if (bound) {
+			const sourceId = bound.source.source_id;
+			redirectTimer = setTimeout(() => goto(`/sources/${sourceId}`), REDIRECT_DELAY_MS);
+		}
+
+		return clearRedirectTimer;
+	});
 </script>
 
 <svelte:head>
-  <title>绑定酷狗账号 | kg2lx</title>
+	<title>绑定酷狗账号 | kg2lx</title>
 </svelte:head>
 
 <div class="mx-auto max-w-md">
-  <div class="mb-6">
-    <Button variant="ghost" size="sm" href="/sources">
-      &larr; 返回音源列表
-    </Button>
-  </div>
-
-  <Card class="text-center">
-    <CardHeader>
-      <h1 class="text-2xl font-bold">绑定酷狗账号</h1>
-      <p class="text-muted-foreground text-sm">请使用酷狗概念版 App 扫码。</p>
-    </CardHeader>
-
-    <CardContent class="space-y-6">
-      {#if qrLoginController.status === 'pending' && !qrLoginController.sessionId}
-        <Button class="w-full" onclick={startNewLogin}>
-          获取二维码
-        </Button>
-      {:else}
-        <div class="flex flex-col items-center justify-center p-6 border rounded-xl bg-slate-50">
-          {#if qrLoginController.qrBase64}
-            <div class="bg-white p-4 rounded-lg shadow-sm">
-              <img src={qrLoginController.qrBase64} alt="二维码" class="w-64 h-64" />
-            </div>
-          {:else if qrLoginController.qrUrl}
-            <div class="w-64 h-64 flex items-center justify-center bg-muted rounded-lg text-xs break-all p-4">
-              {qrLoginController.qrUrl}
-            </div>
-          {:else if qrLoginController.status === 'pending'}
-             <div class="w-64 h-64 flex items-center justify-center">
-               <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-             </div>
-          {/if}
-          
-          <div class="mt-6">
-            <Badge variant="secondary" class="px-3 py-1">
-              状态: {statusMap[qrLoginController.status] || qrLoginController.status}
-            </Badge>
-          </div>
-        </div>
-
-        {#if qrLoginController.status === 'bound'}
-          <div class="rounded-lg bg-green-50 p-4 text-green-800 border border-green-200">
-            <p class="font-bold">绑定成功！</p>
-            <p class="text-sm">正在跳转至音源详情...</p>
-          </div>
-        {/if}
-
-        {#if qrLoginController.message}
-          <div class="rounded-lg bg-destructive/10 p-4 text-destructive text-sm border border-destructive/20">
-            {qrLoginController.message}
-          </div>
-        {/if}
-
-        <Button variant="link" size="sm" onclick={startNewLogin} class="text-muted-foreground">
-          重置并重试
-        </Button>
-      {/if}
-    </CardContent>
-  </Card>
+	<QrLoginPanel onRestart={startNewLogin} />
 </div>
