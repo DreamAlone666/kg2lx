@@ -146,6 +146,27 @@
 }
 
 /*
+ * 新行进入：高亮由强调色柔和底衰减至透明，用于日志这类实时追加的列表。
+ *
+ * 刻意暴露为全局关键帧，由组件以内联 animation 引用，而不是定义组件级类名：
+ * 类名若只出现在 JS 字符串里，Svelte 的作用域样式可能把它判定为未使用而裁剪。
+ * 内联 animation 不是 !important，因此仍会被下面的减弱动态规则覆盖。
+ */
+@keyframes kg2lx-row-flash {
+	from {
+		background-color: var(--color-primary-soft);
+		opacity: 0;
+	}
+	40% {
+		opacity: 1;
+	}
+	to {
+		background-color: transparent;
+		opacity: 1;
+	}
+}
+
+/*
  * 减弱动态偏好：全局降级。
  * 注意此块会把 animate-spin 一并压平，因此加载指示不得只依赖旋转动画，
  * 必须保留静态可辨识形态（骨架屏 / 静态圆点）。

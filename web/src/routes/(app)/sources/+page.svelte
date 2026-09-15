@@ -1,88 +1,95 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { sourcesController } from '$lib/features/sources/controller.svelte';
-  import { Button, Badge, Card, CardHeader, CardContent } from '$lib/components/ui';
+	import { onMount } from 'svelte';
+	import { Button, Card, Skeleton } from '$lib/components/ui';
+	import { toneSurfaceClass } from '$lib/components/ui/tone-classes.js';
+	import SourceGrid from '$lib/components/sources/SourceGrid.svelte';
+	import { sourcesController } from '$lib/features/sources/controller.svelte';
 
-  // 认证守卫已上提到 (app)/+layout.ts，页面只负责取数
-  onMount(() => {
-    sourcesController.loadSources();
-  });
+	// 认证守卫已上提到 (app)/+layout.ts，页面只负责取数与状态编排
+	onMount(() => sourcesController.loadSources());
 
-  function formatDate(timestamp: number) {
-    return new Date(timestamp * 1000).toLocaleString();
-  }
-
-  const providerMap: Record<string, string> = {
-    kugou_lite: '酷狗概念版'
-  };
+	const skeletonSlots = [0, 1, 2];
 </script>
 
 <svelte:head>
-  <title>音源管理 | kg2lx</title>
+	<title>音源管理 | kg2lx</title>
 </svelte:head>
 
-<div>
-  <div class="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-    <div>
-      <h1 class="text-3xl font-bold tracking-tight">音源管理</h1>
-      <p class="text-muted-foreground">管理已绑定的音乐账号。</p>
-    </div>
-    <div class="flex items-center gap-2">
-      <Button variant="outline" onclick={() => sourcesController.loadSources()}>
-        刷新列表
-      </Button>
-      <Button href="/bind">
-        添加音源
-      </Button>
-    </div>
-  </div>
+<div class="space-y-6">
+	<header class="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+		<div>
+			<h1 class="text-heading tracking-tight">音源管理</h1>
+			<p class="mt-1 text-sm text-muted-foreground">
+				管理已绑定的音乐账号，并获取导入洛雪音乐的脚本链接。
+			</p>
+		</div>
 
-  {#if sourcesController.loading && sourcesController.sources.length === 0}
-    <div class="flex h-64 items-center justify-center">
-      <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-    </div>
-  {:else if sourcesController.error}
-    <div class="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-destructive">
-      <p class="font-semibold">加载音源出错</p>
-      <p class="text-sm">{sourcesController.error}</p>
-      <Button variant="outline" size="sm" class="mt-4" onclick={() => sourcesController.loadSources()}>
-        重试
-      </Button>
-    </div>
-  {:else if sourcesController.sources.length === 0}
-    <Card class="flex h-64 flex-col items-center justify-center border-dashed">
-      <p class="text-muted-foreground">未发现音源。</p>
-      <Button variant="link" href="/bind">
-        绑定你的第一个账号
-      </Button>
-    </Card>
-  {:else}
-    <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-      {#each sourcesController.sources as source (source.source_id)}
-        <a href="/sources/{source.source_id}">
-          <Card class="h-full transition-shadow hover:shadow-md">
-            <CardHeader class="pb-2">
-              <div class="flex items-center justify-between">
-                <Badge variant="secondary">
-                  {providerMap[source.provider] || source.provider}
-                </Badge>
-                {#if source.vip_active}
-                  <Badge variant="default" class="bg-yellow-500 hover:bg-yellow-600">
-                    VIP
-                  </Badge>
-                {/if}
-              </div>
-              <h2 class="mt-2 font-bold text-lg truncate">{source.userid}</h2>
-            </CardHeader>
-            <CardContent>
-              <p class="text-xs font-mono text-muted-foreground truncate">ID: {source.source_id}</p>
-              <div class="mt-4 text-xs text-muted-foreground">
-                更新于: {formatDate(source.updated_at)}
-              </div>
-            </CardContent>
-          </Card>
-        </a>
-      {/each}
-    </div>
-  {/if}
+		<div class="flex shrink-0 items-center gap-2">
+			<Button
+				variant="outline"
+				size="sm"
+				disabled={sourcesController.loading}
+				onclick={() => sourcesController.loadSources()}
+			>
+				刷新列表
+			</Button>
+			<Button href="/bind">添加音源</Button>
+		</div>
+	</header>
+
+	{#if sourcesController.loading && sourcesController.sources.length === 0}
+		<!-- 骨架而非转圈：减弱动态偏好下仍能静态表达内容将出现的位置 -->
+		<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+			{#each skeletonSlots as slot (slot)}
+				<Card class="p-6">
+					<Skeleton class="h-5 w-20" />
+					<Skeleton class="mt-4 h-6 w-32" />
+					<Skeleton class="mt-4 h-3 w-full" />
+					<Skeleton class="mt-2 h-3 w-24" />
+				</Card>
+			{/each}
+		</div>
+	{:else if sourcesController.sources.length === 0}
+		{#if sourcesController.error}
+			<div class="rounded-xl border p-5 {toneSurfaceClass('danger')}" role="alert">
+				<p class="font-medium">加载音源失败</p>
+				<p class="mt-1 text-sm leading-relaxed opacity-90">{sourcesController.error}</p>
+				<Button
+					variant="outline"
+					size="sm"
+					class="mt-4"
+					onclick={() => sourcesController.loadSources()}
+				>
+					重试
+				</Button>
+			</div>
+		{:else}
+			<Card
+				class="flex flex-col items-center justify-center gap-1 border-dashed px-6 py-16 text-center"
+			>
+				<p class="font-medium">还没有绑定任何音源</p>
+				<p class="mt-1 max-w-sm text-sm leading-relaxed text-muted-foreground">
+					绑定酷狗概念版账号后，这里会出现可直接导入洛雪音乐的脚本链接。
+				</p>
+				<Button href="/bind" class="mt-5">绑定第一个账号</Button>
+			</Card>
+		{/if}
+	{:else}
+		<!-- 已有数据时错误降级为横幅，不把用户已经看到的内容替换掉 -->
+		{#if sourcesController.error}
+			<div
+				class="flex items-start justify-between gap-4 rounded-xl border p-4 {toneSurfaceClass(
+					'danger'
+				)}"
+				role="alert"
+			>
+				<p class="text-sm leading-relaxed">{sourcesController.error}</p>
+				<Button variant="ghost" size="sm" onclick={() => sourcesController.clearError()}>
+					关闭
+				</Button>
+			</div>
+		{/if}
+
+		<SourceGrid sources={sourcesController.sources} />
+	{/if}
 </div>

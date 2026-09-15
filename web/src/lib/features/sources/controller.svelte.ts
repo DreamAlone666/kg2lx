@@ -43,15 +43,21 @@ class SourcesController {
     }
   }
 
-  async refreshSource(sourceId: string) {
-    if (this.refreshing[sourceId]) return;
+  /**
+   * 强制刷新账号状态。
+   * @returns 是否成功，供调用方决定给出成功还是失败反馈。
+   */
+  async refreshSource(sourceId: string): Promise<boolean> {
+    if (this.refreshing[sourceId]) return false;
     this.refreshing[sourceId] = true;
     try {
       await adminSession.api.refreshSource(sourceId);
       await this.loadSource(sourceId);
       await this.loadSources();
+      return true;
     } catch (e: any) {
       if (!handleAuthError(e)) this.error = e.message;
+      return false;
     } finally {
       this.refreshing[sourceId] = false;
     }

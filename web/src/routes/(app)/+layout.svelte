@@ -32,7 +32,14 @@
 	});
 </script>
 
-<header class="sticky top-0 z-40 border-b border-border/70 bg-background/80 backdrop-blur-md">
+<!--
+	view-transition-name 让顶栏在页面过渡中保持自身（而非参与根节点交叉淡入），
+	否则常驻导航会随每次导航闪一下。
+-->
+<header
+	class="sticky top-0 z-40 border-b border-border/70 bg-background/80 backdrop-blur-md"
+	style="view-transition-name: app-header"
+>
 	<div class="mx-auto flex h-14 max-w-5xl items-center gap-3 px-4 sm:gap-4 sm:px-6">
 		<a href="/sources" class="flex shrink-0 items-center gap-2" aria-label="kg2lx 首页">
 			<span
