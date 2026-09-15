@@ -5,7 +5,9 @@
 	import { usePageVisible } from '$lib/hooks/use-page-visible.svelte';
 	import {
 		formatClockTime,
+		formatDateTime,
 		formatLatency,
+		formatLogTime,
 		labelOf,
 		qualityTone,
 		requestOutcomeTone,
@@ -43,6 +45,23 @@
 	function rowFlashStyle(isNew: boolean) {
 		return isNew ? `animation: ${ROW_FLASH}` : undefined;
 	}
+
+	/**
+	 * 耗时列：0 不是「很快」，而是「没测到」。
+	 *
+	 * 服务端在「失败发生在发出请求之前」的两条路径（ensure_dfid / refresh_login 失败）
+	 * 写的是占位 0，而真实的上游耗时也会向下取整成 0。渲染成 `0ms` 会被读作「极快」，
+	 * 还会与成功行的 2ms 混为一谈——一个没有被测量过的值被显示成了测量结果。
+	 * 统一显示 `—`：既不为未测量的值背书，也不丢掉 30ms / 86ms 这类真实测量。
+	 */
+	function latencyText(log: RuntimeLogListItem): string {
+		return log.latency_ms > 0 ? formatLatency(log.latency_ms) : '—';
+	}
+
+	function latencyTitle(log: RuntimeLogListItem): string | undefined {
+		return log.latency_ms > 0 ? undefined : '未记录到耗时';
+	}
+
 
 	// untrack：轮询启停会写入 controller 状态，不应成为本 effect 的依赖而自触发
 	$effect(() => {
@@ -270,7 +289,12 @@
 							<th class="px-4 py-2.5 font-medium">歌曲信息</th>
 							<th class="w-28 px-4 py-2.5 font-medium">音质</th>
 							<th class="w-20 px-4 py-2.5 font-medium">状态</th>
-							<th class="w-24 px-4 py-2.5 font-medium">时间</th>
+							<!--
+								时间列按最宽形态取档：跨天时是 `MM-DD HH:mm:ss` 共 14 字符，
+								12px 下约 94px，加上左右 px-4 需要 126px，故取 w-36(144px)。
+								此前按当天的 8 字符反推出 w-24(96px)，跨天行会溢出到延迟列。
+							-->
+							<th class="w-36 px-4 py-2.5 font-medium">时间</th>
 							<th class="w-20 px-4 py-2.5 font-medium">延迟</th>
 							<th class="w-40 px-4 py-2.5 font-medium lg:w-56">诊断</th>
 						</tr>
@@ -287,11 +311,17 @@
 								</td>
 								<td class="px-4 py-2.5">{@render qualityCell(log)}</td>
 								<td class="px-4 py-2.5">{@render outcomeBadge(log)}</td>
-								<td class="tabular px-4 py-2.5 whitespace-nowrap text-muted-foreground">
-									{formatClockTime(log.created_at)}
+								<td
+									class="tabular px-4 py-2.5 whitespace-nowrap text-muted-foreground"
+									title={formatDateTime(log.created_at)}
+								>
+									{formatLogTime(log.created_at)}
 								</td>
-								<td class="tabular px-4 py-2.5 whitespace-nowrap font-mono">
-									{formatLatency(log.latency_ms)}
+								<td
+									class="tabular px-4 py-2.5 whitespace-nowrap font-mono"
+									title={latencyTitle(log)}
+								>
+									{latencyText(log)}
 								</td>
 								<td class="px-4 py-2.5">
 									<div class="space-y-1">
@@ -324,11 +354,17 @@
 
 						<div class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
 							{@render qualityCell(log)}
-							<span class="tabular text-caption text-muted-foreground">
-								{formatClockTime(log.created_at)}
+							<span
+								class="tabular text-caption text-muted-foreground"
+								title={formatDateTime(log.created_at)}
+							>
+								{formatLogTime(log.created_at)}
 							</span>
-							<span class="tabular font-mono text-caption text-muted-foreground">
-								{formatLatency(log.latency_ms)}
+							<span
+								class="tabular font-mono text-caption text-muted-foreground"
+								title={latencyTitle(log)}
+							>
+								{latencyText(log)}
 							</span>
 						</div>
 

@@ -36,6 +36,28 @@ export function formatClockTime(ts: number | null | undefined): string {
 }
 
 /**
+ * 日志行的时刻：当天只给 `HH:mm:ss`，跨天时补 `MM-DD`。
+ *
+ * 运行时日志是**跨天混排**的：线上 20 行窗口实测横跨 2026-05 ~ 2026-09。
+ * 只显示时分秒会让「21:14 → 14:50」读起来像同一天的几小时，实际相隔四个月，
+ * 时间列于是从「排序依据」退化成了错误信息——用户会把四个月前的失败当成刚发生的。
+ *
+ * 当天不补日期是为了保住 8 字符的紧凑宽度（绝大多数行都是当天），跨天才加宽到
+ * 14 字符。精确到年仍可在 title 里读到（见 LogsPanel），不必为长尾牺牲常态列宽。
+ */
+export function formatLogTime(ts: number | null | undefined, now: number = Date.now()): string {
+	const clock = formatClockTime(ts);
+	if (ts === null || ts === undefined || !Number.isFinite(ts)) return clock;
+	const d = new Date(ts * 1000);
+	const t = new Date(now);
+	const sameDay =
+		d.getFullYear() === t.getFullYear() &&
+		d.getMonth() === t.getMonth() &&
+		d.getDate() === t.getDate();
+	return sameDay ? clock : `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${clock}`;
+}
+
+/**
  * 延迟毫秒 → 紧凑文本。超过 1 秒改用秒为单位，
  * 避免 4 位以上的数字挤占列宽、破坏表格的纵向扫读。
  */
