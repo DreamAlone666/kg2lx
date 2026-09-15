@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
-	import { goto } from '$app/navigation';
+	import { goto, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import QrLoginPanel from '$lib/components/qr-login/QrLoginPanel.svelte';
 	import { qrLoginController } from '$lib/features/qr-login/controller.svelte';
@@ -30,10 +30,12 @@
 		await qrLoginController.start();
 		if (!qrLoginController.sessionId) return;
 
-		// 会话写进 URL，刷新页面后仍能续接同一个会话
+		// 会话写进 URL，刷新页面后仍能续接同一个会话。
+		// 必须用 $app/navigation 的 replaceState：直接调 history.replaceState 会
+		// 绕过 SvelteKit 的路由状态，污染后续导航（dev 下会给出明确告警）。
 		const url = new URL(window.location.href);
 		url.searchParams.set('session_id', qrLoginController.sessionId);
-		window.history.replaceState({}, '', url);
+		replaceState(url, {});
 	}
 
 	function clearRedirectTimer() {
@@ -53,7 +55,7 @@
 		const url = new URL(window.location.href);
 		if (url.searchParams.has('session_id')) {
 			url.searchParams.delete('session_id');
-			window.history.replaceState({}, '', url);
+			replaceState(url, {});
 		}
 
 		clearRedirectTimer();

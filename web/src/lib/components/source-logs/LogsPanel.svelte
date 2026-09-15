@@ -31,6 +31,15 @@
 	/** 新行高亮：关键帧定义在 layout.css，以内联 animation 引用以免被作用域样式裁剪。 */
 	const ROW_FLASH = `kg2lx-row-flash 900ms ${EASE_OUT_SOFT}`;
 
+	/**
+	 * 状态列只放「成功 / 失败」两个短标签。
+	 *
+	 * 错误码曾经直接塞进这个胶囊，但 UPSTREAM_REQUEST_FAILED 这类长码需要约 138px，
+	 * 远超 96px 的列宽；胶囊被压缩后文字会溢出到相邻的时间列，造成重叠。
+	 * 教训是信息要按**列宽**分配而不是按重要性堆放：错误码与错误原因因此移到
+	 * 更宽的「诊断」列，状态列只保留可一眼扫读的成败。
+	 */
+
 	function rowFlashStyle(isNew: boolean) {
 		return isNew ? `animation: ${ROW_FLASH}` : undefined;
 	}
@@ -60,32 +69,37 @@
 {/snippet}
 
 {#snippet qualityCell(log: RuntimeLogListItem)}
-	<StatusBadge tone={qualityTone(log.requested_quality)} class="font-mono">
+	<!--
+		max-w-full + truncate 是对未知音质串的防御：后端新增更长的取值时，
+		它会在本列内显示省略号，而不是像错误码那样顶出边界压到邻列。
+		title 保留完整取值，信息不丢失。
+	-->
+	<StatusBadge
+		tone={qualityTone(log.requested_quality)}
+		class="max-w-full truncate font-mono"
+		title={log.requested_quality}
+	>
 		{log.requested_quality}
 	</StatusBadge>
 {/snippet}
 
 {#snippet outcomeBadge(log: RuntimeLogListItem)}
 	<StatusBadge tone={requestOutcomeTone(log.ok)} class="font-mono">
-		{log.ok ? 'OK' : log.error_code || 'ERR'}
+		{log.ok ? 'OK' : 'ERR'}
 	</StatusBadge>
 {/snippet}
 
-{#snippet statusCell(log: RuntimeLogListItem)}
-	<div class="flex flex-col items-start gap-1">
-		{@render outcomeBadge(log)}
-		{#if !log.ok && log.error}
-			<span class="max-w-32 truncate text-caption text-danger" title={log.error}>{log.error}</span>
-		{/if}
-	</div>
-{/snippet}
-
-{#snippet diagCell(log: RuntimeLogListItem)}
+{#snippet diagMeta(log: RuntimeLogListItem)}
 	<div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground">
 		<span class="rounded bg-muted px-1.5 py-0.5 text-caption">
 			{labelOf(runtimeStageLabel, log.stage)}
 		</span>
 		<span class="tabular font-mono text-caption">#{shortId(log.request_hash)}</span>
+		{#if !log.ok && log.error_code}
+			<span class="rounded bg-danger-soft px-1.5 py-0.5 font-mono text-caption text-danger">
+				{log.error_code}
+			</span>
+		{/if}
 		{#if log.refresh_attempted}
 			<span class="text-caption font-medium text-warning">已刷新 Token</span>
 		{/if}
@@ -171,11 +185,11 @@
 					<thead>
 						<tr class="border-b border-border/70 text-muted-foreground">
 							<th class="px-4 py-2.5 font-medium">歌曲信息</th>
-							<th class="w-20 px-4 py-2.5 font-medium">音质</th>
+							<th class="w-28 px-4 py-2.5 font-medium">音质</th>
 							<th class="w-24 px-4 py-2.5 font-medium">状态</th>
 							<th class="w-20 px-4 py-2.5 font-medium">时间</th>
 							<th class="w-20 px-4 py-2.5 font-medium">延迟</th>
-							<th class="w-56 px-4 py-2.5 font-medium">诊断</th>
+							<th class="w-64 px-4 py-2.5 font-medium">诊断</th>
 						</tr>
 					</thead>
 					<tbody class="divide-y divide-border/70">
@@ -189,14 +203,23 @@
 									<div class="flex flex-col gap-0.5">{@render songCell(log)}</div>
 								</td>
 								<td class="px-4 py-2.5">{@render qualityCell(log)}</td>
-								<td class="px-4 py-2.5">{@render statusCell(log)}</td>
+								<td class="px-4 py-2.5">{@render outcomeBadge(log)}</td>
 								<td class="tabular px-4 py-2.5 whitespace-nowrap text-muted-foreground">
 									{formatClockTime(log.created_at)}
 								</td>
 								<td class="tabular px-4 py-2.5 whitespace-nowrap font-mono">
 									{formatLatency(log.latency_ms)}
 								</td>
-								<td class="px-4 py-2.5">{@render diagCell(log)}</td>
+								<td class="px-4 py-2.5">
+									<div class="space-y-1">
+										{@render diagMeta(log)}
+										{#if !log.ok && log.error}
+											<span class="block truncate text-caption text-danger" title={log.error}>
+												{log.error}
+											</span>
+										{/if}
+									</div>
+								</td>
 							</tr>
 						{/each}
 					</tbody>
@@ -228,8 +251,8 @@
 							</span>
 						</div>
 
-						<!-- 与桌面表格保持信息等价：阶段、请求 hash、刷新与重试标记 -->
-						{@render diagCell(log)}
+						<!-- 与桌面表格保持信息等价：阶段、请求 hash、错误码、刷新与重试标记 -->
+						{@render diagMeta(log)}
 					</li>
 				{/each}
 			</ul>

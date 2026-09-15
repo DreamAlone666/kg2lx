@@ -93,15 +93,19 @@
 			</CardHeader>
 
 			<CardContent class="space-y-8 p-6">
+				<!--
+					四段信息栅格与外壳同宽（main 的 max-w-5xl），因此这里必须凑满 4 列；
+					只有 3 列时最后一格会留出大片空白，卡片显得松散。
+				-->
 				<div class="grid grid-cols-2 gap-6 sm:grid-cols-4">
-					<div class="space-y-2">
+					<div class="min-w-0 space-y-2">
 						<p class="text-xs font-medium tracking-wide text-muted-foreground uppercase">状态</p>
 						<StatusBadge tone={accountStatusTone(source.account.status)} dot>
 							{labelOf(accountStatusLabel, source.account.status)}
 						</StatusBadge>
 					</div>
 
-					<div class="space-y-2">
+					<div class="min-w-0 space-y-2">
 						<p class="text-xs font-medium tracking-wide text-muted-foreground uppercase">
 							VIP 状态
 						</p>
@@ -110,11 +114,20 @@
 						</StatusBadge>
 					</div>
 
-					<div class="col-span-2 space-y-2">
+					<div class="min-w-0 space-y-2">
 						<p class="text-xs font-medium tracking-wide text-muted-foreground uppercase">
 							最后刷新时间
 						</p>
 						<p class="tabular text-sm">{formatDateTime(source.account.last_refresh_at)}</p>
+					</div>
+
+					<div class="min-w-0 space-y-2">
+						<p class="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+							音源 ID
+						</p>
+						<p class="truncate font-mono text-xs text-muted-foreground" title={source.source_id}>
+							{source.source_id}
+						</p>
 					</div>
 				</div>
 
