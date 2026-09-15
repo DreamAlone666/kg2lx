@@ -1,34 +1,37 @@
 <script lang="ts" module>
-	import { type VariantProps, tv } from "tailwind-variants";
+	import { type VariantProps, tv } from 'tailwind-variants';
 
+	/**
+	 * 装饰性标签（如平台名、分类）。**不承载业务状态**。
+	 *
+	 * 状态必须使用 StatusBadge：那里有 tone 语义校验，能保证「同一状态永远是同一颜色」。
+	 * 这里若用于表达状态，颜色就会退化成人各自理解的主观选择，失去信息价值。
+	 */
 	export const badgeVariants = tv({
-		base: "inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
+		base: 'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors',
 		variants: {
 			variant: {
-				default:
-					"border-transparent bg-primary text-primary-foreground shadow hover:bg-primary/80",
-				secondary:
-					"border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80",
-				destructive:
-					"border-transparent bg-destructive text-destructive-foreground shadow hover:bg-destructive/80",
-				outline: "text-foreground",
+				default: 'border-transparent bg-primary text-primary-foreground',
+				secondary: 'border-transparent bg-secondary text-secondary-foreground',
+				destructive: 'border-transparent bg-destructive text-destructive-foreground',
+				outline: 'border-border bg-background text-foreground',
 			},
 		},
 		defaultVariants: {
-			variant: "default",
+			variant: 'secondary',
 		},
 	});
 
-	export type Variant = VariantProps<typeof badgeVariants>["variant"];
+	export type Variant = VariantProps<typeof badgeVariants>['variant'];
 </script>
 
 <script lang="ts">
-	import type { HTMLAttributes } from "svelte/elements";
-	import { cn } from "$lib/utils.js";
+	import type { HTMLAttributes } from 'svelte/elements';
+	import { cn } from '$lib/utils.js';
 
 	let {
 		class: className,
-		variant = "default",
+		variant = 'secondary',
 		children,
 		...rest
 	}: HTMLAttributes<HTMLDivElement> & {
