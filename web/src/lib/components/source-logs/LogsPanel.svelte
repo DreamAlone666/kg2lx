@@ -147,8 +147,16 @@
 			<div class="flex items-center gap-3">
 				<h2 class="text-subheading">运行时日志</h2>
 
+				<!--
+					顺序即优先级：暂停压过一切，其次是失败，再次是用户发起的拉取。
+					error 分支是补上的——此前轮询是静默拉取（loading 始终为 false），
+					于是一次瞬时失败之后徽章仍显示绿色脉冲「实时」，与紧邻的
+					「日志刷新失败」同屏矛盾：徽章在替一个已经失败的状态背书。
+				-->
 				{#if !pageVisible.visible}
 					<StatusBadge tone="neutral" dot>已暂停</StatusBadge>
+				{:else if sourceLogsController.error}
+					<StatusBadge tone="danger" dot>刷新失败</StatusBadge>
 				{:else if sourceLogsController.loading}
 					<StatusBadge tone="info" dot pulse>刷新中</StatusBadge>
 				{:else}
@@ -189,28 +197,33 @@
 	</CardHeader>
 
 	<CardContent class="p-0">
-		{#if sourceLogsController.error}
-			<div class="p-8 text-center">
-				<p class="text-sm leading-relaxed text-danger">
-					加载日志失败：{sourceLogsController.error}
+		<!--
+			失败降级：已有数据时只在表格上方加一条横幅，不接管整个面板。
+
+			此前 `{#if error}` 的优先级高于表格，一次瞬时失败就会把 20 行日志连同
+			滚动位置一起换成一个错误面板，而数据其实还在控制器里——用户正在看的
+			内容被后台的一次抖动销毁了。这与音源列表页早已确立的原则一致
+			（有数据时错误降级为横幅，见 sources/+page.svelte），此前只有日志没沿用。
+
+			横幅刻意标注「以下为哪个时刻的数据」：降级之后用户仍需要知道
+			自己看的是不是最新的一批，否则「保留数据」会变成「显示过期数据而不自知」。
+		-->
+		{#if sourceLogsController.error && sourceLogsController.logs.length > 0}
+			<div
+				class="flex flex-wrap items-start justify-between gap-3 border-b border-danger/20 bg-danger-soft/60 px-4 py-3"
+			>
+				<p class="text-xs leading-relaxed text-danger">
+					日志刷新失败：{sourceLogsController.error}。{sourceLogsController.lastUpdatedAt
+						? `以下为 ${formatClockTime(sourceLogsController.lastUpdatedAt)} 的数据。`
+						: '以下为最近一次成功获取的数据。'}
 				</p>
-				<Button size="sm" class="mt-4" onclick={() => sourceLogsController.refresh()}>重试</Button>
+				<Button variant="ghost" size="sm" onclick={() => sourceLogsController.refresh()}>
+					重试
+				</Button>
 			</div>
-		{:else if sourceLogsController.logs.length === 0 && sourceLogsController.loading}
-			<div class="space-y-2 p-4">
-				{#each skeletonSlots as slot (slot)}
-					<Skeleton class="h-9 w-full" />
-				{/each}
-			</div>
-		{:else if sourceLogsController.logs.length === 0}
-			<div class="px-6 py-14 text-center">
-				<p class="text-sm text-muted-foreground">
-					{sourceLogsController.view === 'errors'
-						? '暂无错误记录，一切正常。'
-						: '暂无运行时流量记录，播放音乐后这里会出现取链日志。'}
-				</p>
-			</div>
-		{:else}
+		{/if}
+
+		{#if sourceLogsController.logs.length > 0}
 			<!--
 				列宽按**内容类型**定档，主内容吃剩余空间。
 
@@ -300,6 +313,28 @@
 					</li>
 				{/each}
 			</ul>
+		{:else if sourceLogsController.error}
+			<!-- 零行 + 错误：此时没有可保留的内容，才让错误接管整个面板 -->
+			<div class="p-8 text-center">
+				<p class="text-sm leading-relaxed text-danger">
+					加载日志失败：{sourceLogsController.error}
+				</p>
+				<Button size="sm" class="mt-4" onclick={() => sourceLogsController.refresh()}>重试</Button>
+			</div>
+		{:else if sourceLogsController.loading}
+			<div class="space-y-2 p-4">
+				{#each skeletonSlots as slot (slot)}
+					<Skeleton class="h-9 w-full" />
+				{/each}
+			</div>
+		{:else}
+			<div class="px-6 py-14 text-center">
+				<p class="text-sm text-muted-foreground">
+					{sourceLogsController.view === 'errors'
+						? '暂无错误记录，一切正常。'
+						: '暂无运行时流量记录，播放音乐后这里会出现取链日志。'}
+				</p>
+			</div>
 		{/if}
 	</CardContent>
 </Card>

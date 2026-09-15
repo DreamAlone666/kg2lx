@@ -24,6 +24,13 @@ class SourceLogsController {
 	error = $state<string | null>(null);
 	/** 本次拉取中新出现的 log_id。仅用于让新行播放进入动画，旧行不重播。 */
 	newLogIds = $state<Set<string>>(new Set());
+	/**
+	 * 最近一次**成功**拉取的时刻（Unix 秒）。
+	 *
+	 * 失败时 logs 刻意保留不清空（拉取失败不等于已有数据失效），因此界面必须能
+	 * 说清「你看到的这批是哪个时刻的」——否则保留数据会退化成「显示过期数据而不自知」。
+	 */
+	lastUpdatedAt = $state<number | null>(null);
 
 	private requestId = 0;
 	private currentSourceId: string | null = null;
@@ -52,6 +59,7 @@ class SourceLogsController {
 			const knownIds = new Set(this.logs.map((log) => log.log_id));
 			const hadRows = this.logs.length > 0;
 			this.logs = res.items;
+			this.lastUpdatedAt = Math.floor(Date.now() / 1000);
 			this.markNewRows(res.items, knownIds, hadRows);
 			this.error = null;
 		} catch (e: any) {
@@ -77,6 +85,7 @@ class SourceLogsController {
 		this.logs = [];
 		this.newLogIds = new Set();
 		this.error = null;
+		this.lastUpdatedAt = null;
 		this.loading = false;
 	}
 

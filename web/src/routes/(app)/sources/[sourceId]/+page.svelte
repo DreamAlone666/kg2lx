@@ -35,12 +35,14 @@
 	});
 
 	async function handleRefresh() {
-		const ok = await sourcesController.refreshSource(sourceId);
-		if (ok) {
+		const result = await sourcesController.refreshSource(sourceId);
+		if (result === 'ok') {
 			toast.success('账号状态已刷新。');
-		} else {
+		} else if (result === 'failed') {
 			toast.error(sourcesController.error ?? '刷新失败，请稍后重试。');
 		}
+		// 'busy' 刻意不出提示：用户并没有遭遇失败，只是上一次刷新还在进行中。
+		// 此前这里把 busy 与 failed 一起提示成「刷新失败，请稍后重试」，是在报告一件没发生的事。
 	}
 </script>
 
@@ -89,8 +91,13 @@
 							{/if}
 						</div>
 					</div>
-					<Button variant="outline" onclick={handleRefresh} disabled={refreshing}>
-						{refreshing ? '刷新中…' : '刷新 Token'}
+					<Button
+						variant="outline"
+						pending={refreshing}
+						pendingLabel="刷新中…"
+						onclick={handleRefresh}
+					>
+						刷新 Token
 					</Button>
 				</div>
 			</CardHeader>

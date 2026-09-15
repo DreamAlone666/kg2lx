@@ -47,8 +47,14 @@
 				<Alert>{connectController.error}</Alert>
 			{/if}
 
-			<Button type="submit" size="lg" class="w-full" disabled={connectController.loading}>
-				{connectController.loading ? '连接中…' : '连接'}
+			<Button
+				type="submit"
+				size="lg"
+				class="w-full"
+				pending={connectController.loading}
+				pendingLabel="连接中…"
+			>
+				连接
 			</Button>
 		</form>
 	</CardContent>

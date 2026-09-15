@@ -3,6 +3,7 @@
 	import { Alert, Button, Card, Skeleton } from '$lib/components/ui';
 	import SourceGrid from '$lib/components/sources/SourceGrid.svelte';
 	import { sourcesController } from '$lib/features/sources/controller.svelte';
+	import { formatClockTime } from '$lib/domain';
 
 	// 认证守卫已上提到 (app)/+layout.ts，页面只负责取数与状态编排
 	onMount(() => sourcesController.loadSources());
@@ -24,10 +25,21 @@
 		</div>
 
 		<div class="flex shrink-0 items-center gap-2">
+			<!--
+				结果反馈就近放在动作旁边：按钮切文案表达「进行中」，完成后这里给出列表数据的时刻。
+				卡片上的「最近刷新」是**账号侧**的时间，刷新列表不会改动它，
+				两者语义不同、不能互相替代——这正是此前「点完刷新画面纹丝不动」的成因。
+			-->
+			{#if sourcesController.lastLoadedAt}
+				<span class="tabular hidden text-xs whitespace-nowrap text-muted-foreground sm:inline">
+					列表更新于 {formatClockTime(sourcesController.lastLoadedAt)}
+				</span>
+			{/if}
 			<Button
 				variant="outline"
 				size="sm"
-				disabled={sourcesController.loading}
+				pending={sourcesController.loading}
+				pendingLabel="刷新中…"
 				onclick={() => sourcesController.loadSources()}
 			>
 				刷新列表
