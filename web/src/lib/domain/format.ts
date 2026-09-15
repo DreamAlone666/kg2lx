@@ -6,21 +6,33 @@
  * 纯函数、无副作用，可安全用于派生值。
  */
 
-/** Unix 秒级时间戳 → 本地日期时间。 */
+/**
+ * Unix 秒级时间戳 → 定长本地时间 `YYYY-MM-DD HH:mm:ss`（24 小时制）。
+ *
+ * 刻意不用 `toLocaleString()`：它的产物随浏览器 locale 变化（en-US 实测为
+ * `9/15/2026, 9:27:36 PM`），既与日志列的 24 小时制同屏冲突，又会在窄信息格里
+ * 被折成两行。手工补齐后各段宽度恒定，配合 `.tabular` 可稳定纵向对齐。
+ *
+ * 时间部分直接复用 formatClockTime，使「日期时间」与「纯时间」在制式上不可能分叉。
+ */
 export function formatDateTime(ts: number | null | undefined, fallback = '从未'): string {
 	if (ts === null || ts === undefined || !Number.isFinite(ts)) return fallback;
-	return new Date(ts * 1000).toLocaleString();
+	const d = new Date(ts * 1000);
+	const date = [d.getFullYear(), pad2(d.getMonth() + 1), pad2(d.getDate())].join('-');
+	return `${date} ${formatClockTime(ts)}`;
+}
+
+function pad2(n: number): string {
+	return n.toString().padStart(2, '0');
 }
 
 /** Unix 秒级时间戳 → 本地时间（24 小时制），用于日志这类需要精确到秒的场景。 */
 export function formatClockTime(ts: number | null | undefined): string {
 	if (ts === null || ts === undefined || !Number.isFinite(ts)) return '--:--:--';
-	return new Date(ts * 1000).toLocaleTimeString([], {
-		hour: '2-digit',
-		minute: '2-digit',
-		second: '2-digit',
-		hour12: false,
-	});
+	const d = new Date(ts * 1000);
+	// 同样手工补齐而非 toLocaleTimeString：后者在部分 locale 下会给出 12 小时制或
+	// 前后缀（如「下午 9:14:40」），宽度不定，会破坏表格列的纵向对齐。
+	return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
 }
 
 /**

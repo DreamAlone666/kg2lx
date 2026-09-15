@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Badge, Card, CardContent, CardHeader, StatusBadge } from '$lib/components/ui';
-	import { formatDateTime, labelOf, providerLabel } from '$lib/domain';
-	import { vipTone } from '$lib/domain/tone';
+	import { accountStatusLabel, formatDateTime, labelOf, providerLabel } from '$lib/domain';
+	import { accountStatusTone, vipTone } from '$lib/domain/tone';
 	import type { SourceSummary } from '$lib/api/types';
 
 	/**
@@ -10,8 +10,21 @@
 	 *
 	 * view-transition-name 与详情页的首个卡片保持一致，使「列表 → 详情」
 	 * 呈现为卡片长大的共享元素过渡。
+	 *
+	 * 内容构成回答两个问题：**这个账号还活着吗**（账号状态胶囊）与
+	 * **什么时候刷过**（最近刷新时间）。此前这两项都不在卡片上——前者要逐个点进
+	 * 详情才能知道，后者展示的是 Source.updated_at（刷新不会改动它），
+	 * 于是「刷新列表」之后卡片上的时间纹丝不动，列表失去了扫一眼做判断的价值。
+	 *
+	 * 刻意不再展示 source_id：它是内部主键，用户无法据此做任何操作，且被 truncate
+	 * 后连完整读取都做不到。需要时地址栏里就是它。
 	 */
 	let { source }: { source: SourceSummary } = $props();
+
+	/** 从未刷新过时不要拼成「最近刷新 从未」，那不是一句人话。 */
+	const lastRefreshText = $derived(
+		source.last_refresh_at ? `最近刷新 ${formatDateTime(source.last_refresh_at)}` : '从未刷新过'
+	);
 </script>
 
 <a
@@ -22,20 +35,32 @@
 >
 	<Card interactive class="h-full">
 		<CardHeader class="gap-0 pb-3">
-			<div class="flex items-center justify-between gap-2">
+			<div class="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5">
 				<Badge variant="secondary">{labelOf(providerLabel, source.provider)}</Badge>
-				{#if source.vip_active}
-					<StatusBadge tone={vipTone(true)} dot>VIP</StatusBadge>
-				{/if}
+
+				<!-- 源级标记放右侧：VIP 是账号级、已停用是源级，两者都属于「标记」而非「状态」，
+				     真正的账号状态交给下面的胶囊单独一行承担。 -->
+				<div class="flex shrink-0 items-center gap-1.5">
+					{#if !source.enabled}
+						<StatusBadge tone="neutral">已停用</StatusBadge>
+					{/if}
+					{#if source.vip_active}
+						<StatusBadge tone={vipTone(true)} dot>VIP</StatusBadge>
+					{/if}
+				</div>
 			</div>
 			<h2 class="mt-3 truncate text-lg font-semibold tracking-tight">{source.userid}</h2>
 		</CardHeader>
 
-		<CardContent class="space-y-1">
-			<p class="truncate font-mono text-xs text-muted-foreground" title={source.source_id}>
-				ID: {source.source_id}
+		<CardContent class="space-y-2">
+			<StatusBadge tone={accountStatusTone(source.account_status)} dot>
+				{labelOf(accountStatusLabel, source.account_status)}
+			</StatusBadge>
+
+			<!-- tabular + nowrap：定长时间戳在网格里各卡片对齐，且不会被折行 -->
+			<p class="tabular text-xs whitespace-nowrap text-muted-foreground">
+				{lastRefreshText}
 			</p>
-			<p class="text-xs text-muted-foreground">更新于 {formatDateTime(source.updated_at)}</p>
 		</CardContent>
 	</Card>
 </a>

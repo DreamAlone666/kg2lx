@@ -90,21 +90,53 @@
 {/snippet}
 
 {#snippet diagMeta(log: RuntimeLogListItem)}
+	<!--
+		只放「这次请求是谁」的标识：阶段、请求 hash，以及刷新与重试这两个过程标记。
+		成败与错误已由状态列和 failureLine 承担，不在这一行重复。
+	-->
 	<div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground">
 		<span class="rounded bg-muted px-1.5 py-0.5 text-caption">
 			{labelOf(runtimeStageLabel, log.stage)}
 		</span>
 		<span class="tabular font-mono text-caption">#{shortId(log.request_hash)}</span>
-		{#if !log.ok && log.error_code}
-			<span class="rounded bg-danger-soft px-1.5 py-0.5 font-mono text-caption text-danger">
-				{log.error_code}
-			</span>
-		{/if}
 		{#if log.refresh_attempted}
 			<span class="text-caption font-medium text-warning">已刷新 Token</span>
 		{/if}
 		{#if log.retry_count > 0}
 			<span class="text-caption font-medium text-warning">重试 {log.retry_count}</span>
+		{/if}
+	</div>
+{/snippet}
+
+{#snippet failureLine(log: RuntimeLogListItem, wrap: boolean)}
+	<!--
+		失败的唯一主表达，只出现一次。
+		同一次失败此前被表达三遍（状态列 ERR、诊断列错误码胶囊、诊断列错误原因），
+		既冗余又把诊断列撑成 2~3 行、导致行高参差。
+
+		flex-wrap + 错误原因的下限宽度是关键：`UPSTREAM_REQUEST_FAILED` 这类错误码在
+		12px 等宽下要占掉约 166px，实测会把同行只剩 20px 的原因挤成「u…」——
+		那是把信息截断成了噪音。给原因留出 min-w-24 的下限后，装不下时它会整段
+		落到第二行并占满列宽，装得下（短错误码）时仍然同行，无需为两种情况写分支。
+
+		wrap=true 用于移动端：宽度充裕，直接允许在词内折行，信息完整优先。
+	-->
+	<div class="flex min-w-0 flex-wrap items-start gap-x-1.5 gap-y-1">
+		{#if log.error_code}
+			<span class="shrink-0 rounded bg-danger-soft px-1.5 py-0.5 font-mono text-caption text-danger">
+				{log.error_code}
+			</span>
+		{/if}
+		{#if log.error}
+			<span
+				class={cn(
+					'flex-1 text-caption text-danger',
+					wrap ? 'min-w-0 break-words' : 'min-w-24 truncate'
+				)}
+				title={log.error}
+			>
+				{log.error}
+			</span>
 		{/if}
 	</div>
 {/snippet}
@@ -179,6 +211,19 @@
 				</p>
 			</div>
 		{:else}
+			<!--
+				列宽按**内容类型**定档，主内容吃剩余空间。
+
+				此前的列宽是按「刚好不溢出」反推出来的（350/112/96/80/80/256），
+				结果是宽度排序与重要性排序相反：800px 视口实测歌曲信息只剩 126px，
+				而诊断列独占 256px——最该一眼扫读的一列最窄。
+				现在的规则是：固定列只取内容上限（内容长度已知或已被 truncate 防御），
+				剩余全部交给歌曲信息，因为只有它是自由文本。
+
+				诊断列刻意做成响应式（md 更窄、lg 才放宽）：诊断是次要信息，
+				宽度吃紧时应当由它先让位，而不是挤压主内容。
+			-->
+
 			<!-- 桌面：表格承载多维对比，列宽固定以便纵向扫读 -->
 			<div class="hidden md:block">
 				<table class="w-full table-fixed text-left text-xs">
@@ -186,10 +231,10 @@
 						<tr class="border-b border-border/70 text-muted-foreground">
 							<th class="px-4 py-2.5 font-medium">歌曲信息</th>
 							<th class="w-28 px-4 py-2.5 font-medium">音质</th>
-							<th class="w-24 px-4 py-2.5 font-medium">状态</th>
-							<th class="w-20 px-4 py-2.5 font-medium">时间</th>
+							<th class="w-20 px-4 py-2.5 font-medium">状态</th>
+							<th class="w-24 px-4 py-2.5 font-medium">时间</th>
 							<th class="w-20 px-4 py-2.5 font-medium">延迟</th>
-							<th class="w-64 px-4 py-2.5 font-medium">诊断</th>
+							<th class="w-40 px-4 py-2.5 font-medium lg:w-56">诊断</th>
 						</tr>
 					</thead>
 					<tbody class="divide-y divide-border/70">
@@ -213,10 +258,8 @@
 								<td class="px-4 py-2.5">
 									<div class="space-y-1">
 										{@render diagMeta(log)}
-										{#if !log.ok && log.error}
-											<span class="block truncate text-caption text-danger" title={log.error}>
-												{log.error}
-											</span>
+										{#if !log.ok && (log.error_code || log.error)}
+											{@render failureLine(log, false)}
 										{/if}
 									</div>
 								</td>
@@ -236,9 +279,9 @@
 							{@render outcomeBadge(log)}
 						</div>
 
-						<!-- 移动端不截断错误原因：窄屏下用户更需要完整信息 -->
-						{#if !log.ok && log.error}
-							<p class="text-caption leading-relaxed break-words text-danger">{log.error}</p>
+						<!-- 与桌面表格同一个失败主表达，只是允许折行：窄屏下用户更需要完整信息 -->
+						{#if !log.ok && (log.error_code || log.error)}
+							{@render failureLine(log, true)}
 						{/if}
 
 						<div class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
@@ -251,7 +294,8 @@
 							</span>
 						</div>
 
-						<!-- 与桌面表格保持信息等价：阶段、请求 hash、错误码、刷新与重试标记 -->
+						<!-- 与桌面表格保持信息等价：阶段、请求 hash、刷新与重试标记
+						     （错误码与原因由上面的 failureLine 承担，桌面端同样如此） -->
 						{@render diagMeta(log)}
 					</li>
 				{/each}

@@ -19,6 +19,14 @@ export type SourceSummary = {
   script_url: string;
   userid: string;
   vip_active: boolean;
+  /**
+   * 账号状态。空串表示账号记录已不存在（后端不给未知状态造新枚举值），
+   * 由 labelOf / accountStatusTone 回退为「未知」与 neutral。
+   */
+  account_status: AccountStatus | '';
+  /** 账号最近一次刷新成功的时刻；从未刷新过则为 null。 */
+  last_refresh_at: number | null;
+  /** 源记录的更新时间，仅在绑定/改配置时变动，界面不再展示。 */
   updated_at: number;
 };
 

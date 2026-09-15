@@ -18,6 +18,18 @@ pub struct SourceListItem {
     pub script_url: String,
     pub userid: String,
     pub vip_active: bool,
+    /// 账号状态，与详情页 `account.status` 同源同格式。
+    ///
+    /// 列表此前只有 `vip_active`，导致「账号还活着吗」这个最核心的问题必须逐个点进详情
+    /// 才能回答；而列表本来就是用来扫一眼做判断的。
+    pub account_status: String,
+    /// 账号最近一次刷新成功的时刻。
+    ///
+    /// 不能复用下面的 `updated_at`：`refresh_source()` 只写 account 侧的时间戳，
+    /// 从不写 `Source.updated_at`，所以源记录的时间在刷新后纹丝不动，
+    /// 用户点完刷新看不到任何变化。两个字段语义不同，界面展示刷新结果时必须用这一个。
+    pub last_refresh_at: Option<i64>,
+    /// 源记录的更新时间（绑定/改配置时变动），保留以维持 API 兼容，界面不再展示。
     pub updated_at: i64,
 }
 
@@ -88,9 +100,16 @@ impl SourceService {
         let mut items = Vec::new();
         for s in sources {
             let account = self.account_repo.find_by_id(&s.account_id).await?;
-            let (userid, vip_active) = match account {
-                Some(ref a) => (a.upstream_userid.clone(), a.vip_active),
-                None => (String::new(), false),
+            // 账号缺失时状态写空串：前端 labelOf / accountStatusTone 已有回退，
+            // 不为此新增枚举值，避免污染两个穷举词典。
+            let (userid, vip_active, account_status, last_refresh_at) = match account {
+                Some(ref a) => (
+                    a.upstream_userid.clone(),
+                    a.vip_active,
+                    a.status.as_str().to_string(),
+                    a.last_refresh_at,
+                ),
+                None => (String::new(), false, String::new(), None),
             };
             let script_url = format!("{}/s/{}.js", self.config.public_base_url, s.script_token);
             items.push(SourceListItem {
@@ -101,6 +120,8 @@ impl SourceService {
                 script_url,
                 userid,
                 vip_active,
+                account_status,
+                last_refresh_at,
                 updated_at: s.updated_at,
             });
         }
@@ -139,7 +160,7 @@ impl SourceService {
                 userid: account.upstream_userid,
                 vip_active: account.vip_active,
                 vip_type: account.vip_type,
-                status: format!("{:?}", account.status).to_lowercase(),
+                status: account.status.as_str().to_string(),
                 last_refresh_at: account.last_refresh_at,
                 last_error: account.last_error,
             },

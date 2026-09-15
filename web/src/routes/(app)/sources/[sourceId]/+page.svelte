@@ -82,9 +82,12 @@
 						<h1 class="truncate text-2xl font-bold tracking-tight">
 							{source.account.userid}
 						</h1>
-						<p class="mt-1 text-sm text-muted-foreground">
-							平台：{labelOf(providerLabel, source.provider)}
-						</p>
+						<div class="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+							<span>平台：{labelOf(providerLabel, source.provider)}</span>
+							{#if !source.enabled}
+								<StatusBadge tone="neutral">已停用</StatusBadge>
+							{/if}
+						</div>
 					</div>
 					<Button variant="outline" onclick={handleRefresh} disabled={refreshing}>
 						{refreshing ? '刷新中…' : '刷新 Token'}
@@ -94,10 +97,12 @@
 
 			<CardContent class="space-y-8 p-6">
 				<!--
-					四段信息栅格与外壳同宽（main 的 max-w-5xl），因此这里必须凑满 4 列；
-					只有 3 列时最后一格会留出大片空白，卡片显得松散。
+					三段信息栅格：轨道数必须与内容数一致。
+					此前是 4 列，第 4 格「音源 ID」是为了填满 5xl 宽度而加的内部主键——
+					用无效内容凑版式，且被 truncate 后连完整读取都做不到。移除后把轨道数
+					一并降到 3，才不会留下死轨道；地址栏里本来就是同一个 ID。
 				-->
-				<div class="grid grid-cols-2 gap-6 sm:grid-cols-4">
+				<div class="grid grid-cols-2 gap-6 sm:grid-cols-3">
 					<div class="min-w-0 space-y-2">
 						<p class="text-xs font-medium tracking-wide text-muted-foreground uppercase">状态</p>
 						<StatusBadge tone={accountStatusTone(source.account.status)} dot>
@@ -118,15 +123,13 @@
 						<p class="text-xs font-medium tracking-wide text-muted-foreground uppercase">
 							最后刷新时间
 						</p>
-						<p class="tabular text-sm">{formatDateTime(source.account.last_refresh_at)}</p>
-					</div>
-
-					<div class="min-w-0 space-y-2">
-						<p class="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-							音源 ID
-						</p>
-						<p class="truncate font-mono text-xs text-muted-foreground" title={source.source_id}>
-							{source.source_id}
+						<!--
+							窄屏用 text-xs 而不是 text-sm：19 字符的定长时间戳在 390px 的两列栅格里
+							只有约 143px 可用，14px 下必然折行；12px 恰好单行放下，也让本格与同排的
+							两个 StatusBadge（固定 text-xs）在字号上一致。
+						-->
+						<p class="tabular text-xs whitespace-nowrap sm:text-sm">
+							{formatDateTime(source.account.last_refresh_at)}
 						</p>
 					</div>
 				</div>
