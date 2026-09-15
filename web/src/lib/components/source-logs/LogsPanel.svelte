@@ -4,6 +4,7 @@
 	import { sourceLogsController } from '$lib/features/source-logs/controller.svelte';
 	import { usePageVisible } from '$lib/hooks/use-page-visible.svelte';
 	import {
+		errorCodeLabel,
 		formatClockTime,
 		formatDateTime,
 		formatLatency,
@@ -62,6 +63,20 @@
 		return log.latency_ms > 0 ? undefined : '未记录到耗时';
 	}
 
+	/**
+	 * 失败胶囊的悬停详情：原始错误码 + 服务端附带的错误信息。
+	 *
+	 * 胶囊上只放中文标签，原始码必须还能拿到——排查时要拿它去 grep 服务端日志，
+	 * 而「中文标签」是给人读的中间层，不能成为唯一出口。
+	 */
+	function failureDetail(log: RuntimeLogListItem): string {
+		const parts: string[] = [];
+		if (log.error_code) parts.push(`错误码 ${log.error_code}`);
+		if (log.error) parts.push(log.error);
+		return parts.join('｜') || '请求失败';
+	}
+
+
 
 	// untrack：轮询启停会写入 controller 状态，不应成为本 effect 的依赖而自触发
 	$effect(() => {
@@ -110,14 +125,24 @@
 
 {#snippet diagMeta(log: RuntimeLogListItem)}
 	<!--
-		只放「这次请求是谁」的标识：阶段、请求 hash，以及刷新与重试这两个过程标记。
-		成败与错误已由状态列和 failureLine 承担，不在这一行重复。
+		只放「这次请求是谁」的标识：阶段、请求指纹，以及刷新与重试这两个过程标记。
+		成败与错误已由状态列和 failureBadge 承担，不在这一行重复。
+
+		指纹的 title 是必要的：`#A0AEFE0` 这种 7 位截断值本身没有可操作性（不能粘贴、
+		也没有第二个界面能关联），界面上从未说明它是干什么用的。而它其实承担着
+		「两次请求内容是否完全相同」这个判断——实测 20 行里 #1A3CAAC 出现 4 次，
+		语义是「同一请求发了 4 遍」，此前这份信息被渲染成了与其它行无异的噪音。
 	-->
 	<div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground">
 		<span class="rounded bg-muted px-1.5 py-0.5 text-caption">
 			{labelOf(runtimeStageLabel, log.stage)}
 		</span>
-		<span class="tabular font-mono text-caption">#{shortId(log.request_hash)}</span>
+		<span
+			class="tabular font-mono text-caption"
+			title={`请求指纹 ${log.request_hash}｜相同指纹表示两次请求的内容完全相同`}
+		>
+			#{shortId(log.request_hash)}
+		</span>
 		{#if log.refresh_attempted}
 			<span class="text-caption font-medium text-warning">已刷新 Token</span>
 		{/if}
@@ -127,37 +152,32 @@
 	</div>
 {/snippet}
 
-{#snippet failureLine(log: RuntimeLogListItem, wrap: boolean)}
+{#snippet failureBadge(log: RuntimeLogListItem)}
 	<!--
-		失败的唯一主表达，只出现一次。
-		同一次失败此前被表达三遍（状态列 ERR、诊断列错误码胶囊、诊断列错误原因），
-		既冗余又把诊断列撑成 2~3 行、导致行高参差。
+		失败的唯一主表达，只出现一次。同一次失败此前被表达三遍（状态列 ERR、
+		诊断列错误码胶囊、诊断列错误原因），既冗余又把诊断列撑成 2~3 行。
 
-		flex-wrap + 错误原因的下限宽度是关键：`UPSTREAM_REQUEST_FAILED` 这类错误码在
-		12px 等宽下要占掉约 166px，实测会把同行只剩 20px 的原因挤成「u…」——
-		那是把信息截断成了噪音。给原因留出 min-w-24 的下限后，装不下时它会整段
-		落到第二行并占满列宽，装得下（短错误码）时仍然同行，无需为两种情况写分支。
+		现在收敛成一枚胶囊，两个字段合一：
 
-		wrap=true 用于移动端：宽度充裕，直接允许在词内折行，信息完整优先。
+		- `error` 不再单独占一行。它在服务端已被 sanitize 成常量
+		  （runtime_log.rs 的 sanitize_runtime_log_error 把所有原因统一写成
+		  "upstream error"），而它非 null 意味着 {#if log.error} 永远成立，
+		  于是每个失败行都被一个常量吃掉整整一行。真实原因仍进 title。
+		- 错误码换成中文标签（原始码进 title）。`UPSTREAM_*` 三个码在前 9 个字符上
+		  完全相同，却各要 166px；换成「上游请求失败」后只要约 84px。
+
+		顺带删掉一条死分支：此前是 flex-wrap + 原因 min-w-24(96px)，号称「装得下时
+		同行」。实测等宽字符 6.71px、诊断列内容宽 192px，同行需要
+		6.71n + 12 + 6 + 96 ≤ 192，即错误码不超过 11 字符；而 13 个真实错误码里最短的
+		INTERNAL_ERROR 也有 14 字符。也就是说这条分支在真实取值域内一次都不会命中，
+		调宽度是徒劳的——问题出在「用一列同时承载机器码与人读文案」这个前提上。
 	-->
-	<div class="flex min-w-0 flex-wrap items-start gap-x-1.5 gap-y-1">
-		{#if log.error_code}
-			<span class="shrink-0 rounded bg-danger-soft px-1.5 py-0.5 font-mono text-caption text-danger">
-				{log.error_code}
-			</span>
-		{/if}
-		{#if log.error}
-			<span
-				class={cn(
-					'flex-1 text-caption text-danger',
-					wrap ? 'min-w-0 break-words' : 'min-w-24 truncate'
-				)}
-				title={log.error}
-			>
-				{log.error}
-			</span>
-		{/if}
-	</div>
+	<span
+		class="rounded bg-danger-soft px-1.5 py-0.5 text-caption text-danger"
+		title={failureDetail(log)}
+	>
+		{labelOf(errorCodeLabel, log.error_code, '请求失败')}
+	</span>
 {/snippet}
 
 <Card class="mt-6 overflow-hidden">
@@ -324,10 +344,10 @@
 									{latencyText(log)}
 								</td>
 								<td class="px-4 py-2.5">
-									<div class="space-y-1">
+									<div class="flex flex-col items-start gap-1">
 										{@render diagMeta(log)}
 										{#if !log.ok && (log.error_code || log.error)}
-											{@render failureLine(log, false)}
+											{@render failureBadge(log)}
 										{/if}
 									</div>
 								</td>
@@ -347,9 +367,9 @@
 							{@render outcomeBadge(log)}
 						</div>
 
-						<!-- 与桌面表格同一个失败主表达，只是允许折行：窄屏下用户更需要完整信息 -->
+						<!-- 与桌面表格同一个失败主表达：中文标签在窄屏下同样不需要折行 -->
 						{#if !log.ok && (log.error_code || log.error)}
-							{@render failureLine(log, true)}
+							{@render failureBadge(log)}
 						{/if}
 
 						<div class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
