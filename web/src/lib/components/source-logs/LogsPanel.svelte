@@ -31,6 +31,28 @@
 
 	const skeletonSlots = [0, 1, 2, 3];
 
+/**
+ * 「错误」视图下是否还需要状态列。
+ *
+ * 该视图已经保证每一行都是失败，红色的 ERR 胶囊在其中是零信息——它占着 80px
+ * 却只是在重复筛选条件。整列让出去，宽度自动归给歌曲信息（table-fixed 里
+ * 唯一的弹性列），比让诊断列去挤它更划算。
+ */
+const showOutcome = $derived(sourceLogsController.view !== 'errors');
+
+/**
+ * 表头单元格的基础样式。
+ *
+ * 分隔线用 `inset box-shadow` 而不是 `border-b`：`border-collapse: collapse` 下
+ * 单元格的边框由**表格**绘制，不会跟着 sticky 的 thead 一起移动——实测滚到一半时
+ * 表头与第一行数据之间完全没有线（用红色 3px border 探针复现：红线不出现在可见区），
+ * 表头于是与数据糊成一片。换成 inset 阴影后红线精确落回吸顶位置。
+ *
+ * 用满强度的 `--color-border` 而非行分隔的 70%：表头是分区而不是行，略重的线
+ * 反而符合分区语义。
+ */
+const TH = 'px-4 py-2.5 font-medium shadow-[inset_0_-1px_0_0_var(--color-border)]';
+
 	/** 新行高亮：关键帧定义在 layout.css，以内联 animation 引用以免被作用域样式裁剪。 */
 	const ROW_FLASH = `kg2lx-row-flash 900ms ${EASE_OUT_SOFT}`;
 
@@ -299,62 +321,89 @@
 
 				诊断列刻意做成响应式（md 更窄、lg 才放宽）：诊断是次要信息，
 				宽度吃紧时应当由它先让位，而不是挤压主内容。
+
+				lg 取 w-64(256px) 是被实测推出来的：诊断首行最宽的形态是
+				「刷新登录 + #指纹 + 已刷新 Token」，DOM 实测需要 208px，而 w-56 只有
+				224-32=192px 可用——差 16px 就会整行折成两行，把失败行从 65px 抬到 86px，
+				与成功行 41px 拉出落差。
+
+				md 则刻意停在 w-40(160px)：该档下 208px 的形态本来就装不下
+				（w-48 的 192px 也不够），再加宽只会从歌曲信息列白拿走 32px。
+				能装下的最宽形态是 100px 的「取链 + #指纹」，w-40 有 128px 富余。
 			-->
 
 			<!-- 桌面：表格承载多维对比，列宽固定以便纵向扫读 -->
 			<div class="hidden md:block">
-				<table class="w-full table-fixed text-left text-xs">
-					<thead>
-						<tr class="border-b border-border/70 text-muted-foreground">
-							<th class="px-4 py-2.5 font-medium">歌曲信息</th>
-							<th class="w-28 px-4 py-2.5 font-medium">音质</th>
-							<th class="w-20 px-4 py-2.5 font-medium">状态</th>
-							<!--
-								时间列按最宽形态取档：跨天时是 `MM-DD HH:mm:ss` 共 14 字符，
-								12px 下约 94px，加上左右 px-4 需要 126px，故取 w-36(144px)。
-								此前按当天的 8 字符反推出 w-24(96px)，跨天行会溢出到延迟列。
-							-->
-							<th class="w-36 px-4 py-2.5 font-medium">时间</th>
-							<th class="w-20 px-4 py-2.5 font-medium">延迟</th>
-							<th class="w-40 px-4 py-2.5 font-medium lg:w-56">诊断</th>
-						</tr>
-					</thead>
-					<tbody class="divide-y divide-border/70">
-						{#each sourceLogsController.logs as log (log.log_id)}
-							{@const isNew = sourceLogsController.newLogIds.has(log.log_id)}
-							<tr
-								class="transition-colors hover:bg-muted/40"
-								style={rowFlashStyle(isNew)}
-							>
-								<td class="min-w-0 px-4 py-2.5">
-									<div class="flex flex-col gap-0.5">{@render songCell(log)}</div>
-								</td>
-								<td class="px-4 py-2.5">{@render qualityCell(log)}</td>
-								<td class="px-4 py-2.5">{@render outcomeBadge(log)}</td>
-								<td
-									class="tabular px-4 py-2.5 whitespace-nowrap text-muted-foreground"
-									title={formatDateTime(log.created_at)}
-								>
-									{formatLogTime(log.created_at)}
-								</td>
-								<td
-									class="tabular px-4 py-2.5 whitespace-nowrap font-mono"
-									title={latencyTitle(log)}
-								>
-									{latencyText(log)}
-								</td>
-								<td class="px-4 py-2.5">
-									<div class="flex flex-col items-start gap-1">
-										{@render diagMeta(log)}
-										{#if !log.ok && (log.error_code || log.error)}
-											{@render failureBadge(log)}
-										{/if}
-									</div>
-								</td>
+				<!--
+					表头必须吸顶。卡片实测高 1909px（20 行 × 41~86px），而视口只有 900px：
+					滚到第 15 行时「歌曲信息 / 音质 / 状态 / 时间 / 延迟 / 诊断」早已离屏，
+					而列里大量是无自解释性的值（2ms、flac24bit、05-19 14:50:33），
+					用户只能靠位置猜列义。给容器一个高度上限后表头才吸得住，
+					顺带把「滚完 1909px 才能看到最新那行」变成「容器内滚动」。
+					滚动容器放在 Card 的 overflow-hidden 之内，无需改动卡片的圆角裁剪。
+				-->
+				<div class="max-h-[70vh] overflow-y-auto">
+					<table class="w-full table-fixed text-left text-xs">
+						<thead class="sticky top-0 z-10 bg-card">
+							<tr class="text-muted-foreground">
+								<th class={TH}>歌曲信息</th>
+								<th class="w-28 {TH}">音质</th>
+								<!--
+									「错误」视图下每一行都是失败，状态列的 ERR 是零信息，
+									整列让给诊断（见 showOutcome）。
+								-->
+								{#if showOutcome}
+									<th class="w-20 {TH}">状态</th>
+								{/if}
+								<!--
+									时间列按最宽形态取档：跨天时是 `MM-DD HH:mm:ss` 共 14 字符，
+									12px 下约 94px，加上左右 px-4 需要 126px，故取 w-36(144px)。
+									此前按当天的 8 字符反推出 w-24(96px)，跨天行会溢出到延迟列。
+								-->
+								<th class="w-36 {TH}">时间</th>
+								<th class="w-20 {TH}">延迟</th>
+								<th class="w-40 {TH} lg:w-64">诊断</th>
 							</tr>
-						{/each}
-					</tbody>
-				</table>
+						</thead>
+						<tbody class="divide-y divide-border/70">
+							{#each sourceLogsController.logs as log (log.log_id)}
+								{@const isNew = sourceLogsController.newLogIds.has(log.log_id)}
+								<tr
+									class="transition-colors hover:bg-muted/40"
+									style={rowFlashStyle(isNew)}
+								>
+									<td class="min-w-0 px-4 py-2.5">
+										<div class="flex flex-col gap-0.5">{@render songCell(log)}</div>
+									</td>
+									<td class="px-4 py-2.5">{@render qualityCell(log)}</td>
+									{#if showOutcome}
+										<td class="px-4 py-2.5">{@render outcomeBadge(log)}</td>
+									{/if}
+									<td
+										class="tabular px-4 py-2.5 whitespace-nowrap text-muted-foreground"
+										title={formatDateTime(log.created_at)}
+									>
+										{formatLogTime(log.created_at)}
+									</td>
+									<td
+										class="tabular px-4 py-2.5 whitespace-nowrap font-mono"
+										title={latencyTitle(log)}
+									>
+										{latencyText(log)}
+									</td>
+									<td class="px-4 py-2.5">
+										<div class="flex flex-col items-start gap-1">
+											{@render diagMeta(log)}
+											{#if !log.ok && (log.error_code || log.error)}
+												{@render failureBadge(log)}
+											{/if}
+										</div>
+									</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
 			</div>
 
 			<!-- 移动端：改为分行卡片，避免最小宽度逼出横向滚动条 -->
@@ -364,7 +413,9 @@
 					<li class="space-y-2 px-4 py-3" style={rowFlashStyle(isNew)}>
 						<div class="flex items-start justify-between gap-3">
 							<div class="min-w-0 flex-1 text-xs">{@render songCell(log)}</div>
-							{@render outcomeBadge(log)}
+							{#if showOutcome}
+								{@render outcomeBadge(log)}
+							{/if}
 						</div>
 
 						<!-- 与桌面表格同一个失败主表达：中文标签在窄屏下同样不需要折行 -->
