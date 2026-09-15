@@ -15,7 +15,7 @@
 	const markerClass: Record<StepState, string> = {
 		done: 'border-primary bg-primary text-primary-foreground',
 		active: 'border-primary bg-primary-soft text-primary-soft-foreground',
-		failed: 'border-danger bg-danger text-white',
+		failed: 'border-danger bg-danger text-destructive-foreground',
 		pending: 'border-border bg-background text-muted-foreground'
 	};
 

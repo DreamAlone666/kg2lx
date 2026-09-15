@@ -1,6 +1,13 @@
 <script lang="ts">
-	import { Button, Card, CardContent, CardHeader, Skeleton, StatusBadge } from '$lib/components/ui';
-	import { toneSurfaceClass } from '$lib/components/ui/tone-classes.js';
+	import {
+		Alert,
+		Button,
+		Card,
+		CardContent,
+		CardHeader,
+		Skeleton,
+		StatusBadge
+	} from '$lib/components/ui';
 	import LoginStepTimeline from './LoginStepTimeline.svelte';
 	import { qrLoginController } from '$lib/features/qr-login/controller.svelte';
 	import { buildLoginSteps } from '$lib/features/qr-login/steps';
@@ -70,12 +77,7 @@
 				</div>
 
 				{#if qrLoginController.message}
-					<p
-						class="rounded-lg border px-3 py-2.5 text-sm leading-relaxed {toneSurfaceClass('danger')}"
-						role="alert"
-					>
-						{qrLoginController.message}
-					</p>
+					<Alert>{qrLoginController.message}</Alert>
 				{/if}
 
 				<Button
@@ -156,22 +158,13 @@
 			<LoginStepTimeline {steps} />
 
 			{#if qrLoginController.status === 'bound' && qrLoginController.boundSource}
-				<div
-					class="rounded-lg border p-4 {toneSurfaceClass('success')}"
-					role="status"
-				>
-					<p class="font-medium">绑定成功</p>
-					<p class="mt-1 text-sm leading-relaxed opacity-90">
+				<Alert tone="success" title="绑定成功" role="status">
+					<p class="leading-relaxed">
 						已绑定账号 {qrLoginController.boundSource.account.userid}，正在跳转到音源详情…
 					</p>
-				</div>
+				</Alert>
 			{:else if qrLoginController.message}
-				<p
-					class="rounded-lg border px-4 py-3 text-sm leading-relaxed {toneSurfaceClass('danger')}"
-					role="alert"
-				>
-					{qrLoginController.message}
-				</p>
+				<Alert>{qrLoginController.message}</Alert>
 			{/if}
 
 			<div class="text-center">

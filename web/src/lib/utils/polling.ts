@@ -23,13 +23,6 @@ export interface VisibilityAwareTimer {
 	start(): void;
 	/** 清理定时器与监听，幂等。 */
 	stop(): void;
-	/** 忽略间隔立即拉取一次（手动刷新 / 恢复可见）。 */
-	refreshNow(): void;
-	/**
-	 * 当前是否处于「运行中但页面不可见」的暂停态。
-	 * 注意这是普通取值器而非响应式值；需要驱动界面时请配合 usePageVisible。
-	 */
-	isPaused(): boolean;
 }
 
 export function createVisibilityAwareTimer(
@@ -78,14 +71,5 @@ export function createVisibilityAwareTimer(
 		}
 	}
 
-	function refreshNow() {
-		void onTick();
-	}
-
-	return {
-		start,
-		stop,
-		refreshNow,
-		isPaused: () => running && !isVisible(),
-	};
+	return { start, stop };
 }

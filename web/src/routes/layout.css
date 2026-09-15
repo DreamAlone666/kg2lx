@@ -31,6 +31,10 @@
 	--text-subheading: 1.125rem;
 	--text-subheading--line-height: 1.45;
 	--text-subheading--font-weight: 600;
+	/* 密集表格与徽章里的次要元数据。刻意保留为一个统一档位，
+	   而不是在各处散落 text-[0.7rem] 任意值。 */
+	--text-caption: 0.7rem;
+	--text-caption--line-height: 1.45;
 	--text-heading: 1.75rem;
 	--text-heading--line-height: 1.25;
 	--text-heading--font-weight: 700;

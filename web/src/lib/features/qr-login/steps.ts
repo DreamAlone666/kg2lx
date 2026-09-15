@@ -16,6 +16,12 @@ export interface LoginStep {
 	state: StepState;
 }
 
+/**
+ * 步骤文案与 $lib/domain/labels.ts 的 sessionStatusLabel 语义相邻但**刻意不同**：
+ * 前者描述「流程走到第几步」（准备 / 完成绑定），后者描述「会话当前是什么状态」
+ * （准备中 / 绑定成功）。两者共存是有意的——状态胶囊回答「现在怎样」，
+ * 时间轴回答「走到哪了」。修改任一处时请一并确认另一处仍然通顺。
+ */
 const STEP_LABELS = ['准备', '等待扫码', '等待确认', '完成绑定'] as const;
 
 /** 各状态对应「已推进到第几步」。bound 为 4，表示四步全部完成。 */

@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { Button, Card, Skeleton } from '$lib/components/ui';
-	import { toneSurfaceClass } from '$lib/components/ui/tone-classes.js';
+	import { Alert, Button, Card, Skeleton } from '$lib/components/ui';
 	import SourceGrid from '$lib/components/sources/SourceGrid.svelte';
 	import { sourcesController } from '$lib/features/sources/controller.svelte';
 
@@ -51,9 +50,8 @@
 		</div>
 	{:else if sourcesController.sources.length === 0}
 		{#if sourcesController.error}
-			<div class="rounded-xl border p-5 {toneSurfaceClass('danger')}" role="alert">
-				<p class="font-medium">加载音源失败</p>
-				<p class="mt-1 text-sm leading-relaxed opacity-90">{sourcesController.error}</p>
+			<Alert title="加载音源失败">
+				<p class="leading-relaxed">{sourcesController.error}</p>
 				<Button
 					variant="outline"
 					size="sm"
@@ -62,7 +60,7 @@
 				>
 					重试
 				</Button>
-			</div>
+			</Alert>
 		{:else}
 			<Card
 				class="flex flex-col items-center justify-center gap-1 border-dashed px-6 py-16 text-center"
@@ -77,17 +75,14 @@
 	{:else}
 		<!-- 已有数据时错误降级为横幅，不把用户已经看到的内容替换掉 -->
 		{#if sourcesController.error}
-			<div
-				class="flex items-start justify-between gap-4 rounded-xl border p-4 {toneSurfaceClass(
-					'danger'
-				)}"
-				role="alert"
-			>
-				<p class="text-sm leading-relaxed">{sourcesController.error}</p>
-				<Button variant="ghost" size="sm" onclick={() => sourcesController.clearError()}>
-					关闭
-				</Button>
-			</div>
+			<Alert>
+				<div class="flex items-start justify-between gap-4">
+					<p class="leading-relaxed">{sourcesController.error}</p>
+					<Button variant="ghost" size="sm" onclick={() => sourcesController.clearError()}>
+						关闭
+					</Button>
+				</div>
+			</Alert>
 		{/if}
 
 		<SourceGrid sources={sourcesController.sources} />

@@ -41,7 +41,11 @@
 	style="view-transition-name: app-header"
 >
 	<div class="mx-auto flex h-14 max-w-5xl items-center gap-3 px-4 sm:gap-4 sm:px-6">
-		<a href="/sources" class="flex shrink-0 items-center gap-2" aria-label="kg2lx 首页">
+		<a
+			href="/sources"
+			class="flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-2 md:min-h-0 md:min-w-0 md:justify-start"
+			aria-label="kg2lx 首页"
+		>
 			<span
 				class="grid size-7 place-items-center rounded-lg bg-gradient-to-br from-primary to-primary-hover text-xs font-bold text-primary-foreground"
 			>
@@ -57,7 +61,7 @@
 					href={item.href}
 					aria-current={active ? 'page' : undefined}
 					class={cn(
-						'relative rounded-md px-3 py-2 text-sm font-medium transition-colors duration-150 ease-out-soft',
+						'relative inline-flex min-h-11 items-center rounded-md px-3 text-sm font-medium transition-colors duration-150 ease-out-soft md:min-h-0 md:py-2',
 						active ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
 					)}
 				>

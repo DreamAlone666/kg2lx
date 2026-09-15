@@ -13,6 +13,7 @@
 		shortId
 	} from '$lib/domain';
 	import type { RuntimeLogListItem, RuntimeLogView } from '$lib/api/types';
+	import { EASE_OUT_SOFT } from '$lib/utils/motion';
 	import { cn } from '$lib/utils.js';
 
 	let { sourceId }: { sourceId: string } = $props();
@@ -28,7 +29,7 @@
 	const skeletonSlots = [0, 1, 2, 3];
 
 	/** 新行高亮：关键帧定义在 layout.css，以内联 animation 引用以免被作用域样式裁剪。 */
-	const ROW_FLASH = 'kg2lx-row-flash 900ms cubic-bezier(0.22, 1, 0.36, 1)';
+	const ROW_FLASH = `kg2lx-row-flash 900ms ${EASE_OUT_SOFT}`;
 
 	function rowFlashStyle(isNew: boolean) {
 		return isNew ? `animation: ${ROW_FLASH}` : undefined;
@@ -51,7 +52,7 @@
 	{:else}
 		<span class="block truncate font-mono italic text-muted-foreground">无歌曲元数据</span>
 		{#if log.album_audio_id}
-			<span class="block truncate font-mono text-[0.7rem] text-muted-foreground">
+			<span class="block truncate font-mono text-caption text-muted-foreground">
 				{log.album_audio_id}
 			</span>
 		{/if}
@@ -64,28 +65,32 @@
 	</StatusBadge>
 {/snippet}
 
+{#snippet outcomeBadge(log: RuntimeLogListItem)}
+	<StatusBadge tone={requestOutcomeTone(log.ok)} class="font-mono">
+		{log.ok ? 'OK' : log.error_code || 'ERR'}
+	</StatusBadge>
+{/snippet}
+
 {#snippet statusCell(log: RuntimeLogListItem)}
 	<div class="flex flex-col items-start gap-1">
-		<StatusBadge tone={requestOutcomeTone(log.ok)} class="font-mono">
-			{log.ok ? 'OK' : log.error_code || 'ERR'}
-		</StatusBadge>
+		{@render outcomeBadge(log)}
 		{#if !log.ok && log.error}
-			<span class="max-w-32 truncate text-[0.7rem] text-danger" title={log.error}>{log.error}</span>
+			<span class="max-w-32 truncate text-caption text-danger" title={log.error}>{log.error}</span>
 		{/if}
 	</div>
 {/snippet}
 
 {#snippet diagCell(log: RuntimeLogListItem)}
 	<div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground">
-		<span class="rounded bg-muted px-1.5 py-0.5 text-[0.7rem]">
+		<span class="rounded bg-muted px-1.5 py-0.5 text-caption">
 			{labelOf(runtimeStageLabel, log.stage)}
 		</span>
-		<span class="tabular font-mono text-[0.7rem]">#{shortId(log.request_hash)}</span>
+		<span class="tabular font-mono text-caption">#{shortId(log.request_hash)}</span>
 		{#if log.refresh_attempted}
-			<span class="text-[0.7rem] font-medium text-warning">已刷新 Token</span>
+			<span class="text-caption font-medium text-warning">已刷新 Token</span>
 		{/if}
 		{#if log.retry_count > 0}
-			<span class="text-[0.7rem] font-medium text-warning">重试 {log.retry_count}</span>
+			<span class="text-caption font-medium text-warning">重试 {log.retry_count}</span>
 		{/if}
 	</div>
 {/snippet}
@@ -113,7 +118,7 @@
 							type="button"
 							aria-pressed={active}
 							class={cn(
-								'cursor-pointer rounded-md px-3 py-1 text-xs font-medium transition-colors duration-150 ease-out-soft',
+								'min-h-11 cursor-pointer rounded-md px-3.5 text-xs font-medium transition-colors duration-150 ease-out-soft md:min-h-7',
 								active
 									? 'bg-background text-foreground shadow-soft'
 									: 'text-muted-foreground hover:text-foreground'
@@ -205,25 +210,26 @@
 					<li class="space-y-2 px-4 py-3" style={rowFlashStyle(isNew)}>
 						<div class="flex items-start justify-between gap-3">
 							<div class="min-w-0 flex-1 text-xs">{@render songCell(log)}</div>
-							{@render statusCell(log)}
+							{@render outcomeBadge(log)}
 						</div>
+
+						<!-- 移动端不截断错误原因：窄屏下用户更需要完整信息 -->
+						{#if !log.ok && log.error}
+							<p class="text-caption leading-relaxed break-words text-danger">{log.error}</p>
+						{/if}
 
 						<div class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
 							{@render qualityCell(log)}
-							<span class="tabular text-[0.7rem] text-muted-foreground">
+							<span class="tabular text-caption text-muted-foreground">
 								{formatClockTime(log.created_at)}
 							</span>
-							<span class="tabular font-mono text-[0.7rem] text-muted-foreground">
+							<span class="tabular font-mono text-caption text-muted-foreground">
 								{formatLatency(log.latency_ms)}
-							</span>
-							<span class="rounded bg-muted px-1.5 py-0.5 text-[0.7rem] text-muted-foreground">
-								{labelOf(runtimeStageLabel, log.stage)}
 							</span>
 						</div>
 
-						{#if log.error}
-							<p class="text-[0.7rem] leading-relaxed text-danger">{log.error}</p>
-						{/if}
+						<!-- 与桌面表格保持信息等价：阶段、请求 hash、刷新与重试标记 -->
+						{@render diagCell(log)}
 					</li>
 				{/each}
 			</ul>

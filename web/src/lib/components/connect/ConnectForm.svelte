@@ -1,6 +1,5 @@
 <script lang="ts">
-	import { Button, Input, Card, CardContent } from '$lib/components/ui';
-	import { toneSurfaceClass } from '$lib/components/ui/tone-classes.js';
+	import { Alert, Button, Input, Card, CardContent } from '$lib/components/ui';
 	import { connectController } from '$lib/features/connect/controller.svelte';
 
 	/**
@@ -27,7 +26,7 @@
 				/>
 				<p class="text-xs leading-relaxed text-muted-foreground">
 					留空将使用当前域名（Same Origin）。开发环境可填
-					<code class="rounded bg-muted px-1 py-0.5 font-mono text-[0.7rem]">/backend</code>
+					<code class="rounded bg-muted px-1 py-0.5 font-mono text-caption">/backend</code>
 					快速连接本地服务。
 				</p>
 			</div>
@@ -45,12 +44,7 @@
 			</div>
 
 			{#if connectController.error}
-				<p
-					class="rounded-lg border px-3 py-2.5 text-sm leading-relaxed {toneSurfaceClass('danger')}"
-					role="alert"
-				>
-					{connectController.error}
-				</p>
+				<Alert>{connectController.error}</Alert>
 			{/if}
 
 			<Button type="submit" size="lg" class="w-full" disabled={connectController.loading}>

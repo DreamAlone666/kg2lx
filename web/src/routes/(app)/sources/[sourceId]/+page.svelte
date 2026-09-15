@@ -1,7 +1,14 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { Button, Card, CardContent, CardHeader, Skeleton, StatusBadge } from '$lib/components/ui';
-	import { toneSurfaceClass } from '$lib/components/ui/tone-classes.js';
+	import {
+		Alert,
+		Button,
+		Card,
+		CardContent,
+		CardHeader,
+		Skeleton,
+		StatusBadge
+	} from '$lib/components/ui';
 	import CopyField from '$lib/components/sources/CopyField.svelte';
 	import LogsPanel from '$lib/components/source-logs/LogsPanel.svelte';
 	import { sourcesController } from '$lib/features/sources/controller.svelte';
@@ -11,7 +18,8 @@
 		accountStatusTone,
 		formatDateTime,
 		labelOf,
-		providerLabel
+		providerLabel,
+		vipTone
 	} from '$lib/domain';
 
 	let sourceId = $derived(page.params.sourceId ?? '');
@@ -49,26 +57,22 @@
 			<Skeleton class="mt-4 h-10 w-full" />
 		</Card>
 	{:else if !source}
-		<div class="rounded-xl border p-5 {toneSurfaceClass('danger')}" role="alert">
-			<p class="font-medium">加载音源失败</p>
-			<p class="mt-1 text-sm leading-relaxed opacity-90">
+		<Alert title="加载音源失败">
+			<p class="leading-relaxed">
 				{sourcesController.error ?? '未找到该音源，可能已被删除。'}
 			</p>
 			<Button variant="outline" size="sm" class="mt-4" href="/sources">返回音源列表</Button>
-		</div>
+		</Alert>
 	{:else}
 		{#if sourcesController.error}
-			<div
-				class="mb-4 flex items-start justify-between gap-4 rounded-xl border p-4 {toneSurfaceClass(
-					'danger'
-				)}"
-				role="alert"
-			>
-				<p class="text-sm leading-relaxed">{sourcesController.error}</p>
-				<Button variant="ghost" size="sm" onclick={() => sourcesController.clearError()}>
-					关闭
-				</Button>
-			</div>
+			<Alert class="mb-4">
+				<div class="flex items-start justify-between gap-4">
+					<p class="leading-relaxed">{sourcesController.error}</p>
+					<Button variant="ghost" size="sm" onclick={() => sourcesController.clearError()}>
+						关闭
+					</Button>
+				</div>
+			</Alert>
 		{/if}
 
 		<Card style="view-transition-name: source-{sourceId}">
@@ -101,7 +105,9 @@
 						<p class="text-xs font-medium tracking-wide text-muted-foreground uppercase">
 							VIP 状态
 						</p>
-						<p class="text-sm font-semibold">{source.account.vip_active ? '已激活' : '未激活'}</p>
+						<StatusBadge tone={vipTone(source.account.vip_active)} dot>
+							{source.account.vip_active ? '已激活' : '未激活'}
+						</StatusBadge>
 					</div>
 
 					<div class="col-span-2 space-y-2">

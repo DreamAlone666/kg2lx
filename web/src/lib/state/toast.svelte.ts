@@ -4,8 +4,6 @@ export interface ToastItem {
 	id: number;
 	tone: Tone;
 	message: string;
-	actionLabel?: string;
-	onAction?: () => void;
 }
 
 export interface ToastOptions {
@@ -13,9 +11,6 @@ export interface ToastOptions {
 	tone?: Tone;
 	/** 自动消失毫秒数；传 0 表示常驻，需用户手动关闭 */
 	durationMs?: number;
-	/** 可选操作（如「重试」），点击后执行 onAction 并关闭该条 */
-	actionLabel?: string;
-	onAction?: () => void;
 }
 
 /** 超过此数量的提示会挤占界面，故丢弃最早的一条。 */
@@ -43,8 +38,6 @@ class ToastStore {
 			id,
 			tone: options.tone ?? 'neutral',
 			message: options.message,
-			actionLabel: options.actionLabel,
-			onAction: options.onAction,
 		};
 
 		this.items = [...this.items, item];
@@ -78,11 +71,6 @@ class ToastStore {
 	dismiss(id: number) {
 		this.clearTimer(id);
 		this.items = this.items.filter((item) => item.id !== id);
-	}
-
-	clear() {
-		for (const id of [...this.timers.keys()]) this.clearTimer(id);
-		this.items = [];
 	}
 
 	private clearTimer(id: number) {

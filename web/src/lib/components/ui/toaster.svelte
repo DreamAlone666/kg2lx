@@ -31,32 +31,20 @@
 		<div
 			transition:fly={flyParams}
 			class={cn(
-				'pointer-events-auto flex w-full max-w-sm items-start gap-3 rounded-lg border px-4 py-3 text-sm shadow-lift',
+				'pointer-events-auto flex w-full max-w-sm items-center gap-2 rounded-lg border py-2 pr-2 pl-4 text-sm shadow-lift md:py-2.5 md:pr-3',
 				toneSurfaceClass(item.tone)
 			)}
 		>
 			<span class="flex-1 leading-snug">{item.message}</span>
 
-			{#if item.actionLabel}
-				<button
-					type="button"
-					class="shrink-0 cursor-pointer rounded-md px-2 py-0.5 font-medium underline underline-offset-2 transition-colors hover:bg-foreground/5"
-					onclick={() => {
-						item.onAction?.();
-						toast.dismiss(item.id);
-					}}
-				>
-					{item.actionLabel}
-				</button>
-			{/if}
-
+			<!-- 触屏保证 44px 可点区域，桌面回落为紧凑尺寸 -->
 			<button
 				type="button"
-				class="shrink-0 cursor-pointer rounded-md px-1.5 text-base leading-none opacity-60 transition-opacity hover:opacity-100"
+				class="grid size-11 shrink-0 cursor-pointer place-items-center rounded-md text-base leading-none opacity-60 transition-opacity hover:opacity-100 md:size-7"
 				aria-label="关闭提示"
 				onclick={() => toast.dismiss(item.id)}
 			>
-				&times;
+				<span aria-hidden="true">&times;</span>
 			</button>
 		</div>
 	{/each}
