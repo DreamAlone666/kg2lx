@@ -1,19 +1,14 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { page } from '$app/state';
-  import { adminSession } from '$lib/state/admin-session.svelte';
   import { qrLoginController } from '$lib/features/qr-login/controller.svelte';
   import { goto } from '$app/navigation';
   import { Button, Badge, Card, CardHeader, CardContent } from '$lib/components/ui';
 
   let redirectTimeout: ReturnType<typeof setTimeout> | null = null;
 
+  // 认证守卫已上提到 (app)/+layout.ts，页面只负责会话恢复
   onMount(() => {
-    if (!adminSession.adminToken) {
-      goto('/connect');
-      return;
-    }
-
     const sessionId = page.url.searchParams.get('session_id');
     if (sessionId) {
       qrLoginController.resume(sessionId);
@@ -87,7 +82,7 @@
   <title>绑定酷狗账号 | kg2lx</title>
 </svelte:head>
 
-<div class="mx-auto max-w-md p-6">
+<div class="mx-auto max-w-md">
   <div class="mb-6">
     <Button variant="ghost" size="sm" href="/sources">
       &larr; 返回音源列表

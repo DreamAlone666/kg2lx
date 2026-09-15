@@ -1,9 +1,6 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { page } from '$app/state';
-  import { adminSession } from '$lib/state/admin-session.svelte';
   import { sourcesController } from '$lib/features/sources/controller.svelte';
-  import { goto } from '$app/navigation';
   import { Button, Badge, Card, CardHeader, CardContent } from '$lib/components/ui';
   import LogsPanel from '$lib/components/source-logs/LogsPanel.svelte';
 
@@ -13,16 +10,11 @@
     return userid ? `${userid} | kg2lx` : '音源详情 | kg2lx';
   });
 
-  onMount(() => {
-    if (!adminSession.adminToken) {
-      goto('/connect');
-    }
-  });
-
+  // 认证守卫已上提到 (app)/+layout.ts，页面只负责取数
   $effect(() => {
-    const sourceId = page.params.sourceId;
-    if (!adminSession.adminToken || !sourceId) return;
-    sourcesController.loadSource(sourceId);
+    const id = page.params.sourceId;
+    if (!id) return;
+    sourcesController.loadSource(id);
   });
 
   async function handleRefresh() {
@@ -79,7 +71,7 @@
   <title>{pageTitle}</title>
 </svelte:head>
 
-<div class="mx-auto max-w-3xl p-6">
+<div class="mx-auto max-w-3xl">
   <div class="mb-6 flex items-center gap-4">
     <Button variant="ghost" size="sm" href="/sources">
       &larr; 返回音源列表

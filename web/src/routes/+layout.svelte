@@ -1,16 +1,40 @@
 <script lang="ts">
 	import './layout.css';
 	import favicon from '$lib/assets/favicon.svg';
-	import { goto } from '$app/navigation';
-	import { adminSession } from '$lib/state/admin-session.svelte';
-	import { Button } from '$lib/components/ui';
+	import { onNavigate } from '$app/navigation';
+	import { Toaster } from '$lib/components/ui';
+	import { prefersReducedMotion } from '$lib/utils/motion';
 
+	/**
+	 * 根壳：只负责三件事——引入令牌层、挂载全局提示宿主、接入视图过渡。
+	 * 顶栏与认证守卫下沉到 (app) 路由组，因为连接页不属于受保护区域、也不该有导航。
+	 */
 	let { children } = $props();
 
-	function handleLogout() {
-		adminSession.logout();
-		goto('/connect');
-	}
+	type ViewTransitionDocument = Document & {
+		startViewTransition?: (callback: () => void | Promise<void>) => { finished: Promise<void> };
+	};
+
+	/**
+	 * 列表 ↔ 详情之间使用共享元素过渡，让卡片「生长」为详情页。
+	 * - 必须能力检测：Safari 与部分 Firefox 版本尚未支持
+	 * - 必须等待 navigation.complete：否则过渡会在数据就绪前被提前结束而闪烁
+	 * - 必须尊重减弱动态：CSS 降级覆盖不到 API 驱动的过渡
+	 */
+	onNavigate((navigation) => {
+		const startViewTransition = (document as ViewTransitionDocument).startViewTransition?.bind(
+			document
+		);
+		if (!startViewTransition) return;
+		if (prefersReducedMotion()) return;
+
+		return new Promise<void>((resolve) => {
+			startViewTransition(async () => {
+				resolve();
+				await navigation.complete;
+			});
+		});
+	});
 </script>
 
 <svelte:head>
@@ -19,18 +43,5 @@
 	<link rel="icon" href={favicon} />
 </svelte:head>
 
-{#if adminSession.adminToken}
-	<header class="border-b">
-		<div class="mx-auto flex max-w-5xl items-center justify-between gap-2 px-4 py-2.5">
-			<a href="/sources" class="text-sm font-semibold tracking-tight">kg2lx</a>
-			<div class="flex min-w-0 items-center gap-3">
-				<span class="truncate font-mono text-xs text-muted-foreground">
-					{adminSession.serverBaseUrl || '当前域名'}
-				</span>
-				<Button variant="ghost" size="sm" onclick={handleLogout}>断开连接</Button>
-			</div>
-		</div>
-	</header>
-{/if}
-
 {@render children()}
+<Toaster />

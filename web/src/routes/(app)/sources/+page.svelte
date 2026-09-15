@@ -1,15 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { adminSession } from '$lib/state/admin-session.svelte';
   import { sourcesController } from '$lib/features/sources/controller.svelte';
-  import { goto } from '$app/navigation';
   import { Button, Badge, Card, CardHeader, CardContent } from '$lib/components/ui';
 
+  // 认证守卫已上提到 (app)/+layout.ts，页面只负责取数
   onMount(() => {
-    if (!adminSession.adminToken) {
-      goto('/connect');
-      return;
-    }
     sourcesController.loadSources();
   });
 
@@ -26,7 +21,7 @@
   <title>音源管理 | kg2lx</title>
 </svelte:head>
 
-<div class="mx-auto max-w-5xl p-6">
+<div>
   <div class="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
     <div>
       <h1 class="text-3xl font-bold tracking-tight">音源管理</h1>
