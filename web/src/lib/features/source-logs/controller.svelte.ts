@@ -31,6 +31,14 @@ class SourceLogsController {
 	 * 说清「你看到的这批是哪个时刻的」——否则保留数据会退化成「显示过期数据而不自知」。
 	 */
 	lastUpdatedAt = $state<number | null>(null);
+	/**
+	 * 用户主动暂停了自动刷新。
+	 *
+	 * 与「页面隐藏」分开记录：页面隐藏是自动的、用户看不见的；主动暂停必须在
+	 * 界面上明示，否则用户会以为数据还在实时更新（而它已经停了）。
+	 * 手动「刷新」按钮不受此影响——用户按了就该拉一次。
+	 */
+	paused = $state(false);
 
 	private requestId = 0;
 	private currentSourceId: string | null = null;
@@ -86,6 +94,7 @@ class SourceLogsController {
 		this.newLogIds = new Set();
 		this.error = null;
 		this.lastUpdatedAt = null;
+		this.paused = false;
 		this.loading = false;
 	}
 
@@ -94,6 +103,21 @@ class SourceLogsController {
 		this.view = view;
 		this.skipNextHighlight = true;
 		if (this.currentSourceId) this.loadLogs(this.currentSourceId, true);
+	}
+
+	setPaused(paused: boolean) {
+		if (this.paused === paused) return;
+		this.paused = paused;
+
+		if (paused) {
+			this.timer.pause();
+			return;
+		}
+
+		// 暂停期间可能已经累积了多行，一次性把 20 行全部标成「新增」是噪音而不是信号；
+		// 增量高亮只留给轮询自然追加的场景（与首屏不标记的理由同源）。
+		this.skipNextHighlight = true;
+		this.timer.resume();
 	}
 
 	refresh() {

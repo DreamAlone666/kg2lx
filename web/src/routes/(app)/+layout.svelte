@@ -40,7 +40,7 @@
 	class="sticky top-0 z-40 border-b border-border/70 bg-background/80 backdrop-blur-md"
 	style="view-transition-name: app-header"
 >
-	<div class="mx-auto flex h-14 max-w-5xl items-center gap-3 px-4 sm:gap-4 sm:px-6">
+	<div class="mx-auto flex h-14 max-w-7xl items-center gap-3 px-4 sm:gap-4 sm:px-6">
 		<a
 			href="/sources"
 			class="flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-2 md:min-h-0 md:min-w-0 md:justify-start"
@@ -89,6 +89,12 @@
 	</div>
 </header>
 
-<main class="mx-auto w-full max-w-5xl px-4 py-6 sm:px-6 sm:py-8">
+<!--
+	外壳与顶栏必须同宽：两者用不同的 max-w 会让品牌与内容区的左边缘错位
+	（此前专门实测过两侧左边缘一致，放宽时也要一起改）。
+	5xl(1024px) 在 1440/1920 上两侧各留 200~450px，而最需要宽度的运行时日志表
+	恰恰是六列固定布局；7xl(1280px) 让表格与卡片网格都能用上宽屏。
+-->
+<main class="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
 	{@render children()}
 </main>

@@ -144,23 +144,34 @@
 <Card class="mt-6 overflow-hidden">
 	<CardHeader class="gap-0 border-b border-border/70">
 		<div class="flex flex-wrap items-center justify-between gap-3">
-			<div class="flex items-center gap-3">
+			<div class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
 				<h2 class="text-subheading">运行时日志</h2>
 
 				<!--
-					顺序即优先级：暂停压过一切，其次是失败，再次是用户发起的拉取。
+					顺序即优先级，不得随意调换：暂停压过一切，其次是失败，再次是进行中的拉取。
 					error 分支是补上的——此前轮询是静默拉取（loading 始终为 false），
-					于是一次瞬时失败之后徽章仍显示绿色脉冲「实时」，与紧邻的
-					「日志刷新失败」同屏矛盾：徽章在替一个已经失败的状态背书。
+					于是一次瞬时失败之后徽章仍显示绿色「实时」，与紧邻的「日志刷新失败」
+					同屏矛盾：徽章在替一个已经失败的状态背书。
+
+					「实时」刻意不再脉冲。它是长期驻留的被动状态，用户无法据此做任何动作，
+					无限循环动画只是持续的分心源；脉冲只留给用户正在等待其结束的状态
+					（如「刷新中」与扫码页的「等待扫码」）。
 				-->
-				{#if !pageVisible.visible}
+				{#if !pageVisible.visible || sourceLogsController.paused}
 					<StatusBadge tone="neutral" dot>已暂停</StatusBadge>
 				{:else if sourceLogsController.error}
 					<StatusBadge tone="danger" dot>刷新失败</StatusBadge>
 				{:else if sourceLogsController.loading}
 					<StatusBadge tone="info" dot pulse>刷新中</StatusBadge>
 				{:else}
-					<StatusBadge tone="success" dot pulse>实时</StatusBadge>
+					<StatusBadge tone="success" dot>实时</StatusBadge>
+				{/if}
+
+				<!-- 暂停必须说清「你看到的是哪个时刻的数据」，否则暂停会退化成无声的数据过期 -->
+				{#if sourceLogsController.paused && sourceLogsController.lastUpdatedAt}
+					<span class="tabular text-xs whitespace-nowrap text-muted-foreground">
+						数据截至 {formatClockTime(sourceLogsController.lastUpdatedAt)}
+					</span>
 				{/if}
 			</div>
 
@@ -184,10 +195,24 @@
 					{/each}
 				</div>
 
+				<!--
+					「暂停」是长驻页面的必要能力：日志每 5 秒整表替换，而「我想停下来看清一行」
+					是高频需求，此前只能靠切走标签页（隐藏才会停）。
+					手动「刷新」不受暂停影响——用户按了就该拉一次。
+				-->
 				<Button
 					variant="ghost"
 					size="sm"
-					disabled={sourceLogsController.loading}
+					onclick={() => sourceLogsController.setPaused(!sourceLogsController.paused)}
+				>
+					{sourceLogsController.paused ? '继续' : '暂停'}
+				</Button>
+
+				<Button
+					variant="ghost"
+					size="sm"
+					pending={sourceLogsController.loading}
+					pendingLabel="刷新中…"
 					onclick={() => sourceLogsController.refresh()}
 				>
 					刷新
