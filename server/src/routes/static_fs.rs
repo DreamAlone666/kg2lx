@@ -7,7 +7,7 @@ use crate::app_state::AppState;
 
 pub async fn serve(State(state): State<AppState>, req: Request<Body>) -> Response<Body> {
     let base = match &state.config.web_dist_dir {
-        Some(d) => d.as_str(),
+        Some(d) => d.as_path(),
         None => return StatusCode::NOT_FOUND.into_response(),
     };
 
@@ -33,7 +33,7 @@ pub async fn serve(State(state): State<AppState>, req: Request<Body>) -> Respons
         .unwrap_or_else(|| StatusCode::NOT_FOUND.into_response())
 }
 
-async fn serve_file(base: &str, relative: &str) -> Option<Response<Body>> {
+async fn serve_file(base: &std::path::Path, relative: &str) -> Option<Response<Body>> {
     let root = tokio::fs::canonicalize(base).await.ok()?;
     let full = root.join(relative);
     let canonical = tokio::fs::canonicalize(&full).await.ok()?;

@@ -12,6 +12,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- `PUBLIC_BASE_URL` / `KUGOU_API_BASE_URL` 现在会在启动时校验：必须是带 `http`/`https` scheme 的绝对地址，否则直接拒绝启动并给出具体原因。只写 `localhost:8787`（漏 scheme）这类配置此前会静默生成不可用的脚本地址，现在会在本机明确报错。配置值同时被归一化（去尾随 `/`、host 转小写），`PUBLIC_BASE_URL=http://host/` 不再导致脚本 URL 出现双斜杠。
+- 脚本中插入的地址、token 与平台名改用 JSON 字符串字面量生成，`PUBLIC_BASE_URL` 含单引号等字符时不再破坏脚本语法。
 - 脚本头部元信息按语义分工：`@name` 为可自定义的实例标题，`@description` 由服务端独占写入「服务地址 · 账号 ID」，便于一眼区分本地与生产实例；免责声明下沉到脚本体注释。
 - LX 音源列表中的平台显示名固定为「酷狗概念版」，不再跟随用户自定义标题。
 - 脚本 `@version` 与后端发布版本刻意解耦，并补充三档 bump 规则；本轮脚本模板变化按规则由 `0.1.1` 升至 `0.1.2`。

@@ -183,7 +183,9 @@ impl KugouLiteClient {
             .build()
             .expect("build reqwest client");
         Self {
-            base_url: config.kugou_api_base_url.trim_end_matches('/').to_string(),
+            // `Config::from_env` 已保证该值是不带尾随 `/` 的规范化 http(s) 地址，
+            // 这里不再重复归一化。
+            base_url: config.kugou_api_base_url.clone(),
             client,
         }
     }

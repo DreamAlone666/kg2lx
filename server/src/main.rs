@@ -20,13 +20,13 @@ use tracing::Span;
 use crate::app_state::AppState;
 use crate::config::Config;
 
-fn validate_web_dist_dir(dir: &str) {
-    let path = std::path::Path::new(dir);
-    std::fs::canonicalize(path)
-        .unwrap_or_else(|err| panic!("WEB_DIST_DIR is unreadable or missing: {dir}: {err}"));
+fn validate_web_dist_dir(dir: &std::path::Path) {
+    std::fs::canonicalize(dir).unwrap_or_else(|err| {
+        panic!("WEB_DIST_DIR is unreadable or missing: {}: {err}", dir.display())
+    });
 
-    std::fs::read_dir(path)
-        .unwrap_or_else(|err| panic!("WEB_DIST_DIR is unreadable: {dir}: {err}"));
+    std::fs::read_dir(dir)
+        .unwrap_or_else(|err| panic!("WEB_DIST_DIR is unreadable: {}: {err}", dir.display()));
 }
 
 fn logged_path(req: &Request<Body>) -> Cow<'_, str> {

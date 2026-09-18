@@ -23,7 +23,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(config: Config) -> Self {
         let config = Arc::new(config);
-        let data_dir = std::path::Path::new(&config.data_dir);
+        let data_dir: &std::path::Path = &config.data_dir;
 
         let account_repo: Arc<dyn AccountRepo> =
             Arc::new(crate::repos::fs::account::FsAccountRepo::new(data_dir));

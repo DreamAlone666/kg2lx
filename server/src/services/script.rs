@@ -118,6 +118,15 @@ fn render_script(
 ) -> String {
     let name = sanitize_script_meta(source_name);
     let description = render_description(authority, userid);
+    // 插进 JS 代码里的值一律走 JSON 字符串字面量，而不是手写单引号拼接：
+    // JSON 的字符串语法是 JS 字符串字面量的子集，`serde_json` 会正确转义
+    // 引号、反斜杠与控制字符。手写 `'...'` 时，只要 `PUBLIC_BASE_URL` 里出现
+    // 一个 `'`（或 token 里出现 `"`），整段脚本就是语法错误、导入即失败。
+    // 注意上面两个 `@name`/`@description` 不需要转义：它们在注释里，且已被
+    // `sanitize_script_meta` 去掉唯一能闭合注释的 `*/`。
+    let api_literal = js_string_literal(&format!("{public_base_url}/api/v1/runtime/music-url"));
+    let token_literal = js_string_literal(runtime_token);
+    let platform_literal = js_string_literal(platform_name);
 
     format!(
         r#"/**
@@ -127,8 +136,8 @@ fn render_script(
  */
 // kg2lx 专属酷狗概念版音源脚本，仅供通过 kg2lx 解析歌曲链接
 const {{ EVENT_NAMES, request, on, send }} = globalThis.lx
-const API = '{public_base_url}/api/v1/runtime/music-url'
-const TOKEN = '{runtime_token}'
+const API = {api_literal}
+const TOKEN = {token_literal}
 const qualityMap = {{ '128k': '128k', '320k': '320k', flac: 'flac', flac24bit: 'flac24bit' }}
 const httpPost = (url, body) => new Promise((resolve, reject) => {{
   request(url, {{
@@ -165,7 +174,7 @@ send(EVENT_NAMES.inited, {{
   openDevTools: false,
   sources: {{
     kg: {{
-      name: '{platform_name}',
+      name: {platform_literal},
       type: 'music',
       actions: ['musicUrl'],
       qualitys: ['128k', '320k', 'flac', 'flac24bit'],
@@ -174,6 +183,14 @@ send(EVENT_NAMES.inited, {{
 }})
 "#
     )
+}
+
+/// 把一个值渲染成可直接嵌入 JS 源码的字符串字面量（双引号，内容已转义）。
+///
+/// JSON 字符串语法是 JS 字符串字面量的子集，因此 `serde_json` 的输出可以直接
+/// 当 JS 字面量用。对 `&str` 而言序列化不会失败。
+fn js_string_literal(value: &str) -> String {
+    serde_json::to_string(value).expect("serializing a &str to JSON cannot fail")
 }
 
 /// `@description` 由服务端独占，形如 `<authority> · <userid>`。
@@ -291,12 +308,39 @@ mod tests {
             "酷狗概念版",
         );
         assert!(
-            script.contains("      name: '酷狗概念版',"),
+            script.contains("      name: \"酷狗概念版\","),
             "sources.kg.name must be the fixed platform name"
         );
         assert!(
-            !script.contains("name: '本地调试 12345678'"),
+            !script.contains("name: \"本地调试 12345678\""),
             "instance title must never leak into sources[].name"
+        );
+    }
+
+    /// 插入 JS 代码的值必须是转义过的字符串字面量。`PUBLIC_BASE_URL` 里出现
+    /// `'`、或 token 里出现 `"` / `\` 时，手写单引号拼接会让整段脚本变成
+    /// 语法错误（导入即失败），而不是只影响显示。
+    #[test]
+    fn interpolated_values_are_escaped_js_string_literals() {
+        let script = render_script(
+            "http://host/a'b",
+            "rt_\"x\\y",
+            "标题",
+            "host",
+            "1",
+            "酷狗概念版",
+        );
+        assert!(
+            script.contains(r#"const API = "http://host/a'b/api/v1/runtime/music-url""#),
+            "base url must be a double-quoted literal so an apostrophe cannot escape"
+        );
+        assert!(
+            script.contains(r#"const TOKEN = "rt_\"x\\y""#),
+            "quote and backslash in the runtime token must be escaped"
+        );
+        assert!(
+            script.contains("      name: \"酷狗概念版\","),
+            "platform name must be a string literal too"
         );
     }
 
