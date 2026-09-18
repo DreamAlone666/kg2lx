@@ -20,7 +20,9 @@ impl Config {
             public_base_url: require_http_base_url("PUBLIC_BASE_URL"),
             admin_token: env::var("ADMIN_TOKEN").expect("ADMIN_TOKEN is required"),
             kugou_api_base_url: require_http_base_url("KUGOU_API_BASE_URL"),
-            data_dir: env::var("DATA_DIR").unwrap_or_else(|_| "./data".into()).into(),
+            data_dir: env::var("DATA_DIR")
+                .unwrap_or_else(|_| "./data".into())
+                .into(),
             upstream_timeout_ms: env::var("UPSTREAM_TIMEOUT_MS")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -129,7 +131,10 @@ mod tests {
             "host:8787",
             "userinfo must not leak into the script header"
         );
-        assert_eq!(authority_of("https://kg2lx.example.com"), "kg2lx.example.com");
+        assert_eq!(
+            authority_of("https://kg2lx.example.com"),
+            "kg2lx.example.com"
+        );
         assert_eq!(
             authority_of("https://kg2lx.example.com/api/v1?x=1#frag"),
             "kg2lx.example.com"
@@ -166,7 +171,10 @@ mod tests {
     /// host 归一化为小写，描述文案不会因运维敲了大小写而抖动。
     #[test]
     fn authority_lowercases_host() {
-        assert_eq!(authority_of("http://Host.Example:8787"), "host.example:8787");
+        assert_eq!(
+            authority_of("http://Host.Example:8787"),
+            "host.example:8787"
+        );
     }
 
     #[test]

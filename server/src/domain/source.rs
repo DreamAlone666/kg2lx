@@ -192,7 +192,10 @@ mod tests {
     /// userid 为空时不能产生「酷狗概念版 」这类带尾随空格的文案。
     #[test]
     fn default_name_has_no_trailing_space_when_userid_missing() {
-        assert_eq!(default_name("酷狗概念版", "12345678"), "酷狗概念版 12345678");
+        assert_eq!(
+            default_name("酷狗概念版", "12345678"),
+            "酷狗概念版 12345678"
+        );
         assert_eq!(default_name("酷狗概念版", ""), "酷狗概念版");
         assert_eq!(default_name("", "12345678"), "12345678");
         assert_eq!(default_name("", ""), "");

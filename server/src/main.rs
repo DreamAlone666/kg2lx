@@ -22,7 +22,10 @@ use crate::config::Config;
 
 fn validate_web_dist_dir(dir: &std::path::Path) {
     std::fs::canonicalize(dir).unwrap_or_else(|err| {
-        panic!("WEB_DIST_DIR is unreadable or missing: {}: {err}", dir.display())
+        panic!(
+            "WEB_DIST_DIR is unreadable or missing: {}: {err}",
+            dir.display()
+        )
     });
 
     std::fs::read_dir(dir)
