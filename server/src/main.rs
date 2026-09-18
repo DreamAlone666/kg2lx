@@ -62,7 +62,10 @@ async fn main() {
             get(routes::admin::poll_qr_login),
         )
         .route("/sources", get(routes::admin::list_sources))
-        .route("/sources/{source_id}", get(routes::admin::get_source))
+        .route(
+            "/sources/{source_id}",
+            get(routes::admin::get_source).patch(routes::admin::update_source),
+        )
         .route(
             "/sources/{source_id}/refresh",
             post(routes::admin::refresh_source),

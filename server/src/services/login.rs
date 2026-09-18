@@ -269,7 +269,7 @@ impl LoginService {
                 let source_id = format!("src_{}", uuid::Uuid::new_v4());
                 let script_token = format!("st_{}", uuid::Uuid::new_v4());
                 let runtime_token = format!("rt_{}", uuid::Uuid::new_v4());
-                let name = format!("{} {}", self.config.source_name_prefix, userid);
+                let name = source::default_name(&self.config.source_name_prefix, &userid);
                 let now3 = source::now_ts();
                 let s = source::Source {
                     source_id,

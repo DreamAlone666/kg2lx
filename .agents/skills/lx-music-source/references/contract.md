@@ -23,6 +23,26 @@ Example:
  */
 ```
 
+### How The Host Uses Header Metadata
+What a script actually gets from its header is narrower than the list of fields above. Treat only these as load-bearing:
+
+- The host parses the comment and exposes it as `currentScriptInfo`. Rely on `@name`, `@version`, and `@description` having a stable, user-visible meaning; `@author` and `@homepage` are informational and are not guaranteed to be surfaced anywhere.
+- `@name` is the title shown in the custom-source list; `@description` is the line under it. Both must stay **single-line** — a raw newline inside the comment breaks the metadata parse.
+- Metadata is read and frozen **at import time**. The host keeps its own copy of the script text, so editing the script on a server does not change what an already-imported source displays. A user only sees a new title, description, or version after deleting the entry and importing again.
+- There is **no auto-update** and **no de-duplication** for custom sources: importing the same URL twice yields two entries. This is why `@version` is the user's only signal for whether re-importing is worth it — do not bump it for changes that are invisible from the client side.
+- The length limits are **advisory, not enforced**. The official documentation says 建议不要过长, 24 个字符以内 for `@name` and 36 个字符以内 for `@description`. Exceeding them does not fail the import; it only makes the list entry harder to read. Do not add hard validation that rejects an over-length name.
+- Because `@name` sits inside a block comment, a value containing `*/` closes the comment early and makes the whole script a syntax error on import. Strip `*/` (repeatedly — removing one occurrence can splice a new one together) before writing any user-controlled text into the header.
+
+### `sources[key].name` Is Platform-Level, Not Instance-Level
+`@name` and each `sources[key].name` are two different levels and must not be driven by the same string:
+
+- `@name` — the **script/instance** title; exactly one per script file.
+- `sources[key].name` — the **platform** display name; one per declared source key.
+
+The official basic example makes this explicit: the header is `@name 测试音乐源` (script level), while inside `inited` you find `kw: { name: '酷我音乐' }` and `local: { name: '本地音乐' }` (platform level). One script can declare several platform sources but has only one header `@name`, so sharing a single string between the two is a latent bug that appears as soon as a second source key is added.
+
+Concretely: keep `sources.kg.name` a fixed platform literal such as `'酷狗概念版'`, and never wire it to a per-instance title that a user or a server can rename.
+
 ## `globalThis.lx`
 The host exposes the scripting API through `globalThis.lx`. Common fields:
 

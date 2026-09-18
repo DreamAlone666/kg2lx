@@ -58,11 +58,15 @@ impl AppState {
             config.clone(),
             client.clone(),
             source_repo.clone(),
-            account_repo,
+            account_repo.clone(),
             log_repo,
         ));
 
-        let script_service = Arc::new(ScriptService::new(config.clone(), source_repo));
+        let script_service = Arc::new(ScriptService::new(
+            config.clone(),
+            source_repo,
+            account_repo,
+        ));
 
         Self {
             config,

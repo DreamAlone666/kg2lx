@@ -25,6 +25,9 @@ Put the request into one of these buckets and only read the minimum needed files
 - Normalize `request()` callback payloads defensively. `resp.body` may already be an object, not always a JSON string.
 - Do not assume a backend `200` guarantees LX playback. Script-side parse mistakes and wrong return shapes can still make playback fail.
 - Pass `request()` `body` as an object, not a `JSON.stringify`'d string, and tolerate the JSON-string-wrapped body shape in backends; see `references/contract.md` (Mobile Differences) for why.
+- Header metadata is parsed and **frozen at import time**: the host keeps its own copy, so re-rendering a script server-side changes nothing until the user deletes the entry and re-imports. Keep `@name`/`@description`/`@version` single-line, and never let user-controlled text reach the header without stripping `*/`.
+- A script's `@version` tracks the **script contract**, not the backend's release version. Bump it when the LX-facing request/response contract or the script template changes — not when the service behind it ships unrelated features. There is no auto-update, so a noisy version number only pushes users into pointless re-imports.
+- `sources[key].name` is the **platform** display name (like `酷我音乐` / `本地音乐`), a different level from the header `@name`. Never drive it from a per-instance or user-editable title; see `references/contract.md` (`sources[key].name` Is Platform-Level).
 
 ## Implementation Flow
 1. Decide which source keys are needed: only use `kw`, `kg`, `tx`, `wy`, `mg`, and `local`.
@@ -60,6 +63,10 @@ Put the request into one of these buckets and only read the minimum needed files
 Before finishing, verify at least these points:
 
 - The header comment includes `@name`; other metadata fields are present only when useful.
+- The header has at most one line per field, `@name` / `@description` / `@version` stay single-line, and no field value can contain `*/` (repeatedly strip it — removing one occurrence can splice a new one together).
+- No hard validation rejects a title merely for exceeding the official advisory lengths (24 characters for `@name`, 36 for `@description`); those are suggestions, and over-length values still import fine.
+- `sources[key].name` is a fixed platform name, not an instance title or anything user-customizable.
+- Any `@version` bump is justified by an LX-facing contract or script-template change, not by an unrelated backend release.
 - Every branch of `on(EVENT_NAMES.request, handler)` returns a `Promise`.
 - `sources` keys, `actions`, and `qualitys` match the official contract.
 - Non-`local` sources do not incorrectly expose `lyric` or `pic`.
