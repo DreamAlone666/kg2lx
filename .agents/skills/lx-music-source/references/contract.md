@@ -93,8 +93,37 @@ Common payload fields:
 `info` shape: `{ type, musicInfo }`
 
 - `type`: requested quality, for example `128k`, `320k`, `flac`, or `flac24bit`.
-- `musicInfo`: song metadata object. Common useful fields are `hash`, `songmid`, and `id`.
+- `musicInfo`: song metadata object. It is **not** just an id bag — see `What The Script Actually Receives` below.
 - Return value: an HTTP or HTTPS song URL string.
+
+#### What The Script Actually Receives As `musicInfo`
+The object handed to the script is the **legacy flat shape**, not the host's internal one. The call site is
+`musicSdk[musicInfo.source].getMusicUrl(toOldMusicInfo(musicInfo), itemQuality)` (`src/renderer/core/music/utils.ts`), and
+`toOldMusicInfo()` (`src/common/utils/tools.ts`) flattens the nested `MusicInfo` before handing it over:
+
+| Script sees (flat) | Meaning | Internal path it came from |
+| --- | --- | --- |
+| `name` | Song title | `MusicInfo.name` |
+| `singer` | Artist | `MusicInfo.singer` |
+| `albumName` | Album name | `meta.albumName` |
+| `songmid` | Song id | `meta.songId` |
+| `interval` | Duration, formatted like `03:55` | `MusicInfo.interval` |
+| `img` | Cover URL (may be `''`) | `meta.picUrl ?? ''` |
+| `albumId` | Album id (optional) | `meta.albumId` |
+| `types` / `_types` | Per-quality metadata and sizes | `meta.qualitys` / `meta._qualitys` |
+| `hash` (kg only) | Kugou song hash | `meta.hash` |
+| `albumAudioId` (kg only) | Kugou 专辑内歌曲ID / MixSongID | `meta.albumAudioId` |
+| `strMediaMid` / `albumMid` (tx only) | tx identifiers | `meta.strMediaMid` / `meta.albumMid` |
+| `copyrightId`, `lrcUrl`, `mrcUrl`, `trcUrl` (mg only) | mg identifiers | the matching `meta.*` fields |
+
+Consequences that are easy to get wrong:
+
+- **Never read `musicInfo.meta.*` in a script.** The nested form is the host's internal representation; by the time the handler runs, everything has been flattened one level. `musicInfo.meta.albumName` is `undefined`, `musicInfo.albumName` is the album.
+- **Identifier names are source-specific and not normalized.** `hash` + `albumAudioId` are kg only. There is **no snake_case `album_audio_id`** — writing `musicInfo.album_audio_id || musicInfo.albumAudioId` gives you a first branch that can never be true.
+- **`singer` is one string, not an array.** Multiple artists arrive joined by `、` (for example `Beyond、黄家驹`). Do not call `.join()` on it or index it.
+- **Do not assume the ids are the only thing worth forwarding.** `name` / `singer` / `albumName` are populated whenever the song came from a list or search result, and are free to pass on. A backend that only receives ids can never recover the names later — see the proxy watch-out in `patterns.md`.
+
+Provenance and evidence boundary: the official documentation only says `info.musicInfo` is 音乐信息对象，里面有音乐 ID、名字等信息 and **does not enumerate any field names**. The table above was verified by reading `lx-music-desktop` `master` (`src/common/utils/tools.ts` `toOldMusicInfo`, its call site in `src/renderer/core/music/utils.ts`, and the `LX.Music.MusicInfo*` types in `src/common/types/music.d.ts`). Treat it as source-verified but undocumented: stable in practice, yet not part of the published contract.
 
 #### `lyric`
 `info` shape: `{ musicInfo }`
@@ -126,6 +155,18 @@ send(EVENT_NAMES.updateAlert, {
 - `wy`
 - `mg`
 - `local`
+
+### These Keys Are Built-In: You Override Actions, Not The Whole Source
+None of these keys are blank slots. Each one already has a built-in implementation inside LX, and a custom source only replaces the **actions it declares**:
+
+- `useInitUserApi.ts` builds `apis[source].getMusicUrl = (songInfo, type) => sendUserApiRequest({ source, action: 'musicUrl', info: { type, musicInfo: songInfo } })` for every declared action.
+- `src/renderer/utils/musicSdk/api-source.js` returns that user-api object when the active api source matches, so the built-in `getMusicUrl` is shadowed.
+- Everything else stays built-in. Verified for `kg` in `src/renderer/utils/musicSdk/kg/index.js`: `getMusicUrl` delegates to `apis('kg')`, while `songList` / `musicSearch` / `hotSearch` / `lyric` / `pic` remain the hardcoded local imports.
+
+Two practical consequences:
+
+- **Song lists, search, and therefore `musicInfo` come from the built-in source, not from you.** This is why `name` / `singer` / `albumName` are populated — you are not expected to supply them, and there is no action through which you could. (There is no list/search action at all: for a non-`local` source, `actions` is effectively fixed to `['musicUrl']`.)
+- **Declaring a built-in key does not take over lyric or cover art.** Those still resolve through the built-in implementation. The rule "non-`local` sources expose only `musicUrl`" is about what you may declare, not about what the app can do for that source.
 
 ### Action Rules
 - `local` may support `musicUrl`, `lyric`, and `pic`.

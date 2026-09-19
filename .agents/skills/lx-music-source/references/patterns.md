@@ -42,6 +42,7 @@ Static proxy watch-outs:
 - Pass `options.body` as the object, never `JSON.stringify` it; see `references/contract.md` (Mobile Differences) for why a string body breaks on mobile. If the backend is consumed by both current and already-deployed old scripts, accept the JSON-string-wrapped shape too.
 - If LX still cannot play while backend logs show `200`, inspect the script's parsing and final `Promise` return value before debugging the backend.
 - Do not auto-upgrade audio URLs from `http` to `https` unless you verified the CDN host has a valid certificate for that hostname.
+- **Forward the song's display fields upstream, not just its id.** If the backend logs, attributes, or displays requests per song, send `musicInfo.name` / `musicInfo.singer` / `musicInfo.albumName` alongside the identifier. The script is the **only** hop that has them: a `song/url`-style upstream response carries just the play URL, so a backend that accepted only the id can never recover the names afterwards without adding a second upstream lookup. This is a one-line change in the request body and the difference between a log that says `海阔天空 (Live) — Beyond、黄家驹` and one that says `#A0AEFE0`. See `contract.md` (`What The Script Actually Receives As musicInfo`) for the exact field names.
 
 ## Pattern 2: Dynamic Config
 Use this when supported sources, qualities, switches, or update metadata come from a remote config instead of being hard-coded.

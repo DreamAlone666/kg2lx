@@ -24,6 +24,12 @@
       "prompt": "这个洛雪音源在 lx-music-desktop 能播，但 lx-music-mobile 播放失败。服务端日志显示脚本能加载，`/api/v1/runtime/music-url` 也被调用了，但返回 422，没有进入上游取 URL 的业务日志。帮我判断下一步该查什么。",
       "expected_output": "应优先判断这是移动端 request body 形状差异：确认 POST body 是否是 JSON-string-wrapped object，而不是直接归因于上游或播放 URL；建议用真实服务日志区分脚本加载、runtime 调用、body 解析和上游阶段。",
       "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "我的洛雪音源脚本现在只把 `hash`、`album_audio_id`、`quality` 发给后端。后端的日志面板想按歌曲显示「歌名 / 歌手 / 专辑」，但这三个字段一直是 `null`。请判断这个信息该由谁提供，并给出最小改法。",
+      "expected_output": "应指出信息一直在 `musicInfo` 里，脚本是唯一持有它的一跳，最小改法是在 musicUrl 请求体里补上 `musicInfo.name` / `musicInfo.singer` / `musicInfo.albumName`（脚本边界上是 toOldMusicInfo 展平的扁平对象，不是嵌套的 `meta.*`；`singer` 是「、」连接的单字符串）；并指出 `album_audio_id` 这个蛇形写法不存在、应按 kg 的驼峰 `albumAudioId` 读。不应建议后端改用自己的上游接口按 hash 反查补全。",
+      "files": []
     }
   ]
 }

@@ -28,6 +28,7 @@ Put the request into one of these buckets and only read the minimum needed files
 - Header metadata is parsed and **frozen at import time**: the host keeps its own copy, so re-rendering a script server-side changes nothing until the user deletes the entry and re-imports. Keep `@name`/`@description`/`@version` single-line, and never let user-controlled text reach the header without stripping `*/`.
 - A script's `@version` tracks the **script contract**, not the backend's release version. Bump it when the LX-facing request/response contract or the script template changes — not when the service behind it ships unrelated features. There is no auto-update, so a noisy version number only pushes users into pointless re-imports.
 - `sources[key].name` is the **platform** display name (like `酷我音乐` / `本地音乐`), a different level from the header `@name`. Never drive it from a per-instance or user-editable title; see `references/contract.md` (`sources[key].name` Is Platform-Level).
+- `info.musicInfo` is the host's **flattened legacy shape** (`toOldMusicInfo`), not the nested internal `MusicInfo` — read `musicInfo.albumName`, never `musicInfo.meta.albumName`. It carries the song's display fields (`name` / `singer` / `albumName`) alongside the source-specific ids, and they are populated because lists and search come from the built-in implementation; see `references/contract.md` (`What The Script Actually Receives As musicInfo`).
 
 ## Implementation Flow
 1. Decide which source keys are needed: only use `kw`, `kg`, `tx`, `wy`, `mg`, and `local`.
@@ -40,7 +41,8 @@ Put the request into one of these buckets and only read the minimum needed files
 
 ## Mapping Rules
 - `info.type` is the LX-requested quality. Only continue if that quality is actually declared for the source.
-- Choose the song identifier from real script or API data. Common candidates are `musicInfo.hash`, `musicInfo.songmid`, and `musicInfo.id`.
+- Choose the song identifier from real script or API data. For `kg` that is `musicInfo.hash`; `musicInfo.songmid` and `musicInfo.id` are the other common ones, and no script ever sees `musicInfo.meta.*`.
+- If the backend logs or attributes requests per song, pass the display fields (`musicInfo.name` / `musicInfo.singer` / `musicInfo.albumName`) in the same request body. They are free at this hop and unrecoverable after it; see `references/patterns.md` (Pattern 1).
 - `musicUrl` must finally resolve to one HTTP or HTTPS URL string, even if the backend returns `{ url }`, `{ data: { url } }`, or an array of candidate URLs.
 - `lyric` must return `{ lyric, tlyric, rlyric, lxlyric }`, with missing fields set to `null`.
 - `pic` must return an HTTP or HTTPS URL string.
@@ -74,6 +76,8 @@ Before finishing, verify at least these points:
 - `request()` response handling works whether `resp.body` is a string or an object.
 - Backend proxy handlers tolerate both direct JSON object bodies and JSON-string-wrapped bodies when targeting lx-music-mobile.
 - Backend proxy handlers check `resp.statusCode` and normalize nested or array URL payloads into one final string.
+- If the backend renders, logs, or attributes per song, the outgoing request body carries the song's display fields (`musicInfo.name` / `singer` / `albumName`), not just the identifier. An id-only body is not something the backend can enrich later without an extra upstream lookup.
+- `musicInfo` field reads use the flat names (`albumName`, `singer`, `hash`, `albumAudioId`) and never `musicInfo.meta.*`; no source-specific id is assumed to exist on another source.
 - Headers, auth, UA strings, timeouts, and logging exist because the task needs them, not because example scripts had them.
 - If the script uses `env`, `version`, `currentScriptInfo`, or `utils`, only read the fields that are actually needed.
 
