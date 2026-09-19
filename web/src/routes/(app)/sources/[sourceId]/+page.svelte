@@ -23,7 +23,20 @@
 	} from '$lib/domain';
 
 	let sourceId = $derived(page.params.sourceId ?? '');
-	let source = $derived(sourcesController.currentSource);
+	/**
+	 * 只渲染与 URL 对齐的那一个音源。
+	 *
+	 * 控制器是模块级单例，`currentSource` 在切换音源时不会立刻清空：从列表点进另一个
+	 * 音源，在新数据回来之前它仍是上一个。直接渲染的话，用户会在 B 的地址上看到 A 的
+	 * 标题与 A 的脚本地址；而改名功能上线后更糟——`{#key sourceId}` 会把 A 的 source
+	 * 交给 B 的组件实例，预填出 A 的标题并把它写进 B。慢后端下这个窗口有数秒宽。
+	 * 对齐失败一律当作「还没加载」，交给下面的骨架屏分支。
+	 */
+	let source = $derived(
+		sourcesController.currentSource?.source_id === sourceId
+			? sourcesController.currentSource
+			: null
+	);
 	let refreshing = $derived(Boolean(sourcesController.refreshing[sourceId]));
 	let pageTitle = $derived(source ? `${source.name} | kg2lx` : '音源详情 | kg2lx');
 
