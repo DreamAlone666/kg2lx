@@ -129,4 +129,39 @@ mod tests {
         assert_eq!(object.quality, wrapped.quality);
         assert_eq!(object.album_audio_id, wrapped.album_audio_id);
     }
+
+    // 0.1.3 起脚本会在请求体里多带三个歌曲元数据字段。这不是线上抓包，而是照
+    // `services/script.rs` 模板的字段清单手写的等价体——那一侧的
+    // `request_body_maps_lx_music_info_fields` 钉住模板，这一侧钉住服务端收得下。
+    // 两半合起来才覆盖完整链路；单看任何一半都无法证明元数据能落盘。
+    //
+    // 刻意用真实形态的取值：歌名带全角括号与空格、歌手是「、」分隔的多人、
+    // 专辑含中文书名号——它们都必须原样穿过 JSON 往返，任何一处转义写错都会在
+    // 日志面板上显示成乱码，而不是报错。
+    static METADATA_BODY: &[u8] = r#"{"hash":"A0AEFE0227938F366FF4F9D4F0F6CBE5","album_audio_id":"32143665","quality":"flac24bit","track_title":"海阔天空 (Live)","artist_name":"Beyond、黄家驹","album_name":"《乐与怒》"}"#.as_bytes();
+
+    #[test]
+    fn parses_body_carrying_song_metadata() {
+        let r = parse_music_url_request(METADATA_BODY).expect("metadata body should parse");
+        assert_eq!(r.hash, "A0AEFE0227938F366FF4F9D4F0F6CBE5");
+        assert_eq!(r.album_audio_id.as_deref(), Some("32143665"));
+        assert_eq!(r.quality, "flac24bit");
+        assert_eq!(r.track_title.as_deref(), Some("海阔天空 (Live)"));
+        assert_eq!(r.artist_name.as_deref(), Some("Beyond、黄家驹"));
+        assert_eq!(r.album_name.as_deref(), Some("《乐与怒》"));
+    }
+
+    /// 老脚本（0.1.2 及以前）只发三个字段，必须继续可用。
+    ///
+    /// 这条此前是**隐式**成立的（`OBJECT_BODY` 就只有三个键），本轮往契约里加字段
+    /// 之后它变成了承重条件：用户不会因为后台更新而集体重新导入脚本，所以"缺三个
+    /// 可选字段仍能解析"必须被显式钉住，否则一次给 `RuntimeMusicUrlRequest` 的
+    /// 可选字段加上 `#[serde(default)]` 之类的改动就会让全部存量用户播放失败。
+    #[test]
+    fn old_three_field_body_still_parses() {
+        let r = parse_music_url_request(OBJECT_BODY).expect("0.1.2 时代的请求体必须继续可解析");
+        assert_eq!(r.track_title, None);
+        assert_eq!(r.artist_name, None);
+        assert_eq!(r.album_name, None);
+    }
 }

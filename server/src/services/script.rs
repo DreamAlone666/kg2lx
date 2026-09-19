@@ -18,9 +18,11 @@ use crate::repos::source::SourceRepo;
 /// 2. 脚本模板实现变化 —— 应 bump，用户重新导入才有收益；
 /// 3. 服务端内部变化（路由、存储、日志等） —— **不 bump**。
 ///
-/// 本轮按规则 2：头部元信息重排为 `@name`/`@description`/`@version` 三行，
-/// 且 `sources.kg.name` 改为静态平台名，故 `0.1.1` -> `0.1.2`。
-const SCRIPT_VERSION: &str = "0.1.2";
+/// 本轮按规则 2：脚本开始转发 LX 提供的歌曲元数据（见 `render_script` 里
+/// 以「歌曲元数据的字段名来自…」开头的那段注释），用户重新导入后日志面板才会
+/// 出现歌名，故 `0.1.2` -> `0.1.3`。此前那一轮的 `0.1.1` -> `0.1.2` 是头部
+/// 元信息重排与 `sources.kg.name` 改为静态平台名。
+const SCRIPT_VERSION: &str = "0.1.3";
 
 pub struct ScriptService {
     config: Arc<Config>,
@@ -124,6 +126,22 @@ fn render_script(
     // 一个 `'`（或 token 里出现 `"`），整段脚本就是语法错误、导入即失败。
     // 注意上面两个 `@name`/`@description` 不需要转义：它们在注释里，且已被
     // `sanitize_script_meta` 去掉唯一能闭合注释的 `*/`。
+    //
+    // 歌曲元数据的字段名来自 LX 在脚本边界上的**扁平**音乐对象，不是 LX 内部的
+    // `MusicInfo`（那个是嵌套的 `meta.albumName`）。映射链是
+    // `core/music/utils.ts` 的 `getMusicUrl(toOldMusicInfo(musicInfo), quality)`
+    // → `common/utils/tools.ts` 的 `toOldMusicInfo`，它产出
+    // `{ name, singer, albumName, hash, albumAudioId, ... }`：歌名/歌手/专辑是
+    // 顶层 `name`/`singer`/`albumName`，酷狗标识是 `hash` 与 **camelCase** 的
+    // `albumAudioId`。
+    //
+    // 这几个字段此前一个都没发，后端的 `track_title` / `artist_name` /
+    // `album_name` 于是从未落过盘（实测 20 行窗口跨 2026-05 ~ 2026-09 全是 null），
+    // 日志面板只能退化成拿 hash 当行身份。信息是 LX 免费给的，不该由我们反查上游。
+    //
+    // 取值一律 `|| null`：LX 对缺失字段可能给 `undefined` 或空串，而空串会让后端
+    // 落盘成「有元数据但是空标题」，前端 `{#if log.track_title}` 的分支判断与
+    // 「这一行没有元数据」就再也分不开了。统一归一化成 `null`。
     let api_literal = js_string_literal(&format!("{public_base_url}/api/v1/runtime/music-url"));
     let token_literal = js_string_literal(runtime_token);
     let platform_literal = js_string_literal(platform_name);
@@ -166,8 +184,11 @@ on(EVENT_NAMES.request, ({{ source, action, info }}) => {{
   if (!quality) return Promise.reject(new Error(`unsupported quality: ${{info.type}}`))
   return httpPost(API, {{
     hash: musicInfo.hash,
-    album_audio_id: musicInfo.album_audio_id || musicInfo.albumAudioId || null,
+    album_audio_id: musicInfo.albumAudioId || null,
     quality,
+    track_title: musicInfo.name || null,
+    artist_name: musicInfo.singer || null,
+    album_name: musicInfo.albumName || null,
   }})
 }})
 send(EVENT_NAMES.inited, {{
@@ -246,7 +267,7 @@ mod tests {
             vec![
                 " * @name 酷狗概念版 12345678",
                 " * @description 127.0.0.1:8787 · 12345678",
-                " * @version 0.1.2",
+                " * @version 0.1.3",
             ],
             "header metadata layout changed; update this test deliberately"
         );
@@ -349,5 +370,59 @@ mod tests {
     fn disclaimer_moved_into_body() {
         let script = sample_script();
         assert!(script.contains("// kg2lx 专属酷狗概念版音源脚本"));
+    }
+
+    /// `httpPost(API, { ... })` 的请求体，压平空白后返回。
+    ///
+    /// 只取这一段而不是对整个脚本做 `contains`：后者无法发现「字段接错线」——
+    /// 把 `artist_name` 也接到 `musicInfo.name` 上时，两个 `contains` 都成立。
+    fn request_body(script: &str) -> String {
+        const MARKER: &str = "return httpPost(API, {";
+        let start = script
+            .find(MARKER)
+            .expect("script must build the music-url request body inline");
+        let rest = &script[start + MARKER.len()..];
+        let end = rest
+            .find("})")
+            .expect("the request body object must be closed");
+        rest[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// 请求体的字段映射必须逐字钉死。
+    ///
+    /// 这不是格式洁癖：LX 在脚本边界给出的音乐对象是**扁平**的
+    /// （`toOldMusicInfo` 产出 `name` / `singer` / `albumName`），而契约字段是
+    /// 蛇形的 `track_title` / `artist_name` / `album_name`。两侧的名字没有任何
+    /// 编译器能对齐，唯一的保障就是这条断言——映射被改动时它必须报错，让人
+    /// 停下来确认是故意改的。
+    #[test]
+    fn request_body_maps_lx_music_info_fields() {
+        let script = sample_script();
+        assert_eq!(
+            request_body(&script),
+            concat!(
+                "hash: musicInfo.hash, ",
+                "album_audio_id: musicInfo.albumAudioId || null, ",
+                "quality, ",
+                "track_title: musicInfo.name || null, ",
+                "artist_name: musicInfo.singer || null, ",
+                "album_name: musicInfo.albumName || null,"
+            ),
+            "request body mapping changed; update this test deliberately"
+        );
+    }
+
+    /// `album_audio_id` 只认 LX 的驼峰 `albumAudioId`。
+    ///
+    /// 此前写的是 `musicInfo.album_audio_id || musicInfo.albumAudioId`，而
+    /// `toOldMusicInfo` 里根本没有蛇形那一个——前半个分支恒为假，是一段永远
+    /// 不会命中的兜底。留着它会让下一个人以为两种命名都可能出现。
+    #[test]
+    fn album_audio_id_has_no_snake_case_alias() {
+        let script = sample_script();
+        assert!(
+            !script.contains("musicInfo.album_audio_id"),
+            "LX never sends an `album_audio_id` field on the script boundary"
+        );
     }
 }
