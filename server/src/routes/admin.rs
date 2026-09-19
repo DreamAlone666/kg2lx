@@ -69,7 +69,7 @@ pub async fn refresh_source(
 
 #[derive(serde::Deserialize)]
 pub struct UpdateSourceBody {
-    /// `null` 或纯空白 => 恢复默认名（`SOURCE_NAME_PREFIX + userid`）。
+    /// `null` 或纯空白 => 恢复服务端默认标题（实例前缀 + userid）。
     /// 非空但清洗后为空（例如只填了 `*/`）=> 400，而不是静默变成默认名，
     /// 否则用户会被无声地「改名成功」误导。
     ///

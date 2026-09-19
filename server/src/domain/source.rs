@@ -26,9 +26,25 @@ pub const SCRIPT_DESC_ADVISORY_CHARS: usize = 36;
 ///
 /// `name` 会出现在**每一次** `/s/{token}.js` 响应里，极端超长的输入会明显
 /// 撑大脚本体积。该上限只在写入路径（PATCH）生效并返回 400；渲染路径
-/// **永不拒绝、也不截断**，否则一个超长的 `SOURCE_NAME_PREFIX` 会让脚本
+/// **永不拒绝、也不截断**，否则一个超长的 `Source.name` 会让脚本
 /// URL 直接不可用。
 pub const SCRIPT_NAME_MAX_BYTES: usize = 256;
+
+/// 音源默认标题的**实例级**前缀。
+///
+/// 与 [`ProviderKind::display_name`] 的**平台级**展示名是两个层级，两者当前
+/// 恰好同为「酷狗概念版」，但必须彼此独立、不可互相复用——理由见
+/// `src/domain/provider.rs`：一份脚本可以声明多个平台源，共用同一字符串会让
+/// 「接入第二个平台」立刻变成 bug。
+///
+/// 为什么不直接用账号的 `userid`：账号记录可能缺失，此时 `userid` 是空串，
+/// 拼出的标题也是空串。写入路径拒绝空标题，「恢复默认名」会因此失败。常量
+/// 保证默认标题非空，是这条恢复路径的兜底。
+///
+/// 它曾经是可配置的 `SOURCE_NAME_PREFIX`。改成常量，一是全局配置决定每个
+/// 实例的标题属于层级错配，二是每次读取都从环境变量重算会让 `default_name`
+/// 随部署漂移：已存在的音源标题会与其「默认值」对不上。
+pub const INSTANCE_NAME_PREFIX: &str = "酷狗概念版";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Source {
@@ -88,19 +104,20 @@ pub fn sanitize_script_meta(input: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// 生成音源的默认标题：`<prefix> <userid>`。
+/// 生成音源的默认标题：`<instance prefix> <userid>`。
 ///
 /// 由「创建音源」与「恢复默认名」共用，避免两处 `format!` 各自演化出
-/// 不一致的格式。两侧都会 trim，因此 `userid` 为空时结果不带尾随空格——
+/// 不一致的格式。`userid` 先 trim，空则只留前缀，因此结果不带尾随空格——
 /// 后台会原样展示该字符串，`"酷狗概念版 "` 这类文案会显得像 bug。
-pub fn default_name(prefix: &str, userid: &str) -> String {
-    let prefix = prefix.trim();
+///
+/// 前缀是常量 [`INSTANCE_NAME_PREFIX`]，非空，因此结果只可能是
+/// 「前缀」或「前缀 + 空格 + userid」，不存在空串分支。
+pub fn default_name(userid: &str) -> String {
     let userid = userid.trim();
-    match (prefix.is_empty(), userid.is_empty()) {
-        (true, true) => String::new(),
-        (true, false) => userid.to_string(),
-        (false, true) => prefix.to_string(),
-        (false, false) => format!("{prefix} {userid}"),
+    if userid.is_empty() {
+        INSTANCE_NAME_PREFIX.to_string()
+    } else {
+        format!("{INSTANCE_NAME_PREFIX} {userid}")
     }
 }
 
@@ -189,16 +206,17 @@ mod tests {
         }
     }
 
+    /// 正常情形：实例前缀与 userid 以单个空格连接。
+    #[test]
+    fn default_name_joins_prefix_and_userid() {
+        assert_eq!(default_name("12345678"), "酷狗概念版 12345678");
+        assert_eq!(default_name("  12345678  "), "酷狗概念版 12345678");
+    }
+
     /// userid 为空时不能产生「酷狗概念版 」这类带尾随空格的文案。
     #[test]
     fn default_name_has_no_trailing_space_when_userid_missing() {
-        assert_eq!(
-            default_name("酷狗概念版", "12345678"),
-            "酷狗概念版 12345678"
-        );
-        assert_eq!(default_name("酷狗概念版", ""), "酷狗概念版");
-        assert_eq!(default_name("", "12345678"), "12345678");
-        assert_eq!(default_name("", ""), "");
-        assert_eq!(default_name("酷狗概念版", "  "), "酷狗概念版");
+        assert_eq!(default_name(""), "酷狗概念版");
+        assert_eq!(default_name("  "), "酷狗概念版");
     }
 }

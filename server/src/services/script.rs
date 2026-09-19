@@ -109,7 +109,7 @@ impl ScriptService {
 /// 渲染脚本正文的纯函数：不碰 IO、不读环境变量，因此可以直接单测。
 ///
 /// 渲染路径**只清洗、永不拒绝、不做截断**：否则一个超长的
-/// `SOURCE_NAME_PREFIX` 会让脚本 URL 直接不可用。
+/// `Source.name` 会让脚本 URL 直接不可用。
 fn render_script(
     public_base_url: &str,
     runtime_token: &str,

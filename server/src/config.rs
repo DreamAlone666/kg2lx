@@ -8,13 +8,13 @@ pub struct Config {
     pub kugou_api_base_url: String,
     pub data_dir: PathBuf,
     pub upstream_timeout_ms: u64,
-    pub source_name_prefix: String,
     pub refresh_interval_secs: u64,
     pub web_dist_dir: Option<PathBuf>,
 }
 
 impl Config {
     pub fn from_env() -> Self {
+        warn_if_source_name_prefix_present();
         Self {
             listen_addr: env::var("LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:8787".into()),
             public_base_url: require_http_base_url("PUBLIC_BASE_URL"),
@@ -27,8 +27,6 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(10000),
-            source_name_prefix: env::var("SOURCE_NAME_PREFIX")
-                .unwrap_or_else(|_| "酷狗概念版".into()),
             refresh_interval_secs: env::var("REFRESH_INTERVAL_SECS")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -44,6 +42,26 @@ impl Config {
     /// 不值得花在重复信息上。
     pub fn public_authority(&self) -> String {
         authority_of(&self.public_base_url)
+    }
+}
+
+/// `SOURCE_NAME_PREFIX` 已不再被读取，仅在启动时提示一次。
+///
+/// 该变量过去决定「默认标题」的前缀。现在标题由用户在后台按音源逐个编辑并
+/// 持久化，默认标题是实例内的固定值，不再随部署变化——正是这次改动的目的：
+/// 从环境变量重算默认标题，会让运维改一次变量后所有历史音源的标题都与其
+/// 「默认值」对不上。
+///
+/// 刻意只警告、不拒绝启动：该变量对运行期已无任何影响，为它拦下整个服务，
+/// 代价远大于收益。已经创建的音源保留各自当前的标题，不会被改写；要把它们
+/// 改成新的固定默认值，在后台逐个「恢复默认」即可。
+fn warn_if_source_name_prefix_present() {
+    if env::var_os("SOURCE_NAME_PREFIX").is_some() {
+        tracing::warn!(
+            "SOURCE_NAME_PREFIX is no longer read; source titles are now edited per source in \
+             the admin UI. Existing sources keep their current title. This variable can be \
+             removed from the environment."
+        );
     }
 }
 

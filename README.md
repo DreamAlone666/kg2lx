@@ -127,7 +127,6 @@ docker compose up -d
 | `LISTEN_ADDR` | 服务监听地址和端口 | `127.0.0.1:8787` |
 | `DATA_DIR` | 数据持久化存储目录 | `./data` |
 | `WEB_DIST_DIR` | 管理后台前端构建产物目录 (开启后同源托管) | - |
-| `SOURCE_NAME_PREFIX` | 生成的音源名称前缀，生成结果形如 `酷狗概念版 <userid>` | `酷狗概念版` |
 | `REFRESH_INTERVAL_SECS`| 账号状态自动刷新间隔 | `21600` (6 小时) |
 
 ## 许可证

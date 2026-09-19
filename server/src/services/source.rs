@@ -142,7 +142,7 @@ impl SourceService {
                 enabled: s.enabled,
                 script_url,
                 name: s.name,
-                default_name: source::default_name(&self.config.source_name_prefix, &userid),
+                default_name: source::default_name(&userid),
                 userid,
                 vip_active,
                 account_status,
@@ -181,10 +181,7 @@ impl SourceService {
             enabled: s.enabled,
             script_url,
             name: s.name,
-            default_name: source::default_name(
-                &self.config.source_name_prefix,
-                &account.upstream_userid,
-            ),
+            default_name: source::default_name(&account.upstream_userid),
             name_advisory_chars: SCRIPT_NAME_ADVISORY_CHARS,
             runtime_token_preview: rt_preview,
             account: SourceAccountInfo {
@@ -201,7 +198,7 @@ impl SourceService {
     /// 修改音源标题。
     ///
     /// 语义分三档：
-    /// - `None` 或纯空白 => 恢复默认名（`SOURCE_NAME_PREFIX + userid`）；
+    /// - `None` 或纯空白 => 恢复服务端默认标题（实例前缀 + userid）；
     /// - 非空但清洗后为空（例如只填了 `*/`）=> 400，而不是静默变成默认名，
     ///   否则用户会被无声地「改名成功」误导；
     /// - 清洗后超过 [`SCRIPT_NAME_MAX_BYTES`] => 400。
@@ -233,7 +230,7 @@ impl SourceService {
                 String::new()
             }
         };
-        let default_name = source::default_name(&self.config.source_name_prefix, &userid);
+        let default_name = source::default_name(&userid);
 
         let new_name = match name {
             None => default_name.clone(),
