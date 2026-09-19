@@ -1,1 +1,204 @@
 @import 'tailwindcss';
+
+/*
+ * kg2lx 管理后台 —— 设计令牌层（Design Token Layer）
+ *
+ * 风格定位：亮色优先的「轻量精作」（Crafted Light Utility）
+ *   - 层级靠**明度层次**表达（页面 #FAFAFA / 卡片 #FFFFFF），而非阴影
+ *   - 强调色只有一个（暖橙），只出现在主操作、当前导航项与焦点环
+ *   - 状态色是语义而非装饰：同一状态在任何页面必须是同一个颜色
+ *
+ * 分层约定（上层依赖下层，禁止反向依赖）：
+ *   令牌层（本文件） → 原语层 lib/components/ui → 领域层 lib/domain → 页面层 routes
+ *
+ * 全站语义类（bg-primary / text-muted-foreground / border-input ...）均解析自本文件，
+ * 自定义视觉风格只需调整本块，无需改动组件类名。
+ *
+ * 约束：内网/NAS 部署可能无外网，故禁止 Web Font，统一使用系统字体栈。
+ */
+
+@theme {
+	/* ---------- 字体 ---------- */
+	--font-sans:
+		system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', 'PingFang SC',
+		'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+	--font-mono:
+		ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
+	/* ---------- 字号阶：body 15 / subheading 18 / heading 28 ---------- */
+	--text-body: 0.9375rem;
+	--text-body--line-height: 1.6;
+	--text-subheading: 1.125rem;
+	--text-subheading--line-height: 1.45;
+	--text-subheading--font-weight: 600;
+	/* 密集表格与徽章里的次要元数据。刻意保留为一个统一档位，
+	   而不是在各处散落 text-[0.7rem] 任意值。 */
+	--text-caption: 0.7rem;
+	--text-caption--line-height: 1.45;
+	--text-heading: 1.75rem;
+	--text-heading--line-height: 1.25;
+	--text-heading--font-weight: 700;
+
+	/* ---------- 明度层次 ---------- */
+	--color-canvas: #fafafa; /* 页面底 */
+	--color-background: #ffffff; /* 抬升面 */
+
+	--color-foreground: #18181b;
+	--color-muted: #f4f4f5;
+	/* 在 canvas / background / muted 三种底色上对比度均 ≈ 7:1，满足 WCAG AAA */
+	--color-muted-foreground: #52525b;
+
+	/* ---------- 唯一强调色：暖橙 ---------- */
+	--color-primary: #b45309;
+	--color-primary-hover: #d97706;
+	--color-primary-foreground: #ffffff;
+	--color-primary-soft: #fef3c7;
+	--color-primary-soft-foreground: #92400e;
+
+	/* ---------- 中性面 ---------- */
+	--color-card: #ffffff;
+	--color-card-foreground: #18181b;
+	--color-secondary: #f4f4f5;
+	--color-secondary-foreground: #18181b;
+	--color-accent: #f4f4f5;
+	--color-accent-foreground: #18181b;
+
+	/* ---------- 语义状态色 ----------
+	 * 每个 tone 提供「实心」与「柔和底」两级；柔和底与对应实心色的组合均 ≥ 4.5:1。
+	 * 由 lib/domain/tone.ts 统一决定业务状态落在哪一档，组件层不自行判断。 */
+	--color-success: #166534;
+	--color-success-soft: #f0fdf4;
+	--color-warning: #92400e;
+	--color-warning-soft: #fffbeb;
+	--color-danger: #b91c1c;
+	--color-danger-soft: #fef2f2;
+	--color-info: #0369a1;
+	--color-info-soft: #f0f9ff;
+	--color-neutral: #52525b;
+	--color-neutral-soft: #f4f4f5;
+
+	/* ---------- 破坏性操作（实心按钮，白字对比度 4.83:1） ---------- */
+	--color-destructive: #dc2626;
+	--color-destructive-foreground: #ffffff;
+
+	/* ---------- 描边与焦点 ---------- */
+	--color-border: #e4e4e7;
+	--color-input: #e4e4e7;
+	--color-ring: #b45309;
+
+	/* ---------- 圆角 ---------- */
+	--radius-sm: 0.375rem;
+	--radius-md: 0.5rem;
+	--radius-lg: 0.625rem;
+	--radius-xl: 0.875rem;
+
+	/* ---------- 轻阴影 ----------
+	 * 层级主要由明度差承担，阴影只做极轻的浮起提示。 */
+	--shadow-soft: 0 1px 2px 0 rgb(24 24 27 / 0.04), 0 1px 3px -1px rgb(24 24 27 / 0.06);
+	--shadow-lift:
+		0 2px 4px -1px rgb(24 24 27 / 0.06), 0 8px 20px -6px rgb(24 24 27 / 0.1);
+
+	/* ---------- 缓动曲线 ----------
+	 * 动效时长复用 Tailwind 内置数值阶（150 / 200 / 300ms），
+	 * 与 lib/utils/motion.ts 中的常量一一对应，两侧改动必须同步。 */
+	--ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+	--ease-in-soft: cubic-bezier(0.4, 0, 1, 1);
+	--ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+	/* ---------- 语义化动画 ---------- */
+	--animate-breathe: breathe 1.8s var(--ease-out-soft) infinite;
+
+	@keyframes breathe {
+		0%,
+		100% {
+			opacity: 1;
+			transform: scale(1);
+		}
+		50% {
+			opacity: 0.5;
+			transform: scale(0.82);
+		}
+	}
+}
+
+@layer base {
+	html {
+		color-scheme: light;
+		-webkit-text-size-adjust: 100%;
+	}
+
+	body {
+		background-color: var(--color-canvas);
+		color: var(--color-foreground);
+		font-family: var(--font-sans);
+		font-size: var(--text-body);
+		line-height: 1.6;
+		-webkit-font-smoothing: antialiased;
+		-moz-osx-font-smoothing: grayscale;
+	}
+
+	/*
+	 * 描边色兜底。
+	 *
+	 * Tailwind v4 起 `border` 的默认颜色是 currentColor（v3 是 gray-200），
+	 * 漏写颜色时会直接退化成近黑的前景色：音源卡片曾因此被描上一圈
+	 * #18181B 的重边，把「层级靠明度层次表达」这条定位整个推翻。
+	 *
+	 * 在这里声明一次，而不是逐个组件补 `border-border`——组件层忘记写颜色的
+	 * 代价不能是画出与设计意图相反的结果。需要其它颜色的组件仍可显式覆盖
+	 * （border-transparent / border-input / border-danger/25 ...）。
+	 */
+	*,
+	*::before,
+	*::after {
+		border-color: var(--color-border);
+	}
+
+	/* 键盘焦点全站统一可见；鼠标点击不显示焦点环 */
+	:focus-visible {
+		outline: 2px solid var(--color-ring);
+		outline-offset: 2px;
+	}
+
+	/* 数字型数据（延迟、时间、ID）等宽并启用表格数字对齐，避免刷新时跳动 */
+	.tabular {
+		font-variant-numeric: tabular-nums;
+	}
+}
+
+/*
+ * 新行进入：高亮由强调色柔和底衰减至透明，用于日志这类实时追加的列表。
+ *
+ * 刻意暴露为全局关键帧，由组件以内联 animation 引用，而不是定义组件级类名：
+ * 类名若只出现在 JS 字符串里，Svelte 的作用域样式可能把它判定为未使用而裁剪。
+ * 内联 animation 不是 !important，因此仍会被下面的减弱动态规则覆盖。
+ */
+@keyframes kg2lx-row-flash {
+	from {
+		background-color: var(--color-primary-soft);
+		opacity: 0;
+	}
+	40% {
+		opacity: 1;
+	}
+	to {
+		background-color: transparent;
+		opacity: 1;
+	}
+}
+
+/*
+ * 减弱动态偏好：全局降级。
+ * 注意此块会把 animate-spin 一并压平，因此加载指示不得只依赖旋转动画，
+ * 必须保留静态可辨识形态（骨架屏 / 静态圆点）。
+ */
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+		scroll-behavior: auto !important;
+	}
+}
