@@ -10,7 +10,7 @@ use crate::error::ErrorCode;
 use crate::repos::account::AccountRepo;
 use crate::repos::runtime_log::RuntimeLogRepo;
 use crate::repos::source::SourceRepo;
-use crate::services::kugou_lite_client::{KugouLiteClient, MusicUrlRequest};
+use crate::services::kugou_lite_client::{KugouLiteClient, MusicUrlRequest, map_quality};
 
 #[derive(serde::Deserialize)]
 pub struct RuntimeMusicUrlRequest {
@@ -40,6 +40,21 @@ fn error_code_string(code: ErrorCode) -> String {
         .unwrap_or_default()
         .trim_matches('"')
         .to_string()
+}
+
+/// 本行应当记录的上游质量参数 —— 只有描述 `song/url` 那次调用的行才有值。
+///
+/// 落盘而不是让前端拿 requested_quality 去推：日志行的职责是记录**发生过什么**，
+/// 「这次向上游要的是哪个质量」正是发生过的事实（四档里 flac24bit → high 还是真正的
+/// 重命名，常常就是失败与成功的分界）。前端再复制一张映射表，等于把服务端逻辑的影子
+/// 副本放进界面，服务端一改就安静地开始说错话。
+///
+/// 判断用 stage 而不是 upstream_endpoint：两者严格 1:1（FetchMusicUrl ⟺ "song/url",
+/// 见本文件各处 append_log 调用点逐一对上），而 stage 是枚举、更适合当判据。
+/// `ensure_dfid` / `refresh_login` 这两次调用压根不带质量参数，给它们记一个
+/// 「本来会要的质量」就是发明一个没发生过的事实。
+fn upstream_quality_for(stage: RuntimeLogStage, quality: &str) -> Option<String> {
+    matches!(stage, RuntimeLogStage::FetchMusicUrl).then(|| map_quality(quality).to_string())
 }
 
 impl RuntimeService {
@@ -372,6 +387,7 @@ impl RuntimeService {
             request_hash: input.req.hash.clone(),
             album_audio_id: input.req.album_audio_id.clone(),
             requested_quality: input.req.quality.clone(),
+            upstream_quality: upstream_quality_for(input.stage, &input.req.quality),
             upstream_endpoint: input.upstream_endpoint.into(),
             stage: input.stage,
             refresh_attempted: input.refresh_attempted,
@@ -437,4 +453,49 @@ struct LogErrorContext<'a> {
     upstream_endpoint: &'a str,
     status_code: Option<u16>,
     latency_ms: u128,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 只有「取链」这一步真的带 quality 参数，也只有它该被记录。
+    /// ensure_dfid / refresh_login 不带，给它们记一个是发明事实。
+    #[test]
+    fn upstream_quality_only_for_the_song_url_call() {
+        assert_eq!(
+            upstream_quality_for(RuntimeLogStage::FetchMusicUrl, "flac24bit").as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            upstream_quality_for(RuntimeLogStage::EnsureDfid, "flac24bit"),
+            None
+        );
+        assert_eq!(
+            upstream_quality_for(RuntimeLogStage::RefreshLogin, "flac24bit"),
+            None
+        );
+        assert_eq!(
+            upstream_quality_for(RuntimeLogStage::Precheck, "flac"),
+            None
+        );
+    }
+
+    /// 取值域由 routes/runtime.rs 的 parse_music_url_request 限定为这四个。
+    /// 这四个映射同时也是前端 tooltip 的依据，改动即用户可见的语义变化。
+    #[test]
+    fn maps_the_four_whitelisted_qualities() {
+        assert_eq!(map_quality("128k"), "128");
+        assert_eq!(map_quality("320k"), "320");
+        assert_eq!(map_quality("flac"), "flac");
+        assert_eq!(map_quality("flac24bit"), "high");
+    }
+
+    /// 白名单之外的取值到不了这里。钉住兜底行为，免得它被改动后
+    /// 落盘的值与上游实际所用不符却无人发现。
+    #[test]
+    fn falls_back_to_128_for_unknown_quality() {
+        assert_eq!(map_quality("hires"), "128");
+        assert_eq!(map_quality(""), "128");
+    }
 }

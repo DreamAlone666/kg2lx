@@ -494,7 +494,12 @@ fn timestamp_ms() -> u128 {
         .as_millis()
 }
 
-fn map_quality(quality: &str) -> &str {
+/// LX 音质名 → 酷狗 `song/url` 的 quality 参数。
+///
+/// `pub(crate)` 是因为运行时日志要把它**实际用的值**落盘（见 services/runtime.rs 的
+/// append_log）：日志行应当记录发生过的事实，而不是让前端再去复制一份这张表——
+/// 那样服务端改了这里，界面会安静地继续说旧话。
+pub(crate) fn map_quality(quality: &str) -> &str {
     match quality {
         "128k" => "128",
         "320k" => "320",

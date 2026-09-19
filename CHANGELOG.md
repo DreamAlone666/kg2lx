@@ -9,6 +9,7 @@ All notable changes to this project will be documented in this file.
 - 音源标题可自定义：新增 `PATCH /api/v1/admin/sources/{source_id}`，传入 `name` 改名，传 `null` 或纯空白恢复默认名；音源列表与详情新增 `name`、`default_name` 字段。
 - 音源详情回显官方建议长度（标题 24 字符、描述 36 字符），仅供后台计数提示，不作硬校验、不参与拒绝逻辑。
 - 标题在写入与脚本渲染双侧清洗 `*/` 与控制字符，避免自定义标题提前闭合脚本注释导致导入即语法错误；写入路径另有 256 字节技术护栏。
+- 运行时日志落盘 `upstream_quality`：记录该行所述那次上游调用**实际**使用的酷狗质量参数（`128` / `320` / `flac` / `high`），供界面回显，不必再在前端复制一张映射表。只有描述 `song/url` 取链的那一行才有值——`ensure_dfid` / `refresh_login` 两次调用不带质量参数，给它们写一个「本来会要的质量」等于发明一件没发生过的事。字段带 `#[serde(default)]`，本次改动之前落盘的历史 jsonl 行仍能整行读入，读出为 `null`（语义是「这一行没有记录」，不是「这一行没有音质」）。
 
 ### Changed
 
