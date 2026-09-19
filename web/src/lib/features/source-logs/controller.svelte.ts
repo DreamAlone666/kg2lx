@@ -45,16 +45,30 @@ class SourceLogsController {
 	private newRowTimer: ReturnType<typeof setTimeout> | null = null;
 	/** 视图切换会整表替换，不应让整屏都播放「新增」动画，故跳过下一次标记。 */
 	private skipNextHighlight = false;
+	/**
+	 * 在途请求的序号集合。只用于轮询的**在途去重**（见 timer 的 onTick）。
+	 *
+	 * 用集合而不是布尔量：请求可能乱序返回，集合按序号精确增减，不受完成顺序影响。
+	 */
+	private pending = new Set<number>();
 
 	private timer = createVisibilityAwareTimer({
 		intervalMs: POLL_INTERVAL_MS,
 		onTick: () => {
-			if (this.currentSourceId) this.loadLogs(this.currentSourceId, true);
+			if (!this.currentSourceId) return;
+			// 在途去重：后端比轮询间隔还慢时，每个回包到达时都会被更新的 requestId
+			// 判为过期而丢弃，表格于是**永远不更新**——实测后端延迟 6s、间隔 5s 时，
+			// 14s 过后表格仍是 0 行（期间后端已回过两次）；把这一行注释掉再跑同一条件，
+			// 立刻恢复成 20 行。同一时刻只放一个轮询请求在途，慢的时候就退化成
+			// 「拉到一次更新一次」，而不是「一次都不更新」。
+			if (this.pending.size > 0) return;
+			this.loadLogs(this.currentSourceId, true);
 		}
 	});
 
 	async loadLogs(sourceId: string, silent = false) {
 		const requestId = ++this.requestId;
+		this.pending.add(requestId);
 		if (!silent) this.loading = true;
 
 		try {
@@ -75,13 +89,35 @@ class SourceLogsController {
 			if (requestId !== this.requestId || this.currentSourceId !== sourceId) return;
 			this.error = e.message;
 		} finally {
-			if (!silent && requestId === this.requestId) this.loading = false;
+			this.pending.delete(requestId);
+			// 清 loading 刻意**不**再要求 `requestId === this.requestId`。
+			//
+			// 那条件曾让 loading 永久卡死，已实测复现：手动「刷新」发出的是非静默请求，
+			// 只要它还没回来时轮询 tick（或一次视图切换）插进来，requestId 就被顶掉；
+			// 此后该请求的 finally 因条件不成立而跳过，而插进来的那一个是静默的、
+			// 根本不动 loading——结果是徽章永远停在「刷新中」，刷新按钮永远 disabled，
+			// 且界面上没有任何路径能恢复（只能离开页面）。实测点击刷新后 18s、请求延迟
+			// 只有 8s，状态仍是 badge=刷新中 / disabled=true。
+			//
+			// loading 的语义是「用户看得见的加载中」，它只由非静默请求拥有，所以也只该
+			// 由非静默请求来清——与它是否最新无关。同一时刻不会有两个非静默请求重叠：
+			// 设置 loading 后刷新按钮立即 disabled（Double click 分属两个任务，中间微任务
+			// 队列已刷新，第二次不会触发）。
+			if (!silent) this.loading = false;
 		}
 	}
 
 	startPolling(sourceId: string) {
 		this.stopPolling();
 		this.currentSourceId = sourceId;
+		// 首屏这次拉取显式发出且**非静默**：它是「加载中」而不是「后台刷新」，必须让
+		// 骨架屏亮起来。此前它和轮询共用同一条静默路径，于是首屏整整一段时间在说
+		// 「暂无运行时流量记录，播放音乐后这里会出现取链日志」——一个后端还没回话就
+		// 被说出口的结论（骨架屏分支在首挂载时因此根本走不到）。
+		//
+		// timer.start() 紧接着也会立即 tick 一次，但会被上面的在途去重挡掉：loadLogs
+		// 在第一个 await 之前就同步登记了 pending，所以那次 tick 必然看到 pending 非空。
+		void this.loadLogs(sourceId);
 		this.timer.start();
 	}
 
@@ -89,6 +125,7 @@ class SourceLogsController {
 		this.timer.stop();
 		this.requestId++; // 使在途请求的回包失效
 		this.currentSourceId = null;
+		this.pending.clear();
 		this.clearNewRowTimer();
 		this.logs = [];
 		this.newLogIds = new Set();

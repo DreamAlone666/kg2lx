@@ -11,7 +11,8 @@
  * 这里的 pause / resume 是**有真实调用方**的重新引入，不是同一种东西。
  *
  * 职责边界：本工具只管「节奏」，不介入业务。请求竞态仍由调用方自行处理
- * （现有 controller 使用单调递增 requestId + AbortController）。
+ * （现有 controller 用单调递增 requestId 丢弃过期回包，并对轮询做在途去重）。
+ * 注意本工具**不会**取消在途请求——它不持有 AbortSignal，也不该持有。
  */
 
 export interface VisibilityAwareTimerOptions {
@@ -84,6 +85,10 @@ export function createVisibilityAwareTimer(
 	function start() {
 		stop();
 		running = true;
+		// 首次拉取刻意**不**做可见性判断：它是「把首屏填上」的一次性预取，而不是
+		// 轮询节奏的一部分。页面若在后台标签里挂载，这一次请求仍然值得发出——等用户
+		// 切过来时数据已经在手里，而不是先看到空态再等一个来回。
+		// 这与 tick() / handleVisibilityChange() 的语义不同，那两处必须判可见性。
 		void onTick();
 		intervalId = setInterval(tick, intervalMs);
 		if (!listening && typeof document !== 'undefined') {

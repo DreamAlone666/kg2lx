@@ -45,6 +45,29 @@ export const runtimeStageLabel: Record<RuntimeLogListItem['stage'], string> = {
 };
 
 /**
+ * 音质档位 —— LX 音质线上取值 → LX 官方中文档位名。
+ *
+ * 运行时日志里 requested_quality 存的是 LX Music 侧的**线上取值**
+ * （128k / 320k / flac / flac24bit），取值域由后端白名单限定
+ * （routes/runtime.rs 的 parse_music_url_request）。界面上仍显示线上取值而不是
+ * 中文档位名，因为它同时是排查时要拿去 grep 的字面量，而四个中文名里最长的
+ * 「Hi-Res 无损音质」在 w-28 档下根本放不下。
+ *
+ * 中文名抄自 LX 官方文档《音源与自定义源使用方法》的「可用音质说明」：
+ *   https://www.lxmusic.cn/docs/music-source/
+ *
+ * 这里**只**有档位名，没有「向上游要什么质量」——后一项由服务端在运行时日志行里
+ * 落盘（server/src/services/runtime.rs 的 append_log 写入时填入），前端只负责读回
+ * 「那一刻实际发生了什么」。前端因此不持有那张映射表，也就不可能与服务端漂移。
+ */
+export const qualityLabel: Record<string, string> = {
+	'128k': '标准音质',
+	'320k': '高品音质',
+	flac: '无损音质',
+	flac24bit: 'Hi-Res 无损音质'
+};
+
+/**
  * 运行时错误码 → 中文标签。
  *
  * 错误码是写给日志的机器标识，不是写给运维的文案。`UPSTREAM_REQUEST_FAILED` /

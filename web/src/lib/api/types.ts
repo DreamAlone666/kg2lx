@@ -107,6 +107,17 @@ export type RuntimeLogListItem = {
   request_hash: string;
   album_audio_id: string | null;
   requested_quality: string;
+  /**
+   * 本行所描述的那次上游调用实际使用的酷狗质量参数（128 / 320 / flac / high）。
+   *
+   * 只有描述 song/url 那次调用的行才有值：刷新登录 / DFID 两次调用不带质量参数，
+   * 服务端据此不记。它是「发生过的事实」而不是可推导的常量，所以由服务端落盘、
+   * 前端只读——服务端在写日志时填入（server/src/services/runtime.rs 的 append_log，
+   * 映射来自 kugou_lite_client 的 map_quality）。
+   *
+   * 本次改动之前落盘的行没有这个键，读出来是 null（后端有 #[serde(default)]）。
+   */
+  upstream_quality: string | null;
   upstream_endpoint: string;
   stage: 'precheck' | 'ensure_dfid' | 'refresh_login' | 'fetch_music_url';
   refresh_attempted: boolean;
