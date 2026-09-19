@@ -237,14 +237,20 @@ const TH = 'px-4 py-2.5 font-medium shadow-[inset_0_-1px_0_0_var(--color-border)
 			</div>
 
 			<div class="flex items-center gap-2">
-				<div class="flex rounded-lg bg-muted p-0.5" role="group" aria-label="日志筛选">
+				<!--
+					分段控件的外高必须与右侧 sm 档按钮一致：移动端 44px、md 以上 36px。
+					做法是内层保持按钮级高度、外层只在 md 以上留 2px 内边距——
+					移动端若同样留内边距，外框会涨到 48px 比按钮高 4px；
+					反过来压缩内层又会把触控区压到 44px 以下，违背触屏工效下限。
+				-->
+				<div class="flex rounded-lg bg-muted px-0.5 md:p-0.5" role="group" aria-label="日志筛选">
 					{#each views as item (item.value)}
 						{@const active = sourceLogsController.view === item.value}
 						<button
 							type="button"
 							aria-pressed={active}
 							class={cn(
-								'min-h-11 cursor-pointer rounded-md px-3.5 text-xs font-medium transition-colors duration-150 ease-out-soft md:min-h-7',
+								'min-h-11 cursor-pointer rounded-md px-3.5 text-xs font-medium transition-colors duration-150 ease-out-soft md:min-h-8',
 								active
 									? 'bg-background text-foreground shadow-soft'
 									: 'text-muted-foreground hover:text-foreground'

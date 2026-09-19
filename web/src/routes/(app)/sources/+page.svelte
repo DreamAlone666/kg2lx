@@ -35,9 +35,14 @@
 					列表更新于 {formatClockTime(sourcesController.lastLoadedAt)}
 				</span>
 			{/if}
+			<!--
+				与「添加音源」同档尺寸：两者同处一行，主次由填充色区分即可。
+				这里曾写成 size="sm"，与默认档并排后桌面端差 4px 高、全断点差 2px 字号，
+				同一行的两个动作长成了两种规格。页面级操作统一用默认档，
+				sm 留给卡片内、工具条这类密集场景。
+			-->
 			<Button
 				variant="outline"
-				size="sm"
 				pending={sourcesController.loading}
 				pendingLabel="刷新中…"
 				onclick={() => sourcesController.loadSources()}

@@ -137,6 +137,23 @@
 		-moz-osx-font-smoothing: grayscale;
 	}
 
+	/*
+	 * 描边色兜底。
+	 *
+	 * Tailwind v4 起 `border` 的默认颜色是 currentColor（v3 是 gray-200），
+	 * 漏写颜色时会直接退化成近黑的前景色：音源卡片曾因此被描上一圈
+	 * #18181B 的重边，把「层级靠明度层次表达」这条定位整个推翻。
+	 *
+	 * 在这里声明一次，而不是逐个组件补 `border-border`——组件层忘记写颜色的
+	 * 代价不能是画出与设计意图相反的结果。需要其它颜色的组件仍可显式覆盖
+	 * （border-transparent / border-input / border-danger/25 ...）。
+	 */
+	*,
+	*::before,
+	*::after {
+		border-color: var(--color-border);
+	}
+
 	/* 键盘焦点全站统一可见；鼠标点击不显示焦点环 */
 	:focus-visible {
 		outline: 2px solid var(--color-ring);

@@ -82,10 +82,18 @@
 </script>
 
 <div class={cn('flex items-center gap-2', className)}>
+	<!--
+		高度与右侧 sm 档按钮逐断点对齐（移动端 44px / md 以上 36px）。
+		此前靠 py-2 与行高凑出一个固定的 34px，与按钮差 2px、移动端差 10px，
+		在 items-center 下表现为字段比按钮上下各短一截。
+		外层改成 flex 后不能再把 truncate 直接挂在它身上：flex 容器上的
+		text-overflow 不作用于匿名文本项，省略号会静默失效，故交给内层 span。
+	-->
 	<code
-		class="min-w-0 flex-1 truncate rounded-lg border border-border bg-muted px-3 py-2 font-mono text-xs text-muted-foreground"
-		title={value}>{value}</code
+		class="flex h-11 min-w-0 flex-1 items-center rounded-lg border border-border bg-muted px-3 font-mono text-xs text-muted-foreground md:h-9"
 	>
+		<span class="truncate" title={value}>{value}</span>
+	</code>
 
 	<Button
 		variant={copyState === 'failed' ? 'destructive' : 'outline'}

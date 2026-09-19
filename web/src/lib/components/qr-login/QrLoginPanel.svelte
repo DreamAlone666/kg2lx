@@ -111,6 +111,12 @@
 				</div>
 			</div>
 
+			<!--
+				[TODO] 这里的徽章与时间轴的「当前步」在说同一件事：徽章显示「等待扫码」时，
+				时间轴的活动步也写着「等待扫码」，两行相隔不到 40px 却重复一遍。
+				两者只在终态（expired / failed）上真正互补。
+				方向：让时间轴承担过程进度，徽章收缩为终态与剩余时间专用，消除同义重复。
+			-->
 			<div class="flex items-center justify-center gap-3">
 				<StatusBadge
 					tone={sessionStatusTone(qrLoginController.status)}
