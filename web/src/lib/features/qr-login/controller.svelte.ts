@@ -1,5 +1,6 @@
 import { adminSession, handleAuthError } from '../../state/admin-session.svelte';
 import { createVisibilityAwareTimer } from '../../utils/polling';
+import { describeApiError } from '../../domain';
 import type {
 	QrLoginStartResponse,
 	QrLoginPollResponse,
@@ -85,7 +86,7 @@ class QrLoginController {
 			if (handleAuthError(e)) return;
 			this.status = 'failed';
 			this.stalledAt = 'pending';
-			this.message = e.message;
+			this.message = describeApiError(e);
 		} finally {
 			this.starting = false;
 		}

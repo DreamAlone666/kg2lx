@@ -1,3 +1,4 @@
+import { isAdminApiError } from '$lib/api/errors';
 import type {
 	AccountStatus,
 	LoginSessionStatus,
@@ -82,6 +83,8 @@ export const errorCodeLabel: Record<string, string> = {
 	ADMIN_UNAUTHORIZED: '未授权',
 	SOURCE_NOT_FOUND: '音源不存在',
 	SOURCE_DISABLED: '音源已停用',
+	SOURCE_NAME_EMPTY: '标题不能为空',
+	SOURCE_NAME_TOO_LONG: '标题过长',
 	ACCOUNT_NOT_FOUND: '账号不存在',
 	ACCOUNT_DISABLED: '账号已停用',
 	ACCOUNT_NOT_VIP: '账号未开通 VIP',
@@ -105,4 +108,59 @@ export function labelOf<T extends string>(
 ): string {
 	if (!key) return fallback;
 	return (map as Record<string, string>)[key] ?? key;
+}
+
+/** 这几个码的中文标签只说明「哪一步坏了」，原始报文才是运维当下的线索。 */
+const diagnosticErrorCodes = new Set([
+	'UPSTREAM_REQUEST_FAILED',
+	'UPSTREAM_LOGIN_FAILED',
+	'UPSTREAM_VIP_CHECK_FAILED',
+	'INTERNAL_ERROR',
+]);
+
+/**
+ * 抛出的错误 → 可直接展示给中文用户的文案。
+ *
+ * 大多数错误码只保留中文标签，因为后端 `message` 是写给开发者的英文散文
+ * （如 "source not found"），直接展示给中文用户等于没翻译；稳定机器码由后端给、
+ * 用户文案由前端拥有，这是本文件的一贯分工。
+ *
+ * 四个**诊断类**错误码是例外：它们的中文标签只说明「哪一步坏了」，而运维当下唯一
+ * 的线索恰恰是紧跟其后的原始报文（上游返回了什么、超时还是拒绝）。丢掉它等于让
+ * 用户只能反过来找我们，所以这几个码保留 `中文抬头：后端 message`。
+ *
+ * 未知码（后端先于前端上线）回退到错误自身的 message —— 与 labelOf 同一套前向兼容
+ * 思路。完全没有 `code` 的是另一种情况：AdminApiError 在响应体不是 JSON 时会自造
+ * `API error {status}`，那是给开发者看的串，故换成「请求失败（HTTP xxx）」并保留
+ * 状态码，而不是把它原样塞给用户。
+ *
+ * 已知边界：`/api/v1/runtime/music-url` 的报错不经过这里——那条路径由冻结的
+ * LX Music 脚本直接消费，不经过本 UI，其文案不能靠改前端来修。
+ */
+export function describeApiError(error: unknown): string {
+	const generic = '请求失败，请稍后重试。';
+
+	// 非 AdminApiError（如连接页的网络失败）没有机器码可查，只能用它自己的 message。
+	if (!isAdminApiError(error)) {
+		return (error as Error)?.message || generic;
+	}
+
+	const label = error.code ? errorCodeLabel[error.code] : undefined;
+	if (label) {
+		if (error.code && diagnosticErrorCodes.has(error.code)) {
+			return error.message ? `${label}：${error.message}` : label;
+		}
+		return label;
+	}
+
+	if (error.code) {
+		// 有码但词典里没有：后端先于前端上线了新码。原样回显它的 message，
+		// 便于把信息反馈回来；此时换成通用文案等于把唯一线索丢掉。
+		return error.message || generic;
+	}
+
+	// 没有 code 只可能是响应体不是 JSON（正常错误信封必带 code），此时
+	// AdminApiError 自造的是 `API error {status}` 这类给开发者看的串。换成中文，
+	// 但保留状态码——它本身仍是有效的排查线索。
+	return `请求失败（HTTP ${error.status}）`;
 }

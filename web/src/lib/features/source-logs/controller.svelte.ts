@@ -1,5 +1,6 @@
 import { adminSession, handleAuthError } from '../../state/admin-session.svelte';
 import { createVisibilityAwareTimer } from '../../utils/polling';
+import { describeApiError } from '../../domain';
 import type { RuntimeLogListItem, RuntimeLogView } from '../../api/types';
 
 /** 轮询间隔。取链是低频事件，5 秒足够及时且不会打扰后端。 */
@@ -87,7 +88,7 @@ class SourceLogsController {
 		} catch (e: any) {
 			if (handleAuthError(e)) return;
 			if (requestId !== this.requestId || this.currentSourceId !== sourceId) return;
-			this.error = e.message;
+			this.error = describeApiError(e);
 		} finally {
 			this.pending.delete(requestId);
 			// 清 loading 刻意**不**再要求 `requestId === this.requestId`。

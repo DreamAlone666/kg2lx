@@ -238,16 +238,13 @@ impl SourceService {
             Some(ref raw) => {
                 let cleaned = sanitize_script_meta(raw);
                 if cleaned.is_empty() {
-                    return Err(AppError::invalid_request(
-                        "name is empty after removing characters that would break the script",
-                    ));
+                    return Err(AppError::source_name_empty());
                 }
                 if cleaned.len() > SCRIPT_NAME_MAX_BYTES {
-                    return Err(AppError::invalid_request(format!(
-                        "name is too long: {} bytes (limit {} bytes)",
+                    return Err(AppError::source_name_too_long(
                         cleaned.len(),
-                        SCRIPT_NAME_MAX_BYTES
-                    )));
+                        SCRIPT_NAME_MAX_BYTES,
+                    ));
                 }
                 cleaned
             }

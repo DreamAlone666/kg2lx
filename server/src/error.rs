@@ -19,6 +19,10 @@ pub enum ErrorCode {
     UpstreamVipCheckFailed,
     UpstreamPlayUrlEmpty,
     InvalidRequest,
+    /// 改名被拒的两种原因要用户做的事不同（换个名字 / 缩短），合成一个
+    /// `INVALID_REQUEST` 会让前端只能去 substr 英文 message 才能分辨。
+    SourceNameEmpty,
+    SourceNameTooLong,
     InternalError,
 }
 
@@ -134,6 +138,26 @@ impl AppError {
         Self {
             code: ErrorCode::InvalidRequest,
             message: msg.into(),
+            status: StatusCode::BAD_REQUEST,
+            is_admin: false,
+        }
+    }
+
+    /// `is_admin: false` 但 message 不被 `into_response` 脱敏——脱敏名单只有
+    /// 上游/内部错误，这里是用户可以自我修正的入参问题，报文要原样到客户端。
+    pub fn source_name_empty() -> Self {
+        Self {
+            code: ErrorCode::SourceNameEmpty,
+            message: "name is empty after removing characters that would break the script".into(),
+            status: StatusCode::BAD_REQUEST,
+            is_admin: false,
+        }
+    }
+
+    pub fn source_name_too_long(len: usize, limit: usize) -> Self {
+        Self {
+            code: ErrorCode::SourceNameTooLong,
+            message: format!("name is too long: {} bytes (limit {} bytes)", len, limit),
             status: StatusCode::BAD_REQUEST,
             is_admin: false,
         }
