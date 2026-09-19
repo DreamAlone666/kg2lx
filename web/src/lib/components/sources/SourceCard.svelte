@@ -25,13 +25,21 @@
 	const lastRefreshText = $derived(
 		source.last_refresh_at ? `最近刷新 ${formatDateTime(source.last_refresh_at)}` : '从未刷新过'
 	);
+
+	/** 标题里已经含账号 ID 时不再重复展示；账号记录已消失时也无从补起。 */
+	const showsAccountId = $derived(
+		Boolean(source.userid) && !source.name.includes(source.userid)
+	);
 </script>
 
+<!-- 是否要把账号 ID 单独报出来，与下面那行可见内容用的是同一条判断。 -->
 <a
 	href="/sources/{source.source_id}"
 	class="block"
 	style="view-transition-name: source-{source.source_id}"
-	aria-label="{labelOf(providerLabel, source.provider)} 账号 {source.userid} 的详情"
+	aria-label={showsAccountId
+		? `${source.name} 账号 ${source.userid} 的详情`
+		: `${source.name} 的详情`}
 >
 	<Card interactive class="h-full">
 		<CardHeader class="gap-0 pb-3">
@@ -49,7 +57,20 @@
 					{/if}
 				</div>
 			</div>
-			<h2 class="mt-3 truncate text-lg font-semibold tracking-tight">{source.userid}</h2>
+			<h2 class="mt-3 truncate text-lg font-semibold tracking-tight" title={source.name}>
+				{source.name}
+			</h2>
+
+			<!--
+				只在标题里看不到账号 ID 时才补这一行。判据是「ID 是否已经可见」这条关于
+				当前文本的事实，而不是「标题是否被改过」——后者只能拿 `name` 与
+				`default_name` 比对得到，而 `default_name` 会随 `SOURCE_NAME_PREFIX` 漂移，
+				换过前缀的部署上会误判（详见 `api/types.ts` 里该字段的说明）。
+				userid 为空表示账号记录已不存在，此时没有可补的内容。
+			-->
+			{#if showsAccountId}
+				<p class="truncate font-mono text-xs text-muted-foreground">账号 {source.userid}</p>
+			{/if}
 		</CardHeader>
 
 		<CardContent class="space-y-2">

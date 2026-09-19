@@ -15,6 +15,19 @@ export type SourceSummary = {
   source_id: string;
   account_id: string;
   provider: ProviderKind;
+  /** 当前生效的标题：恢复默认后它等于 `default_name`，不会为空。 */
+  name: string;
+  /**
+   * 后端按**当前配置**算出来的默认标题（`SOURCE_NAME_PREFIX + userid`）。
+   *
+   * **不要拿它当「用户是否改过名」的判据**：前缀是环境变量，运维改一次，所有旧音源
+   * 的 `name` 就都与它对不上了。实测有一条音源建于前缀还是「酷狗概念版」时、而部署
+   * 早已改成别的值——没人改过名，`name !== default_name` 却成立。任何据它做的分支
+   * 都会在换过前缀的部署上误判。
+   *
+   * 列表当前不消费它，保留是因为本类型如实镜像接口返回。
+   */
+  default_name: string;
   enabled: boolean;
   script_url: string;
   userid: string;
@@ -34,6 +47,19 @@ export type SourceDetail = {
   source_id: string;
   account_id: string;
   provider: ProviderKind;
+  /** 当前生效的标题：恢复默认后它等于 `default_name`，不会为空。 */
+  name: string;
+  /** 后端按当前配置算出的默认标题；只用于在编辑框留空时告诉用户「存下去会变成什么」。 */
+  default_name: string;
+  /**
+   * 标题的**建议**字符数上限（当前 24），只用来在编辑框旁边显示计数器。
+   *
+   * 它不构成校验：超出建议值不会导致 400（后端拒绝的超长阈值是一条 256 字节的
+   * 技术护栏，与这个数字无关），渲染路径也只做净化、从不截断。前端因此不得用它
+   * 拦截保存——本仓库已有过「界面文案比字段本身语义更强」的记录，若把建议值写成
+   * 硬限制，用户会以为超长标题存不进去，而实际上存得进去。
+   */
+  name_advisory_chars: number;
   enabled: boolean;
   script_url: string;
   runtime_token_preview: string;
@@ -45,6 +71,15 @@ export type SourceDetail = {
     last_refresh_at: number | null;
     last_error: string | null;
   };
+};
+
+export type UpdateSourceResponse = {
+  ok: true;
+  source_id: string;
+  /** 净化后**实际落盘**的标题，可能与提交值不同，界面应以它为准回显。 */
+  name: string;
+  default_name: string;
+  updated_at: number;
 };
 
 export type QrLoginStartResponse = {

@@ -64,4 +64,18 @@ export class HttpClient {
       body: body ? JSON.stringify(body) : undefined,
     });
   }
+
+  /**
+   * 与 post 同样走 `body ? JSON.stringify(body) : undefined`：传 `null` 或省略
+   * body 时既不带 body 也不带 `Content-Type`，而 axum 的 `Json` 提取器要求请求声明
+   * `Content-Type: application/json`，会直接拒掉。因此调用方**永远传对象**，
+   * 需要表达「无值」时传 `{ name: null }` 而不是 `null`。
+   */
+  patch<T>(path: string, body?: any, options: RequestInit = {}): Promise<T> {
+    return this.request<T>(path, {
+      ...options,
+      method: 'PATCH',
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  }
 }

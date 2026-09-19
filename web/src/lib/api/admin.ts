@@ -7,6 +7,7 @@ import type {
   RefreshSourceResponse,
   SourceLogsResponse,
   RuntimeLogView,
+  UpdateSourceResponse,
 } from './types';
 
 export class AdminApi {
@@ -22,6 +23,18 @@ export class AdminApi {
 
   async getSource(sourceId: string, signal?: AbortSignal): Promise<SourceDetail> {
     return this.http.get(`/api/v1/admin/sources/${sourceId}`, { signal });
+  }
+
+  /**
+   * `name` 原样透传：`null` 是有意义的值（恢复默认标题），不得改写为 `''` 或省略键。
+   * 净化后的实际落盘值以响应里的 `name` 为准。
+   */
+  async updateSourceName(
+    sourceId: string,
+    name: string | null,
+    signal?: AbortSignal,
+  ): Promise<UpdateSourceResponse> {
+    return this.http.patch(`/api/v1/admin/sources/${sourceId}`, { name }, { signal });
   }
 
   async listSourceLogs(

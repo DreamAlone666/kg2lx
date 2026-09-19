@@ -10,6 +10,7 @@
 		StatusBadge
 	} from '$lib/components/ui';
 	import CopyField from '$lib/components/sources/CopyField.svelte';
+	import SourceTitle from '$lib/components/sources/SourceTitle.svelte';
 	import LogsPanel from '$lib/components/source-logs/LogsPanel.svelte';
 	import { sourcesController } from '$lib/features/sources/controller.svelte';
 	import { toast } from '$lib/state/toast.svelte';
@@ -18,19 +19,28 @@
 		accountStatusTone,
 		formatDateTime,
 		labelOf,
-		providerLabel,
 		vipTone
 	} from '$lib/domain';
 
 	let sourceId = $derived(page.params.sourceId ?? '');
 	let source = $derived(sourcesController.currentSource);
 	let refreshing = $derived(Boolean(sourcesController.refreshing[sourceId]));
-	let pageTitle = $derived(source ? `${source.account.userid} | kg2lx` : '音源详情 | kg2lx');
+	let pageTitle = $derived(source ? `${source.name} | kg2lx` : '音源详情 | kg2lx');
+
+	/**
+	 * 本次访问内是否改过标题。
+	 *
+	 * 洛雪音乐在导入时就固定了脚本头部，改标题不会回传给它，所以改完要提示用户重新导入。
+	 * 但这条提示只在「刚刚改过」时才有意义——若换成任何「当前是否处于自定义态」的判断，
+	 * 几个月前改过名的用户每次进来都会看到它，提示就退化成噪音。
+	 */
+	let renamedThisVisit = $state(false);
 
 	// 认证守卫已上提到 (app)/+layout.ts，页面只负责取数
 	$effect(() => {
 		const id = page.params.sourceId;
 		if (!id) return;
+		renamedThisVisit = false;
 		sourcesController.loadSource(id);
 	});
 
@@ -80,21 +90,23 @@
 		<Card style="view-transition-name: source-{sourceId}">
 			<CardHeader class="border-b border-border/70">
 				<div class="flex flex-wrap items-center justify-between gap-4">
-					<div class="min-w-0">
-						<h1 class="truncate text-2xl font-bold tracking-tight">
-							{source.account.userid}
-						</h1>
-						<div class="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-							<span>平台：{labelOf(providerLabel, source.provider)}</span>
-							{#if !source.enabled}
-								<StatusBadge tone="neutral">已停用</StatusBadge>
-							{/if}
-						</div>
-					</div>
+					<!--
+						{#key} 不可省：同一路由只换 sourceId 时 SvelteKit 会复用组件实例，
+						半途的草稿与编辑态会原样留下，表现为「B 的页头里显示着 A 的草稿」。
+					-->
+					{#key sourceId}
+						<SourceTitle {source} onRenamed={() => (renamedThisVisit = true)} />
+					{/key}
+					<!--
+						保存标题期间禁用刷新：刷新会 loadSource + loadSources 回填整页，
+						把刚写入的标题静默盖回旧值——用户会看到标题「自己变回去了」。
+						反方向的守卫（刷新中禁止改名）在 SourceTitle 内。
+					-->
 					<Button
 						variant="outline"
 						pending={refreshing}
 						pendingLabel="刷新中…"
+						disabled={sourcesController.savingName}
 						onclick={handleRefresh}
 					>
 						刷新 Token
@@ -149,6 +161,20 @@
 						</p>
 					</div>
 					<CopyField value={source.script_url} />
+
+					{#if renamedThisVisit}
+						<!--
+							warning 而非 danger：没有任何东西失败，只是用户要去别处做一个动作，
+							与 sessionStatusTone 把「二维码过期」判成 warning 是同一条理由。
+							用常驻 Alert 而非 toast：用户是在几分钟后、在另一个应用里执行这一步，
+							而 toast 四秒就消失。锚在「脚本地址」块内，因为下一步要复制的就是它。
+						-->
+						<Alert tone="warning" title="需要重新导入才会在洛雪中生效">
+							<p class="leading-relaxed">
+								洛雪音乐在导入音源时就把脚本头部信息固定下来了，之后不会自动同步。要让它显示新标题，请删除该音源后重新导入上面的地址；地址本身没有变化，已导入的音源仍可正常播放。
+							</p>
+						</Alert>
+					{/if}
 				</div>
 
 				{#if source.account.last_error}
