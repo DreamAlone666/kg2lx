@@ -382,7 +382,10 @@ impl RuntimeService {
             let now = account::now_ts();
             account.last_refresh_at = Some(now);
             account.last_success_at = Some(now);
+            // 成功时两字段必须一起清：只清 `last_error` 会留下上一次失败的 code，
+            // 界面按 code 翻译时会显示一条已经不再成立的错误标签。
             account.last_error = None;
+            account.last_error_code = None;
             account.status = if vip.vip_active {
                 AccountStatus::Active
             } else {
@@ -404,7 +407,11 @@ impl RuntimeService {
         {
             let now = account::now_ts();
             account.status = AccountStatus::LoginFailed;
-            account.last_error = Some(err.to_string());
+            // code 与 message 分开存：code 是界面查中文词典的键，message 是给运维的
+            // 原文。因此 message 不再需要 `"CODE: "` 前缀——那正是把 Rust 内部串
+            // 送上界面的最后一处来源。
+            account.last_error_code = Some(err.code.as_str().to_string());
+            account.last_error = Some(err.message.clone());
             account.updated_at = now;
             let _ = self.account_repo.upsert(account).await;
         }
@@ -687,6 +694,7 @@ mod tests {
             last_refresh_at: None,
             last_success_at: None,
             last_error: None,
+            last_error_code: None,
             created_at: 0,
             updated_at: 0,
         }

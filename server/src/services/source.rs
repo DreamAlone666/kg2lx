@@ -75,6 +75,8 @@ pub struct SourceAccountInfo {
     pub status: String,
     pub last_refresh_at: Option<i64>,
     pub last_error: Option<String>,
+    /// 与 `last_error` 成对：界面按这个稳定 code 查中文文案，`last_error` 只作原文兜底。
+    pub last_error_code: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -191,6 +193,7 @@ impl SourceService {
                 status: account.status.as_str().to_string(),
                 last_refresh_at: account.last_refresh_at,
                 last_error: account.last_error,
+                last_error_code: account.last_error_code,
             },
         })
     }
@@ -293,7 +296,10 @@ impl SourceService {
             let now = account::now_ts();
             account.last_refresh_at = Some(now);
             account.last_success_at = Some(now);
+            // 与 runtime.rs 的刷新路径同规则：成功时 code 必须跟着 message 一起清，
+            // 否则界面会把上一次失败的 code 翻译成一条已经不成立的错误标签。
             account.last_error = None;
+            account.last_error_code = None;
             account.status = if vip.vip_active {
                 AccountStatus::Active
             } else {
@@ -310,7 +316,10 @@ impl SourceService {
             Err(err) => {
                 let now = account::now_ts();
                 account.status = AccountStatus::LoginFailed;
-                account.last_error = Some(err.to_string());
+                // 与 runtime.rs 同一约定：code 供界面查中文，message 只留原文，
+                // 不再带 `"CODE: "` 前缀。
+                account.last_error_code = Some(err.code.as_str().to_string());
+                account.last_error = Some(err.message.clone());
                 account.updated_at = now;
                 let _ = self.account_repo.upsert(&account).await;
                 return Err(err);

@@ -44,6 +44,14 @@ pub struct ProviderAccount {
     pub last_refresh_at: Option<i64>,
     pub last_success_at: Option<i64>,
     pub last_error: Option<String>,
+    /// 与 `last_error` 成对：`last_error` 是写给运维排查的散文，`last_error_code` 是
+    /// 给界面查中文词典用的稳定机器标识。两者缺一，界面就只能把 `UPSTREAM_LOGIN_FAILED: …`
+    /// 这样的英文诊断串原样摆给用户看——后台「最后一次错误」此前正是如此。
+    ///
+    /// `default` 是为了让本次改动**之前**落盘的账号 JSON 仍能读进来（它们没有这个键），
+    /// 读出为 None；此时界面退回只显示 `last_error` 原文，而不是整条记录读不出来。
+    #[serde(default)]
+    pub last_error_code: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -77,5 +85,76 @@ mod tests {
                 "{status:?} 的 serde 表示与 as_str 不一致"
             );
         }
+    }
+
+    /// 本次改动**之前**落盘的账号 JSON 没有 `last_error_code` 这个键。
+    ///
+    /// 缺了 `#[serde(default)]`，既有记录会整条反序列化失败——不是丢一个字段，而是
+    /// 账号在后台直接消失（`AccountRepo::find_by_id` 只能报错）。这条断言钉住升级兼容，
+    /// fixture 的键集照落盘形态构造，仅把 `last_error`
+    /// 填成一次失败留下的旧值。
+    #[test]
+    fn reads_rows_written_before_last_error_code_existed() {
+        let old_row = r#"{
+			"account_id":"acc_00000000-0000-4000-8000-000000000000",
+			"provider":"kugou_lite",
+			"upstream_userid":"0000000000",
+			"display_name":null,
+			"status":"login_failed",
+			"vip_type":0,
+			"vip_active":false,
+			"cookies":{"items":{"userid":"0000000000"}},
+			"last_refresh_at":1700000000,
+			"last_success_at":1700000000,
+			"last_error":"UPSTREAM_LOGIN_FAILED: token expired",
+			"created_at":1600000000,
+			"updated_at":1700000000
+		}"#;
+        let account: ProviderAccount = serde_json::from_str(old_row).unwrap();
+        assert_eq!(
+            account.last_error_code, None,
+            "旧记录没有 code 键，应读出 None 而不是读失败"
+        );
+        assert_eq!(
+            account.last_error.as_deref(),
+            Some("UPSTREAM_LOGIN_FAILED: token expired"),
+            "散文原文必须原样保留，否则旧记录的排查线索就丢了"
+        );
+    }
+
+    /// 两个字段要各自独立地活过一轮序列化——`last_error_code` 落在 JSON 里但没有
+    /// `default` 之外的写入路径时，很容易只写一侧而漏掉另一侧。
+    #[test]
+    fn round_trips_last_error_pair() {
+        let row = serde_json::json!({
+            "account_id": "acc_test",
+            "provider": "kugou_lite",
+            "upstream_userid": "userid_test",
+            "display_name": null,
+            "status": "login_failed",
+            "vip_type": 0,
+            "vip_active": false,
+            "cookies": {"items": {}},
+            "last_refresh_at": null,
+            "last_success_at": null,
+            "last_error": "upstream login failed",
+            "last_error_code": "UPSTREAM_LOGIN_FAILED",
+            "created_at": 0,
+            "updated_at": 0,
+        });
+        let account: ProviderAccount = serde_json::from_value(row).unwrap();
+        assert_eq!(account.last_error.as_deref(), Some("upstream login failed"));
+        assert_eq!(
+            account.last_error_code.as_deref(),
+            Some("UPSTREAM_LOGIN_FAILED")
+        );
+
+        let back: ProviderAccount =
+            serde_json::from_value(serde_json::to_value(&account).unwrap()).unwrap();
+        assert_eq!(back.last_error.as_deref(), Some("upstream login failed"));
+        assert_eq!(
+            back.last_error_code.as_deref(),
+            Some("UPSTREAM_LOGIN_FAILED")
+        );
     }
 }

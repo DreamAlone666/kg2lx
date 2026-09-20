@@ -231,7 +231,10 @@ impl LoginService {
                 acc.vip_active = vip.vip_active;
                 acc.last_refresh_at = Some(now2);
                 acc.last_success_at = Some(now2);
+                // 重新登录成功即视为错误已消失：code 与 message 一起清，避免界面
+                // 拿旧的 code 继续显示一条已经不成立的错误标签。
                 acc.last_error = None;
+                acc.last_error_code = None;
                 acc.updated_at = now2;
                 self.account_repo.upsert(&acc).await?;
                 acc
@@ -250,6 +253,7 @@ impl LoginService {
                     last_refresh_at: Some(now2),
                     last_success_at: Some(now2),
                     last_error: None,
+                    last_error_code: None,
                     created_at: now2,
                     updated_at: now2,
                 };
