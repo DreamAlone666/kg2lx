@@ -96,6 +96,12 @@ Common payload fields:
 - `musicInfo`: song metadata object. It is **not** just an id bag — see `What The Script Actually Receives` below.
 - Return value: an HTTP or HTTPS song URL string.
 
+Three properties of this action are easy to misread:
+
+- **`type` is the requested quality and a script cannot change it.** Whatever URL the handler returns is recorded and cached by the host under the **requested** `type`, even when that URL points at a lower quality than was asked for. In the host, `type` is an internal value: it is not rendered as a quality label on the playback path.
+- **A script cannot tell whether this call is playback or a download.** `type` and `musicInfo` are the whole payload; there is no flag, and no different action name, to distinguish the two.
+- **A resolved URL is cached per song id + requested quality, and a cache hit is reused without asking the script again** unless the host is refreshing (`isRefresh`). Combined with the first point, a lower-quality URL obtained for a requested rung stays in the cache under that rung's name.
+
 #### What The Script Actually Receives As `musicInfo`
 The object handed to the script is the **legacy flat shape**, not the host's internal one. The host calls a source's `getMusicUrl` with `toOldMusicInfo(musicInfo)`, and that transform flattens the nested `MusicInfo` before handing it over:
 
@@ -120,6 +126,7 @@ Consequences that are easy to get wrong:
 - **Identifier names are source-specific and not normalized.** `hash` + `albumAudioId` are kg only. There is **no snake_case `album_audio_id`** — writing `musicInfo.album_audio_id || musicInfo.albumAudioId` gives you a first branch that can never be true.
 - **`singer` is one string, not an array.** Multiple artists arrive joined by `、` (for example `Beyond、黄家驹`). Do not call `.join()` on it or index it.
 - **Do not assume the ids are the only thing worth forwarding.** `name` / `singer` / `albumName` are populated whenever the song came from a list or search result, and are free to pass on. A backend that only receives ids can never recover the names later — see the proxy watch-out in `patterns.md`.
+- **`types` / `_types` are the host's `meta.qualitys` / `meta._qualitys`, and they are catalogue metadata.** They state which rungs the song's own metadata lists, plus their sizes — not what any backend can currently deliver. They are unrelated to any account's entitlements, so they do not shrink merely because "this account cannot obtain that quality".
 
 Provenance and evidence boundary: the official documentation only says `info.musicInfo` is 音乐信息对象，里面有音乐 ID、名字等信息 and **does not enumerate any field names**. The table above was verified against the host implementation, not the docs. Treat it as source-verified but undocumented: stable in practice, yet not part of the published contract.
 
@@ -146,7 +153,7 @@ send(EVENT_NAMES.updateAlert, {
 
 ## How The Host Renders A Rejection
 
-Everything in this section was read out of `lx-music-desktop` `master` (v2.12.6, commit `ad95d50`, read 2026-09-20) and is **source-verified but undocumented**: the official documentation never describes what happens to a rejected `request()`. It is the difference between a script that reports something a user can act on and one that reports nothing at all. To re-derive any of it, grep the host source for the symbols and literals named in this section — `setAllStatus`, `getOtherSource`, `assertApiSupport`, `delayRetry`, `requestMsg`, `toOldMusicInfo`, `INFO_NAMES`, `Cancel request` — a grep anchor survives line drift and file reorganisation; a position does not.
+Everything in this section was read out of `lx-music-desktop` `master` (v2.12.6, commit `ad95d50`, read 2026-09-20) and is **source-verified but undocumented**: the official documentation never describes what happens to a rejected `request()`. It is the difference between a script that reports something a user can act on and one that reports nothing at all. To re-derive any of it, grep the host source for the symbols and literals named in this file — `setAllStatus`, `getOtherSource`, `assertApiSupport`, `delayRetry`, `requestMsg`, `toOldMusicInfo`, `INFO_NAMES`, `isRetryed`, `isRefresh`, `Cancel request`, `服务器繁忙`, `FLAC Hires` — a grep anchor survives line drift and file reorganisation; a position does not.
 
 ### The Only Surface Is One Ellipsized Line
 A rejection's `err.message` is the only text a script can put in front of the user:
@@ -180,6 +187,11 @@ Two rules follow:
 
 - **A script's message must never collide with `'取消http请求'`**, or the failure is silently swallowed as if the user had cancelled.
 - **`'服务器繁忙'` is a retry signal and must be the entire message.** Because the comparison is exact, any prefix or decoration breaks it. It is also checked *before* the already-retried guard: `delayRetry` re-enters `getMusicPlayUrl` with `isRetryed = true`, and that flag is only consulted on the non-busy path. A script that keeps answering `服务器繁忙` keeps the player in a 2–6 s retry loop indefinitely. Use it only for genuinely transient conditions, and only a bounded number of times; a permanent answer of `服务器繁忙` is a hang, not a message.
+
+### One Failure Usually Costs Two Requests
+The URL-resolution flow re-runs itself once, unconditionally, for any failure that is not "user cancelled / stopped / switched song". That second pass sets `isRetryed`, and the flag is consulted only **after** the retry has already been attempted — so it does not prevent the second request, it only prevents a third.
+
+The consequence is that an observer — a backend, a log — sees the same request twice, roughly a second apart, and the second one is the host's own doing rather than anything the script or the backend asked for. Counting rows in a log therefore cannot answer "did the backend retry?"; only the backend's own retry counter can.
 
 ### The Host's Own Deadline Produces An Untranslated English String
 The host's script-event layer arms a 20 s timer for every script request; when it fires it calls `cancelRequest(requestKey)`, which rejects the pending request with the hardcoded literal `new Error('Cancel request')`.
@@ -244,6 +256,15 @@ Some public scripts declare extra values such as `hires`, `atmos`, `master`, `20
 - Prefer the official standard values by default.
 - Reuse extended qualities only when the current target version and target script are already known to support them.
 - Do not declare qualities just to look more capable.
+
+### How The Requested Quality Is Chosen
+Starting from the requested rung, the host walks `flac24bit` → `flac` → `320k` and takes the first rung that is **both** present in the song's metadata **and** declared by the source's `qualitys`. If none of those three qualifies, it falls back to `128k`.
+
+For a custom source declaring only `musicUrl`, search and lists are served by the host's built-in implementation, so the song's metadata is the host's rather than the script's. That metadata is **catalogue-level**: it describes what the catalogue holds for the song. It is unrelated to the account's entitlements, so it does not degrade merely because "this account cannot obtain that quality".
+
+### Quality Surfaces On Download, Not On Playback
+- The download dialog lists the intersection of the song's metadata qualities and the source's declared `qualitys`, and the download list shows the chosen rung's name — for example `FLAC Hires`.
+- The playback path renders no quality anywhere.
 
 ## Recommended `request()` Wrapper
 The host `request()` API is callback-based. Wrap it first so the rest of the script can stay async-friendly:

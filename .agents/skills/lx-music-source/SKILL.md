@@ -57,6 +57,7 @@ Put the request into one of these buckets and only read the minimum needed files
 - If your own error text never appears, assume it was **replaced** before display, not lost. On the common failure path the host runs a cross-platform search, skips every candidate it cannot support, and shows its own `换源失败，请尝试手动在搜索页指定其他来源搜索该歌曲播放` instead of your `err.message`; your message only survives when that search returns nothing. The discriminator is whether the cross-platform search found any candidate — see `references/contract.md` (How The Host Renders A Rejection).
 - Untranslated English on the play bar (`Cancel request`) means the host's 20 s deadline fired, not that the script chose to fail. The host rejects its own timeout with a hardcoded English literal that matches none of its localized message constants.
 - If the play bar shows `服务器繁忙`, the host is in its own 2–6 s retry loop rather than reporting a failure. A script that answers `服务器繁忙` on every attempt keeps the player retrying forever.
+- Two identical requests in a row for the same song is usually the **host retrying itself**, not a backend retry: the URL-resolution flow re-runs once for any failure that is not a user cancellation, and its `isRetryed` guard is consulted only after that second attempt. Count the backend's own retry counter rather than rows in a log — see `references/contract.md` (One Failure Usually Costs Two Requests).
 
 ## Pattern Selection
 - If the task is just wrapping an existing backend endpoint, use the static proxy pattern from `references/patterns.md`.
