@@ -29,8 +29,12 @@ npm run dev
 npm run dev -- --open
 ```
 
-To avoid browser CORS issues during local development, this app proxies `/backend/*`
-to the Rust server through the Vite dev server.
+The Rust server sends no CORS headers, so the browser cannot call it from the Vite
+dev server origin directly. The dev server therefore forwards the paths the app
+actually calls (`/healthz` and `/api/*`) to the Rust server, leaving the paths
+unchanged. That way an empty backend URL means "current origin" in development
+exactly as it does in production, where the Rust server serves both the built app
+and the API from one origin.
 
 Default proxy target:
 
@@ -43,8 +47,6 @@ Override it if your backend listens elsewhere:
 ```sh
 VITE_BACKEND_TARGET=http://127.0.0.1:9000 pnpm dev
 ```
-
-Then use `/backend` as the backend base URL in the connect page.
 
 ## Building
 

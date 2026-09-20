@@ -25,9 +25,7 @@
 					spellcheck="false"
 				/>
 				<p class="text-xs leading-relaxed text-muted-foreground">
-					留空将使用当前域名（Same Origin）。开发环境可填
-					<code class="rounded bg-muted px-1 py-0.5 font-mono text-caption">/backend</code>
-					快速连接本地服务。
+					留空将使用当前域名（Same Origin）。
 				</p>
 			</div>
 
