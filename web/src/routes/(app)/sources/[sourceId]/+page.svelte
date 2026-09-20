@@ -11,6 +11,7 @@
 	} from '$lib/components/ui';
 	import CopyField from '$lib/components/sources/CopyField.svelte';
 	import SourceTitle from '$lib/components/sources/SourceTitle.svelte';
+	import QualityFallbackSetting from '$lib/components/sources/QualityFallbackSetting.svelte';
 	import LogsPanel from '$lib/components/source-logs/LogsPanel.svelte';
 	import { sourcesController } from '$lib/features/sources/controller.svelte';
 	import { toast } from '$lib/state/toast.svelte';
@@ -68,6 +69,17 @@
 		// 'busy' 刻意不出提示：用户并没有遭遇失败，只是上一次刷新还在进行中。
 		// 此前这里把 busy 与 failed 一起提示成「刷新失败，请稍后重试」，是在报告一件没发生的事。
 	}
+
+	/**
+	 * 拨动音质降级开关。
+	 *
+	 * 与改名同一套反馈策略：失败刻意不弹提示——sourcesController.error 已被渲染成
+	 * 页面横幅，再弹一条等于把同一句话讲两遍。开关自身在失败时保持原值（控制器不做
+	 * 乐观更新），所以横幅消失后页面上不会留下一个没生效的「已开启」。
+	 */
+	function handleQualityFallbackChange(next: boolean) {
+		void sourcesController.setQualityFallback(sourceId, next);
+	}
 </script>
 
 <svelte:head>
@@ -112,15 +124,15 @@
 						<SourceTitle {source} onRenamed={() => (renamedThisVisit = true)} />
 					{/key}
 					<!--
-						保存标题期间禁用刷新：刷新会 loadSource + loadSources 回填整页，
-						把刚写入的标题静默盖回旧值——用户会看到标题「自己变回去了」。
-						反方向的守卫（刷新中禁止改名）在 SourceTitle 内。
+						保存标题或保存降级开关期间都禁用刷新：刷新会 loadSource + loadSources
+						回填整页，把刚写入的值静默盖回旧值——用户会看到标题/开关「自己变回去了」。
+						反方向的守卫在 SourceTitle 内。
 					-->
 					<Button
 						variant="outline"
 						pending={refreshing}
 						pendingLabel="刷新中…"
-						disabled={sourcesController.savingName}
+						disabled={sourcesController.savingName || sourcesController.savingQualityFallback}
 						onclick={handleRefresh}
 					>
 						刷新 Token
@@ -134,6 +146,9 @@
 					此前是 4 列，第 4 格「音源 ID」是为了填满 5xl 宽度而加的内部主键——
 					用无效内容凑版式，且被 truncate 后连完整读取都做不到。移除后把轨道数
 					一并降到 3，才不会留下死轨道；地址栏里本来就是同一个 ID。
+
+					这条不变量对后续改动同样成立：新内容不够凑满一行时，**不要**往这里塞一格。
+					音质降级开关就是按这条办的——它是可配置项而不是只读事实，下一块独立成段。
 				-->
 				<div class="grid grid-cols-2 gap-6 sm:grid-cols-3">
 					<div class="min-w-0 space-y-2">
@@ -166,6 +181,17 @@
 						</p>
 					</div>
 				</div>
+
+				<!--
+					音质降级开关。刻意**不在**上面那个三段栅格内：那里的注释把「轨道数 ==
+					内容数」写成了不变量，多塞一格就会留下一条装不满的轨道；而这一项是可配置
+					的动作，与上面三个只读事实也不是同一类内容。
+				-->
+				<QualityFallbackSetting
+					value={source.quality_fallback}
+					pending={sourcesController.savingQualityFallback}
+					onChange={handleQualityFallbackChange}
+				/>
 
 				<div class="space-y-3">
 					<div>

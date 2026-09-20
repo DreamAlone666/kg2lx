@@ -71,10 +71,11 @@ export const qualityLabel: Record<string, string> = {
 /**
  * 运行时错误码 → 中文标签。
  *
- * 错误码是写给日志的机器标识，不是写给运维的文案。`UPSTREAM_REQUEST_FAILED` /
- * `UPSTREAM_LOGIN_FAILED` / `UPSTREAM_PLAY_URL_EMPTY` 共享 `UPSTREAM_` 前缀，
- * 12px 等宽下前 9 个字符完全相同——纵向扫读时只能靠后半段区分，而每一个还要占掉
- * 约 166px 的列宽，正是「诊断列装不下、错误码被裁掉尾巴」的根因。
+ * 错误码是写给日志的机器标识，不是写给运维的文案。共享 `UPSTREAM_` 前缀的**每一个**
+ * 码在 12px 等宽下前 9 个字符完全相同——纵向扫读时只能靠后半段区分，而每一个还要
+ * 占掉约 166px 的列宽，正是「诊断列装不下、错误码被裁掉尾巴」的根因。所以这一族
+ * 码有几个、各叫什么，本注释一概不列举：它们会增长，而上面的论证不依赖具体成员
+ * （成员越多，共用前缀越浪费列宽）。要看当前全集，读下面这张表。
  *
  * 与 runtimeStageLabel 同一套做法：界面给中文，原始码通过 title 保留（见 LogsPanel），
  * 需要拿它去 grep 服务端日志时不会丢失。
@@ -92,7 +93,17 @@ export const errorCodeLabel: Record<string, string> = {
 	UPSTREAM_REQUEST_FAILED: '上游请求失败',
 	UPSTREAM_LOGIN_FAILED: '上游登录失败',
 	UPSTREAM_VIP_CHECK_FAILED: 'VIP 校验失败',
-	UPSTREAM_PLAY_URL_EMPTY: '播放地址为空',
+	/**
+	 * 与冻结脚本的字典同文，不得单方面漂移：脚本在播放条上给用户看的就是这句。
+	 * 它的确切含义已收窄为「没拿到 url、**且上游没有表达拒绝**」——上游明确拒绝
+	 * 另有专门的码（`UPSTREAM_QUALITY_REFUSED` / `UPSTREAM_QUALITY_EXHAUSTED`），
+	 * 不要再把这里写成「暂无可用音质」那类听起来像上游拒绝的说法。
+	 */
+	UPSTREAM_PLAY_URL_EMPTY: '未取到播放地址',
+	/** 只陈述「上游明确拒绝了这一档」这个事实，不描述我们自己的降级策略。 */
+	UPSTREAM_QUALITY_REFUSED: '该音质被上游拒绝',
+	/** 降级已走到底、每一档都被明确拒绝。 */
+	UPSTREAM_QUALITY_EXHAUSTED: '各音质均被拒绝',
 	UPSTREAM_RATE_LIMITED: '上游限流',
 	INVALID_REQUEST: '参数无效',
 	INTERNAL_ERROR: '内部错误',
@@ -111,7 +122,14 @@ export function labelOf<T extends string>(
 	return (map as Record<string, string>)[key] ?? key;
 }
 
-/** 这几个码的中文标签只说明「哪一步坏了」，原始报文才是运维当下的线索。 */
+/**
+ * 诊断类错误码：中文标签只说明「哪一步坏了」，原始报文才是运维当下的线索。
+ *
+ * 判据是**这个码的中文标签是否已经把整个状态说完了**，而不是「是不是上游相关」。
+ * 例如「该音质被上游拒绝」本身就完整描述了状态，背后的英文 message 只是同一件事的
+ * 另一种说法，拼上去是重复；反过来「上游请求失败」没说是超时、拒绝还是连不上，
+ * 那份报文才是唯一线索。新增码时按这条判据决定要不要进这个集合，不要按前缀归类。
+ */
 const diagnosticErrorCodes = new Set([
 	'UPSTREAM_REQUEST_FAILED',
 	'UPSTREAM_LOGIN_FAILED',
@@ -126,9 +144,9 @@ const diagnosticErrorCodes = new Set([
  * （如 "source not found"），直接展示给中文用户等于没翻译；稳定机器码由后端给、
  * 用户文案由前端拥有，这是本文件的一贯分工。
  *
- * 四个**诊断类**错误码是例外：它们的中文标签只说明「哪一步坏了」，而运维当下唯一
- * 的线索恰恰是紧跟其后的原始报文（上游返回了什么、超时还是拒绝）。丢掉它等于让
- * 用户只能反过来找我们，所以这几个码保留 `中文抬头：后端 message`。
+ * **诊断类**错误码（见 diagnosticErrorCodes）是例外：它们的中文标签只说明「哪一步
+ * 坏了」，而运维当下唯一的线索恰恰是紧跟其后的原始报文（上游返回了什么、超时还是
+ * 拒绝）。丢掉它等于让用户只能反过来找我们，所以这几个码保留 `中文抬头：后端 message`。
  *
  * 未知码（后端先于前端上线）回退到错误自身的 message —— 与 labelOf 同一套前向兼容
  * 思路。完全没有 `code` 的是另一种情况：AdminApiError 在响应体不是本仓的错误信封

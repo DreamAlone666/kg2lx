@@ -48,7 +48,7 @@ const showOutcome = $derived(sourceLogsController.view !== 'errors');
  * 靠 table-fixed 钉死宽度才能安全 truncate；其余列按内容上限定档，剩余空间全部
  * 给歌曲列——因为这时只有它是"message 列"。
  *
- * **无元数据** —— `w-full table-auto`，且不给任何列定宽：六列全是定长 token，
+ * **无元数据** —— `w-full table-auto`，且不给任何列定宽：非歌曲列全是定长 token，
  * 没有 message 列。交给浏览器的自动表格算法，它会**按各列内容的宽度比例**把剩余
  * 宽度摊掉。表仍然铺满卡片，而每列的富余量都正比于它自己的内容——不会出现"某一
  * 列 95% 是空气"。
@@ -67,8 +67,8 @@ const showOutcome = $derived(sourceLogsController.view !== 'errors');
  * ③ 的病根是**把余量推出表外**：卡片里的空白没有任何东西去界定它，就只是白。
  *
  * 正解是让余量**按内容比例进到每一列**，也就是 table-auto + w-full 的原生行为，
- * 不需要任何写死的百分比。（百分比均摊也试过：六列各 1/6 能铺满，但会把歌曲列
- * 压到 1024px 下的约 200px——有元数据时歌名会被截成十来个字，所以那个方案绝不能
+ * 不需要任何写死的百分比。（把宽度均分到每一列也试过：能铺满，但会把歌曲列压到
+ * 1024px 下的约 200px——有元数据时歌名会被截成十来个字，所以那个方案绝不能
  * 用在有元数据档。）
  *
  * 为什么必须写成分支：音源脚本 0.1.1 只上报 hash / album_audio_id / quality，
@@ -80,6 +80,21 @@ const showOutcome = $derived(sourceLogsController.view !== 'errors');
  * 整体切一次；这是预期的一次性行为，不是抖动。
  */
 const hasSongMeta = $derived(sourceLogsController.logs.some((log) => log.track_title));
+
+/**
+ * 本页是否有任何一行真的带上了上游观测。它决定「上游」列整列是否出现。
+ *
+ * 与 hasSongMeta 同一套「本页级开关」的做法，但理由更硬：**没有任何观测的行是常态**。
+ * 服务端只在 song/url 那次调用上记录观测（预检、刷新登录、DFID 都不经过那次调用），
+ * 而本次改动之前落盘的历史行则全部没有这一组字段（后端 `#[serde(default)]` 补成 null）。
+ * 若不做整列让出，一页历史数据里就会常驻一列永久空白——正是「用无效内容凑版式」，
+ * 同一个教训见「错误」视图里被折叠的状态列。
+ *
+ * 代价与 hasSongMeta 相同：轮询到第一条带观测的日志时会整体切一次，是预期的一次性行为。
+ */
+const hasUpstreamStatus = $derived(
+	sourceLogsController.logs.some((log) => log.upstream_status !== null)
+);
 
 /**
  * 表头单元格的基础样式。
@@ -118,19 +133,71 @@ const TH = 'px-4 py-2.5 font-medium shadow-[inset_0_-1px_0_0_var(--color-border)
 	}
 
 	/**
-	 * 音质胶囊的悬停详情：线上取值 → LX 官方档位名 →（该行记录到时）向上游要的质量参数。
+	 * 上游观测列的文本：`业务 status / priv_status`，形如 `2/0`；本行没有观测时为 `—`。
 	 *
-	 * 顺序就是排查时的心智顺序：第一段是你在日志里看到的、要能直接复制去 grep 的字面量；
-	 * 第二段把它翻成人话；第三段回答「这次失败是在向酷狗要哪个质量」——四档里只有
-	 * flac24bit → high 是真正的重命名，而它常常正是失败与成功的分界。
+	 * 两个数字合成一格而不是各占一列：它们是一对（「明确拒绝」正是 `2/0` 这个组合，
+	 * priv_status 单独看没有意义），而列宽是有限的——诊断列那三次失败的尝试已经
+	 * 得出「信息要按列宽分配而不是按重要性堆放」。
 	 *
-	 * 第三段直接读日志行落盘的值，**不在前端推导**：它是发生过的事实，该由服务端记
-	 * （写日志时填入，见 server/src/services/runtime.rs 的 append_log）。前端曾经复制过
-	 * 一张映射表，那等于把服务端逻辑的影子副本放进界面——服务端一改，界面只会安静地说错话。
+	 * **不在前端给这两个数字起名字**（不写「明确拒绝」之类）。它们的含义属于服务端的
+	 * 状态体系，界面上那句中文由诊断列的失败胶囊承担、文案来自 labels.ts；在这里再翻
+	 * 一遍就是同一件事的第二份词典，改一处必漏另一处——本仓库已有过记录。
+	 * 空值显示 `—` 而不是留白，与耗时列同一条理由：留白分不清「没有」和「没记到」。
+	 */
+	function upstreamText(log: RuntimeLogListItem): string {
+		if (log.upstream_status === null) return '—';
+		return log.upstream_priv_status === null
+			? `${log.upstream_status}`
+			: `${log.upstream_status}/${log.upstream_priv_status}`;
+	}
+
+	/**
+	 * 上游观测列的悬停说明。只回答「这两个数字是什么、为什么没有」。
 	 *
-	 * upstream_quality 为空时整段不显示，成因不止一种：① 本行不是 `song/url` 那次调用
-	 * （预检 / 刷新登录 / DFID 都不带质量参数，服务端据此不记，见 runtime.rs 的
-	 * upstream_quality_for）；② 该行产生于服务端开始记录之前。
+	 * 没有值的成因不止一种，与 qualityTitle 里 upstream_quality 那段完全同源：
+	 * ① 本行描述的不是 song/url 那次取链（预检 / 刷新登录 / DFID 都不经过它，
+	 * 服务端据此不记观测）；② 该行产生于服务端开始记录上游观测之前。两种都要说出来，
+	 * 否则用户会以为「预检行没有观测」是记录丢了。
+	 */
+	function upstreamTitle(log: RuntimeLogListItem): string {
+		if (log.upstream_status === null) {
+			return '本行没有上游观测：不是 song/url 那次取链（服务端只在那次调用上记录），或该行产生于开始记录之前';
+		}
+		const parts = [`上游返回的业务状态 ${log.upstream_status}`];
+		if (log.upstream_priv_status !== null) parts.push(`priv_status ${log.upstream_priv_status}`);
+		parts.push('上游自己给的值，不是本服务的判断结果');
+		return parts.join('｜');
+	}
+
+	/**
+	 * 音质胶囊的悬停详情：线上取值 → LX 官方档位名 →（发生了降级时）本次实际要的档位 →
+	 *（该行记录到时）向上游要的质量参数 →（上游返回了文件时）格式与字节数 →
+	 *（客户端上报过时）歌曲档位元数据。
+	 *
+	 * 顺序就是排查时的心智顺序：先是你在日志里看到、要能直接复制去 grep 的那些字面量，
+	 * 紧接着把它们翻成人话（四档里只有 flac24bit → high 是真正的重命名，而它常常正是
+	 * 失败与成功的分界），再往后依次收紧到「这一次到底要了什么、又真的拿到了什么」。
+	 * 每一段都不是装饰，但它们**各有一条独立的出现条件**，见下面逐个说明。
+	 *
+	 * 从「向酷狗请求的质量参数」往后，每一段都直接读日志行落盘的值，**不在前端推导**：
+	 * 它们是发生过的事实，该由服务端记（写日志时填入，见 server/src/services/runtime.rs
+	 * 的 append_log）。前端曾经复制过一张映射表，那等于把服务端逻辑的影子副本放进界面
+	 * ——服务端一改，界面只会安静地说错话。
+	 *
+	 * 各段为什么有时不出现：
+	 *
+	 * - `upstream_quality` 为空时整段不显示。成因不止一种：① 本行不是 `song/url` 那次
+	 *   调用（预检 / 刷新登录 / DFID 都不带质量参数，服务端据此不记，见 runtime.rs 的
+	 *   upstream_quality_for）；② 该行产生于服务端开始记录之前。
+	 * - `attempted_quality` 只在**与 requested_quality 不同**时才出现。降级后的那一行里
+	 *   requested_quality 仍是用户当初要的档位（这是事实，不该改写），要看出「本次要的
+	 *   是另一档」只能靠它；两者相等时它等于把第一段再说一遍，故跳过。
+	 * - `upstream_ext_name` / `upstream_file_size` 只在**上游真的返回了一个文件**时才出现，
+	 *   而它们是唯一能看出静默回落的地方：上游对没有该声部的歌仍然返回成功，只是把 128k
+	 *   的 mp3 给你（文件大小与 `quality=128` 完全相同）。不落这两个字段，界面只能显示
+	 *   一个「成功」。
+	 * - `reported_types` 只在客户端上报过时才出现，原样呈现供比对。它是一个**记录**：
+	 *   用来对照「客户端以为有什么」与「上游实际给了什么」，界面上任何分支都不得读它。
 	 *
 	 * 这里**不用** labelOf：它在查表未命中时回退的是原值本身（见 labels.ts），而这个原值
 	 * 已经是本 tooltip 的第一段，回退过去会渲染成 `hires｜hires`。labelOf 的那个行为对
@@ -146,7 +213,25 @@ const TH = 'px-4 py-2.5 font-medium shadow-[inset_0_-1px_0_0_var(--color-border)
 		const q = log.requested_quality;
 		const label = qualityLabel[q] ?? '前端未收录的音质档位（可能后端新增了取值）';
 		const parts = [q, label];
+
+		if (log.attempted_quality && log.attempted_quality !== q) {
+			parts.push(`本次实际向上游请求的档位：${log.attempted_quality}`);
+		}
 		if (log.upstream_quality) parts.push(`向酷狗请求的质量参数：${log.upstream_quality}`);
+
+		// 判据是「字段有没有值」而不是「本行 ok 是否为真」：这两个字段只在上游真的返回了
+		// 一个文件时才落盘，按字段取值呈现就不会出现「界面断言成功、字段却没有值」的分叉。
+		if (log.upstream_ext_name !== null || log.upstream_file_size !== null) {
+			const ext = log.upstream_ext_name ?? '格式未记录';
+			const size =
+				log.upstream_file_size !== null ? `${log.upstream_file_size} 字节` : '大小未记录';
+			parts.push(`上游实际返回：${ext}，${size}`);
+		}
+
+		if (log.reported_types !== null && log.reported_types !== undefined) {
+			parts.push(`客户端上报的歌曲档位元数据：${JSON.stringify(log.reported_types)}`);
+		}
+
 		return parts.join('｜');
 	}
 
@@ -170,10 +255,28 @@ const TH = 'px-4 py-2.5 font-medium shadow-[inset_0_-1px_0_0_var(--color-border)
 	 * 只有 song/url 那次调用才记质量参数）。有了 `if (log.upstream_endpoint)` 这一兜，
 	 * 预检行的 tooltip 退化成只剩「错误码 XXX」，而不是渲染出一句「上游端点 」悬着。
 	 *
-	 * 于是落盘点总数与带端点的落盘点数不再相等：13 与 9。复核是两条 grep：
-	 * `grep -c 'LogErrorContext::precheck(),'` 得 4（尾逗号排除 doc 里的提及；按裸
-	 * 标识符数会得 5）；`grep -c 'stage: RuntimeLogStage::'` 得 10，扣掉 precheck()
-	 * 里那一处定义得 9。这组数已经错过一次（预检落盘加入时 9→13），别裸抄常量。
+	 * 于是落盘点总数与带端点的落盘点数不再相等，而两个数都随每次新增落盘点而变
+	 * ——此前已经错过一次（预检落盘加入时整体变了），别裸抄常量。要复核就现场跑，
+	 * 并把范围钉在真正落盘的那个文件上：
+	 *
+	 *   grep -cE 'append_log\(AppendLogInput|\.log_and_err\(' server/src/services/runtime.rs
+	 *     → 落盘点总数
+	 *   grep -c 'LogErrorContext::precheck(' server/src/services/runtime.rs
+	 *     → 预检落盘点数 + 1（正文里那处 `LogErrorContext::precheck()` 的提及也匹配；
+	 *        `fn precheck` 的定义不带类型名前缀，不匹配）
+	 *
+	 * 两条都必须限定在 runtime.rs 内：整树 grep 还会数进 domain/runtime_log.rs 里那个
+	 * 造 RuntimeLog 的 fixture。两者相减才是带端点的落盘点数。
+	 *
+	 * 刻意按**调用点形状**匹配、且不写任何具体数字：数字每加一个落盘点就过期一次（已经
+	 * 过期过一次），形状不会。precheck 那条原先写的是 `'LogErrorContext::precheck(),'`，
+	 * 靠尾逗号把定义与散文里的提及排除掉——调用点为了带上请求 id 改成
+	 * `precheck(&client_request_id)` 之后，它恒为 0，而 0 看上去很像「一个预检落盘都没有」。
+	 * 凡是靠上下文凑出来的模式都会这样烂掉：宁可多带一个 `+1` 的修正项。
+	 *
+	 * 这条 tooltip 里新加的上游观测（status / priv_status / fail_process）与端点同一个
+	 * 来源纪律：**有才拼**。它们同样只在上游真的被调用过、且服务端已开始记录时才存在；
+	 * 预检行与历史行一律什么都没有，而不是渲染出一串空值。
 	 *
 	 * 不再拼接 log.error：它在服务端被 sanitize_runtime_log_error 无差别地塌成同一个
 	 * 常量（刻意不复述那个字面量），胶囊上的中文标签已经表达了同一件事，拼进来只是重复。
@@ -182,7 +285,44 @@ const TH = 'px-4 py-2.5 font-medium shadow-[inset_0_-1px_0_0_var(--color-border)
 		const parts: string[] = [];
 		if (log.upstream_endpoint) parts.push(`上游端点 ${log.upstream_endpoint}`);
 		if (log.error_code) parts.push(`错误码 ${log.error_code}`);
+
+		// 上游自己给的观测：这是本次改动之前查不到、只能人肉重放上游请求才能拿到的部分。
+		if (log.upstream_status !== null) {
+			const observation = [`上游 status=${log.upstream_status}`];
+			if (log.upstream_priv_status !== null) {
+				observation.push(`priv_status=${log.upstream_priv_status}`);
+			}
+			parts.push(observation.join(' '));
+		}
+		// fail_process **原样**呈现，不做任何解读：实测同一账号同一小时内对同一首歌
+		// 都见过 ["pkg","buy"] / ["buy"] / [] 三种取值，任何据它下的结论下次就会失效。
+		// 判空用 `!== null` 而不是真值判断，否则空数组与「没记录」在界面上无从区分，
+		// 而「上游这次没给 fail_process」本身就是一个观测结果。
+		if (log.upstream_fail_process !== null) {
+			parts.push(`上游 fail_process=${JSON.stringify(log.upstream_fail_process)}`);
+		}
+
 		return parts.join('｜') || '请求失败';
+	}
+
+	/**
+	 * 「降级 N」标记的悬停说明。
+	 *
+	 * 这枚标记是**必需**的，不是装饰：一次「降级后成功」的播放会写**两行**——被拒的
+	 * 那一档 ok=false、成功的那一档 ok=true。少了它，被拒的那一行在「错误」视图里与
+	 * 一次纯粹的失败长得一模一样，用户会以为自己遇到了两次故障，而其实只有一步。
+	 *
+	 * 说明里点出字段名 client_request_id 而不是只复述「两行是同一次请求」：配对关系
+	 * 就靠它，而这个 id 不占任何一列的宽度，别处拿不到这个线索。
+	 */
+	function fallbackTitle(log: RuntimeLogListItem): string {
+		const parts = [
+			`已比用户请求的档位（${log.requested_quality}）向下改 ${log.quality_fallback_index} 档`,
+		];
+		if (log.attempted_quality) parts.push(`本次向上游要的档位：${log.attempted_quality}`);
+		parts.push('一次降级成功的播放会写两行：被拒的那一档 ok=false、成功的那一档 ok=true');
+		if (log.client_request_id) parts.push(`两行共用同一个请求关联 id：${log.client_request_id}`);
+		return parts.join('｜');
 	}
 
 
@@ -287,12 +427,28 @@ const TH = 'px-4 py-2.5 font-medium shadow-[inset_0_-1px_0_0_var(--color-border)
 	</StatusBadge>
 {/snippet}
 
+<!--
+	「上游」列：上游自己给的两个业务状态数字（业务 status / priv_status），形如 `2/0`。
+
+	为什么值得独占一列：这两个数字此前在服务端就被丢掉了，排查「上游到底说了什么」只能
+	人肉重放上游请求。它紧挨着「状态」列（我们的成败）摆放，构成「上游怎么看 / 我们怎么办」
+	的对照——正是「相邻数据点易于比较」这条表格价值的用例（见 hasSongMeta 的引述）。
+
+	为什么不给这两个数字起中文名：见 upstreamText 的注释，那会变成第二份词典。
+
+	为什么整列可能不出现：见 hasUpstreamStatus。
+-->
+{#snippet upstreamCell(log: RuntimeLogListItem)}
+	<span class="tabular font-mono" title={upstreamTitle(log)}>{upstreamText(log)}</span>
+{/snippet}
+
 {#snippet diagMeta(log: RuntimeLogListItem)}
 	<!--
-		只放「这次请求是怎么发生的」：阶段，刷新与重试这两个过程标记，以及失败行
-		才有的上游 HTTP 状态。成败与错误已由状态列和 failureBadge 承担，不在这里重复。
+		只放「这次请求是怎么发生的」：阶段，刷新与重试这两个过程标记，本行在降级阶梯
+		上的位置，以及失败行才有的上游 HTTP 状态。成败与错误已由状态列和 failureBadge
+		承担，不在这里重复。
 
-		两条纪律：
+		三条纪律：
 
 		1. 阶段不再套胶囊。每行一枚 40~56px 的圆角块只为了说「取链」，是这一列最贵
 		   的形态。改成加重的纯文本后，它仍是本格最左、最深的锚点，扫读顺序不变。
@@ -302,12 +458,30 @@ const TH = 'px-4 py-2.5 font-medium shadow-[inset_0_-1px_0_0_var(--color-border)
 		   那句是错的：同一首歌换音质取链，hash 相同而请求体不同。现在它回到歌曲列
 		   并改回本名（见 songCell）。
 
+		3. 上游观测的两个数字也不在这里，「上游」列已经承担了它。同一件事在诊断列再
+		   出现一次，正是「同一次失败被表达三遍」的老毛病。
+
 		上游端点（song/url / refresh_login / ensure_dfid）刻意不进来：在带端点的行上
 		它与 stage 一一对应，放进布局只是再加一个零信息元素；预检行压根没有端点，
 		就更没什么可放。它是 title 的原料，见 failureDetail。
 	-->
 	<div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-caption text-muted-foreground">
 		<span class="font-medium text-foreground">{labelOf(runtimeStageLabel, log.stage)}</span>
+		<!--
+			「降级 N」：本行不是用户当初要的那一档，而是阶梯上向下第 N 次尝试。
+
+			必须常驻可见，不能只进 tooltip——**一次降级后成功的播放会写两行**（被拒的
+			那一档 ok=false、成功的那一档 ok=true），在「错误」视图里那一行 ok=false 的
+			中间档看起来就是一次普通失败。有了这枚标记，两行才读得出「这是一步」。
+
+			用 warning 而不是 danger：这是**策略按预期工作**留下的痕迹，不是故障；
+			与紧邻的「已刷新 Token」「重试 N」同档，三者都是「过程发生了什么」。
+		-->
+		{#if log.quality_fallback_index > 0}
+			<span class="font-medium text-warning" title={fallbackTitle(log)}>
+				降级 {log.quality_fallback_index}
+			</span>
+		{/if}
 		<!--
 			「已刷新 Token」只在 stage 不是 refresh_login 时显示。两个理由，都是实测的：
 
@@ -501,8 +675,8 @@ const TH = 'px-4 py-2.5 font-medium shadow-[inset_0_-1px_0_0_var(--color-border)
 				<!--
 					表头必须吸顶。实测这 20 行日志的滚动内容高 1082px（行高 41~61px），
 					而容器可视区只有 630px（max-h-[70vh]，900px 视口下）：不吸顶的话往下
-					滚十来行，「歌曲信息 / 音质 / 状态 / 时间 / 延迟 / 诊断」就全部离屏，
-					而列里大量是无自解释性的值（2ms、flac24bit、05-19 14:50:33），
+					滚十来行，表头整行就离屏了（刻意不在这里列名单——列会增减，而论证不依赖
+					有哪几列），而列里大量是无自解释性的值（2ms、flac24bit、05-19 14:50:33），
 					用户只能靠位置猜列义。给容器一个高度上限后表头才吸得住，
 					顺带把「滚完 1082px 才能看到最新那行」变成「容器内滚动」。
 					滚动容器放在 Card 的 overflow-hidden 之内，无需改动卡片的圆角裁剪。
@@ -510,7 +684,7 @@ const TH = 'px-4 py-2.5 font-medium shadow-[inset_0_-1px_0_0_var(--color-border)
 				<div class="max-h-[70vh] overflow-y-auto">
 					<!--
 						两种档位的分工见 hasSongMeta。w-full 是共有的：表在任何一档都要铺满卡片。
-						aria-labelledby 让它有一个可读的名字——六列全是无自解释性的短值
+						aria-labelledby 让它有一个可读的名字——非歌曲列全是无自解释性的短值
 						（2ms / flac24bit / 05-19 14:50:33），屏幕阅读器按表导航时需要先
 						听到这张表是什么。视觉上的名字由相邻的 <h2> 承担，这里只是把它接上。
 					-->
@@ -529,6 +703,13 @@ const TH = 'px-4 py-2.5 font-medium shadow-[inset_0_-1px_0_0_var(--color-border)
 								-->
 								{#if showOutcome}
 									<th scope="col" class={cn(hasSongMeta && 'w-20', TH)}>状态</th>
+								{/if}
+								<!--
+									按最宽取值定档：`2/0`（3 个等宽字符）与两字表头在 w-20(80px) 下
+									都放得下，与同为短值的「状态」「延迟」同档，不另立新档。
+								-->
+								{#if hasUpstreamStatus}
+									<th scope="col" class={cn(hasSongMeta && 'w-20', TH)}>上游</th>
 								{/if}
 								<!--
 									时间列按最宽形态取档：跨天时是 `MM-DD HH:mm:ss` 共 14 字符，
@@ -561,6 +742,9 @@ const TH = 'px-4 py-2.5 font-medium shadow-[inset_0_-1px_0_0_var(--color-border)
 									<td class="px-4 py-2.5">{@render qualityCell(log)}</td>
 									{#if showOutcome}
 										<td class="px-4 py-2.5">{@render outcomeBadge(log)}</td>
+									{/if}
+									{#if hasUpstreamStatus}
+										<td class="px-4 py-2.5">{@render upstreamCell(log)}</td>
 									{/if}
 									<td
 										class="tabular px-4 py-2.5 whitespace-nowrap text-muted-foreground"
@@ -608,6 +792,23 @@ const TH = 'px-4 py-2.5 font-medium shadow-[inset_0_-1px_0_0_var(--color-border)
 
 						<div class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
 							{@render qualityCell(log)}
+							<!--
+								上游观测在窄屏下必须一起出来，否则这一列会静默变成桌面端专属
+								（窄屏用的是卡片渲染，不读桌面那张表的列）。
+
+								两点与桌面不同，都是窄屏没有表头逼出来的：
+
+								① 把列名「上游」折叠进值里。桌面端靠表头说明这一格是什么，
+								   这里没有表头，光一个 `2/0` 是纯噪声。
+								② 没有观测就整块不渲染，而不是像桌面那样显示 `—`：窄屏这一行
+								   是若干无标签的短值，多一个孤零零的 `—` 只会让人猜它在说什么
+								   （桌面端的 `—` 有列头兜住语义，成立）。
+							-->
+							{#if hasUpstreamStatus && log.upstream_status !== null}
+								<span class="text-caption text-muted-foreground" title={upstreamTitle(log)}>
+									上游 {upstreamText(log)}
+								</span>
+							{/if}
 							<span
 								class="tabular text-caption text-muted-foreground"
 								title={formatDateTime(log.created_at)}
@@ -623,7 +824,8 @@ const TH = 'px-4 py-2.5 font-medium shadow-[inset_0_-1px_0_0_var(--color-border)
 						</div>
 
 						<!-- 与桌面表格保持信息等价：阶段（歌曲 hash 已随 songCell 上移）、
-						     刷新与重试标记。错误码与原因由上面的 failureBadge 承担，桌面端同样如此。 -->
+						     降级 / 刷新 / 重试标记。错误码与原因由上面的 failureBadge 承担，
+						     上游观测的两个数字在上面的元数据行里，桌面端同样如此。 -->
 						{@render diagMeta(log)}
 					</li>
 				{/each}

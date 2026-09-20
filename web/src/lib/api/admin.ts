@@ -26,15 +26,31 @@ export class AdminApi {
   }
 
   /**
-   * `name` 原样透传：`null` 是有意义的值（恢复默认标题），不得改写为 `''` 或省略键。
-   * 净化后的实际落盘值以响应里的 `name` 为准。
+   * 修改音源的可配置字段。**未出现在 `patch` 里的键一律不改**——这是后端 PATCH 的
+   * 正式语义，也意味着「不改标题」与「把标题重置为默认」是两条不同的路：
+   *
+   *   `{ quality_fallback: true }`  只动开关，标题原样保留
+   *   `{ name: null }`              重置标题（`null` 是**有意义的值**，不得改写为 `''`）
+   *   `{ name: 'x' }`               改标题
+   *
+   * 因此本方法**逐键判断后组装 body**，而不是把 `patch` 原样丢出去：后者一旦出现
+   * `name: undefined` 这类写法，就会在「省略键」与「显式传值」之间制造一个靠
+   * JSON.stringify 的丢键行为兜底的静默地带，而这两者在后端是不同语义。
+   *
+   * body **永远是对象**（哪怕 `{}`）：HttpClient.patch 在 body 为假值时不发 body，
+   * 而 axum 的 `Json` 提取器要求请求声明 `Content-Type: application/json`。
+   *
+   * 净化后的实际落盘值以响应为准回显，不要假定等于提交值。
    */
-  async updateSourceName(
+  async updateSource(
     sourceId: string,
-    name: string | null,
+    patch: { name?: string | null; quality_fallback?: boolean },
     signal?: AbortSignal,
   ): Promise<UpdateSourceResponse> {
-    return this.http.patch(`/api/v1/admin/sources/${sourceId}`, { name }, { signal });
+    const body: { name?: string | null; quality_fallback?: boolean } = {};
+    if (patch.name !== undefined) body.name = patch.name;
+    if (patch.quality_fallback !== undefined) body.quality_fallback = patch.quality_fallback;
+    return this.http.patch(`/api/v1/admin/sources/${sourceId}`, body, { signal });
   }
 
   async listSourceLogs(

@@ -29,6 +29,8 @@ export type SourceSummary = {
    */
   default_name: string;
   enabled: boolean;
+  /** 该音源是否开启了「音质自动降级」；默认关闭。详见 QualityFallbackSetting 的说明。 */
+  quality_fallback: boolean;
   script_url: string;
   userid: string;
   vip_active: boolean;
@@ -61,6 +63,8 @@ export type SourceDetail = {
    */
   name_advisory_chars: number;
   enabled: boolean;
+  /** 该音源是否开启了「音质自动降级」；默认关闭。详见 QualityFallbackSetting 的说明。 */
+  quality_fallback: boolean;
   script_url: string;
   runtime_token_preview: string;
   account: {
@@ -80,6 +84,13 @@ export type UpdateSourceResponse = {
   /** 净化后**实际落盘**的标题，可能与提交值不同，界面应以它为准回显。 */
   name: string;
   default_name: string;
+  /**
+   * 落盘后实际生效的开关值。
+   *
+   * PATCH 是「缺失 = 不改」的语义，所以回显这个字段不只是方便：调用方要判断
+   * 「刚才那次只带 name 的提交有没有意外把开关改掉」，只能看这里的值。
+   */
+  quality_fallback: boolean;
   updated_at: number;
 };
 
@@ -144,6 +155,29 @@ export type RuntimeLogListItem = {
   album_audio_id: string | null;
   requested_quality: string;
   /**
+   * **本次**这一行向上游要的 LX 档位（取值域同 `requested_quality`）。
+   *
+   * 只在发生了降级时与 `requested_quality` 不同：用户要 `flac` 被拒后我们改要
+   * `320k`，那一行的 `requested_quality` 仍是 `flac`（用户当初要的就是它），
+   * `attempted_quality` 才是 `320k`。两者相等时它没有额外信息，因此界面只在
+   * 不相等时才展示（见 LogsPanel 的 qualityTitle）。
+   *
+   * 由服务端落盘而非前端推导：它是「那一刻发生过什么」的事实，前端不持有阶梯。
+   */
+  attempted_quality: string | null;
+  /**
+   * 这一行是阶梯上的第几档：0 = 用户请求的那一档，1.. = 已经向下改了几档。
+   *
+   * 它与 `requested_quality` 的组合才是完整的：`quality_fallback_index > 0` 说明
+   * 这一行不是用户当初要的那次尝试。**一次降级后成功的播放会写两行**——被拒的
+   * 那一档 `ok=false`、成功的那一档 `ok=true`，两行靠 `client_request_id` 关联。
+   * 所以 `ok=false` 且 index>0 的行不该被读成「一次独立的失败」。
+   *
+   * 非 `Option`：本次改动前落盘的行读出来是 0（后端有 `#[serde(default)]`），
+   * 恰好就是「没降过级」这个正确含义。
+   */
+  quality_fallback_index: number;
+  /**
    * 本行所描述的那次上游调用实际使用的酷狗质量参数（128 / 320 / flac / high）。
    *
    * 只有描述 song/url 那次调用的行才有值：刷新登录 / DFID 两次调用不带质量参数，
@@ -151,9 +185,67 @@ export type RuntimeLogListItem = {
    * 前端只读——服务端在写日志时填入（server/src/services/runtime.rs 的 append_log，
    * 映射来自 kugou_lite_client 的 map_quality）。
    *
+   * **它是 `attempted_quality` 那一档映射出来的**，不是用户请求档位映射出来的：
+   * 降级之后的每一行都应该记自己那一档的参数值。若按用户请求档位算，阶梯上每一行
+   * 会记成同一个值，这一列恰恰在最该看出阶梯的地方看不出任何东西。
+   *
    * 本次改动之前落盘的行没有这个键，读出来是 null（后端有 #[serde(default)]）。
    */
   upstream_quality: string | null;
+  /**
+   * 上游自己给的业务状态：1 = 成功，2 = **明确拒绝**这一次取链，0 = 资源不存在或
+   * 参数非法（后两者形状完全不同，0 会另带 `error_code`）。
+   *
+   * 是上游的原话，不是我们的判断结果——「我们怎么处理它」（降级 / 终局）由
+   * `quality_fallback_index` 与 `error_code` 分别承载。
+   *
+   * 只有真的调用过上游的行才有值：预检 / ensure_dfid / refresh_login 不经过
+   * song/url，读出来是 null。
+   */
+  upstream_status: number | null;
+  /** 上游同一响应里的 priv_status。与 `upstream_status` 同源、同为空。 */
+  upstream_priv_status: number | null;
+  /**
+   * 上游响应里的 `fail_process` 数组，**原样记录的事实，永远不作判据**。
+   *
+   * 实测它极不稳定：同一账号同一小时内对同一首歌见过 `["pkg","buy"]`、`["buy"]`
+   * 和 `[]` 三种取值。任何「按 fail_process 推断原因」的分支都会在下次请求上失效，
+   * 因此界面只呈现它，不解释它、更不据它下结论。
+   *
+   * 服务端落盘前会截断长度，避免每一行 jsonl 被这个数组撑大。
+   */
+  upstream_fail_process: string[] | null;
+  /** 上游实际返回的音频格式（`mp3` / `flac` / `mkv`）。 */
+  upstream_ext_name: string | null;
+  /**
+   * 上游实际返回的字节数。
+   *
+   * 与 `upstream_ext_name` 一起回答一个此前无从回答的问题：**我们拿到的是不是
+   * 想要的那一档**。上游对没有该声部的歌会静默回落（例如要 `high` 却回 128k mp3，
+   * `status` 仍是 1），只有这两个字段的取值能看出来。
+   */
+  upstream_file_size: number | null;
+  /**
+   * 本次入站 LX 请求的关联 id：一次请求一个 id，同一请求的多次尝试共用它。
+   *
+   * 用途是把「同一次请求的第 N 档」与「两次独立请求」区分开。上文两处说的
+   * 「降级后的两行」就是靠它配对的——只看时间戳与 hash 分不清是哪种。
+   *
+   * 在查到音源之后立刻生成，因此预检失败的行也带同一个 id。
+   * 本次改动前落盘的行没有这个键，读出来是 null。
+   */
+  client_request_id: string | null;
+  /**
+   * LX 客户端上报的歌曲元数据（`musicInfo.types`，即宿主认为这首歌有哪些档位、
+   * 各自的 hash 与大小），**原样落盘、不参与任何判断**。
+   *
+   * 类型故意留成 `unknown`：它的形状由冻结在用户机器上的脚本决定，前端既无法约束
+   * 也不该校验。它是一个**记录**——出问题时用来对照「客户端以为有什么」与「上游
+   * 实际给了什么」，而不是我们据以做分支的输入。
+   *
+   * 本次改动前落盘的脚本不上报它，读出来是 null。
+   */
+  reported_types: unknown | null;
   upstream_endpoint: string;
   stage: 'precheck' | 'ensure_dfid' | 'refresh_login' | 'fetch_music_url';
   refresh_attempted: boolean;
