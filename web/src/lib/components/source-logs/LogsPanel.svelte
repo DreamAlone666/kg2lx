@@ -228,7 +228,7 @@ const TH = 'px-4 py-2.5 font-medium shadow-[inset_0_-1px_0_0_var(--color-border)
 			parts.push(`上游实际返回：${ext}，${size}`);
 		}
 
-		if (log.reported_types !== null && log.reported_types !== undefined) {
+		if (log.reported_types !== null) {
 			parts.push(`客户端上报的歌曲档位元数据：${JSON.stringify(log.reported_types)}`);
 		}
 

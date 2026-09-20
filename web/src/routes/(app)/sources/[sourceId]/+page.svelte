@@ -126,7 +126,9 @@
 					<!--
 						保存标题或保存降级开关期间都禁用刷新：刷新会 loadSource + loadSources
 						回填整页，把刚写入的值静默盖回旧值——用户会看到标题/开关「自己变回去了」。
-						反方向的守卫在 SourceTitle 内。
+						反方向的守卫：改名在 SourceTitle 内（刷新中禁用保存），开关则是下面把
+						`refreshing` 传进它的 `disabled`——同一条理由，两个方向都要有，只堵一边
+						就只能防住一半。
 					-->
 					<Button
 						variant="outline"
@@ -186,10 +188,14 @@
 					音质降级开关。刻意**不在**上面那个三段栅格内：那里的注释把「轨道数 ==
 					内容数」写成了不变量，多塞一格就会留下一条装不满的轨道；而这一项是可配置
 					的动作，与上面三个只读事实也不是同一类内容。
+
+					`disabled={refreshing}` 是刷新那条守卫的反方向（见上）：刷新过程中拨动开关，
+					随后回来的详情会把这次写入静默盖回旧值，用户看到开关「自己变回去了」。
 				-->
 				<QualityFallbackSetting
 					value={source.quality_fallback}
 					pending={sourcesController.savingQualityFallback}
+					disabled={refreshing}
 					onChange={handleQualityFallbackChange}
 				/>
 

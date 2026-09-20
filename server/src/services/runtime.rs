@@ -465,6 +465,30 @@ impl RuntimeService {
                         account.cookies = rr.cookies;
                         self.account_repo.upsert(&account).await?;
                         if rr.url.is_empty() {
+                            // 与主循环同一条顺序规则：先问「上游是不是明确拒绝了这一档」，
+                            // 再谈「没拿到地址」。区别只在于这里**不降级**——本分支已经是
+                            // 「刷新登录后对同一档的重试」，阶梯的推进由主循环负责；而这条
+                            // 路径进不来测试（`do_refresh` 走真实客户端，见 build_loop_service），
+                            // 不值得再养一段没人能验收的循环代码。
+                            //
+                            // 但错误码必须说对：`UPSTREAM_PLAY_URL_EMPTY` 本轮已收窄为
+                            // 「没拿到 url、且上游没有表达拒绝」，用它描述一次明确的拒绝，
+                            // 会让这一行的 `upstream_status=2` 与码自身的定义相反。这里也
+                            // 不用 `EXHAUSTED`——那是「沿阶梯降到底」，而这一档未必是底。
+                            let refused = upstream_refused_quality(rr.observation.status);
+                            let (error_message, error_code, err) = if refused {
+                                (
+                                    "upstream refused requested quality",
+                                    ErrorCode::UpstreamQualityRefused,
+                                    AppError::upstream_quality_refused(),
+                                )
+                            } else {
+                                (
+                                    "empty url after retry",
+                                    ErrorCode::UpstreamPlayUrlEmpty,
+                                    AppError::upstream_play_url_empty(),
+                                )
+                            };
                             self.append_log(AppendLogInput {
                                 source: &source,
                                 account_id: &account.account_id,
@@ -483,13 +507,11 @@ impl RuntimeService {
                                 ok: false,
                                 status_code: Some(rr.status_code),
                                 latency_ms: retry_latency,
-                                error: Some("empty url after retry"),
-                                error_code: Some(
-                                    ErrorCode::UpstreamPlayUrlEmpty.as_str().to_string(),
-                                ),
+                                error: Some(error_message),
+                                error_code: Some(error_code.as_str().to_string()),
                             })
                             .await;
-                            return Err(AppError::upstream_play_url_empty());
+                            return Err(err);
                         }
                         self.append_log(AppendLogInput {
                             source: &source,
@@ -1527,12 +1549,9 @@ mod tests {
         assert_eq!(second.quality_fallback_index, 1);
         assert_eq!(second.attempted_quality.as_deref(), Some("320k"));
 
-        assert_eq!(first.upstream_quality.as_deref(), Some(map_quality("flac")));
+        // 断言的是**字面量**而不是 `map_quality(...)`：用被测函数自己算期望值等于同义
+        // 反复，真正被钉住的是「flac 档记 flac、320k 档记 320」这两条映射。
         assert_eq!(first.upstream_quality.as_deref(), Some("flac"));
-        assert_eq!(
-            second.upstream_quality.as_deref(),
-            Some(map_quality("320k"))
-        );
         assert_eq!(second.upstream_quality.as_deref(), Some("320"));
         assert_ne!(
             first.upstream_quality, second.upstream_quality,

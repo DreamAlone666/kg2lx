@@ -100,10 +100,16 @@ export const errorCodeLabel: Record<string, string> = {
 	 * 不要再把这里写成「暂无可用音质」那类听起来像上游拒绝的说法。
 	 */
 	UPSTREAM_PLAY_URL_EMPTY: '未取到播放地址',
-	/** 只陈述「上游明确拒绝了这一档」这个事实，不描述我们自己的降级策略。 */
-	UPSTREAM_QUALITY_REFUSED: '该音质被上游拒绝',
-	/** 降级已走到底、每一档都被明确拒绝。 */
-	UPSTREAM_QUALITY_EXHAUSTED: '各音质均被拒绝',
+	/**
+	 * 只陈述「上游明确拒绝了这一档」这个事实，不描述我们自己的降级策略。
+	 *
+	 * 文案与冻结脚本的字典**同文**（那条是「该音质不可用」）：同一个码会同时出现在
+	 * 洛雪的播放条与这张面板上，两边读起来是两句不同的话时，用户和我们自己都无从确定
+	 * 在说同一件事。上面那条注释说的规矩是**这一族标签**的规矩，不只管其中一条。
+	 */
+	UPSTREAM_QUALITY_REFUSED: '该音质不可用',
+	/** 降级已走到底、每一档都被明确拒绝。同样与脚本字典同文（「所有音质均不可用」）。 */
+	UPSTREAM_QUALITY_EXHAUSTED: '所有音质均不可用',
 	UPSTREAM_RATE_LIMITED: '上游限流',
 	INVALID_REQUEST: '参数无效',
 	INTERNAL_ERROR: '内部错误',

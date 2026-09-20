@@ -243,9 +243,10 @@ export type RuntimeLogListItem = {
    * 也不该校验。它是一个**记录**——出问题时用来对照「客户端以为有什么」与「上游
    * 实际给了什么」，而不是我们据以做分支的输入。
    *
-   * 本次改动前落盘的脚本不上报它，读出来是 null。
+   * 本次改动前落盘的脚本不上报它，读出来是 `null`——类型写成 `unknown` 是因为**形状**
+   * 不可约束，不是因为它一定有值，消费方仍要判空。
    */
-  reported_types: unknown | null;
+  reported_types: unknown;
   upstream_endpoint: string;
   stage: 'precheck' | 'ensure_dfid' | 'refresh_login' | 'fetch_music_url';
   refresh_attempted: boolean;

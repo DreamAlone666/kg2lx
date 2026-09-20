@@ -25,10 +25,19 @@
 	let {
 		value,
 		pending = false,
+		disabled = false,
 		onChange
 	}: {
 		value: boolean;
 		pending?: boolean;
+		/**
+		 * 另有动作正在进行（详情页的「刷新 Token」），此刻的拨动会被那次动作回填的旧值冲掉。
+		 *
+		 * 与 `pending` 分开而不是并成一个：`pending` 会改文案（「保存中…」），而这里
+		 * **没有在保存**——把它算进 `pending` 等于让开关报告一件没发生的事。禁用只负责挡住
+		 * 这次拨动，文案照旧。
+		 */
+		disabled?: boolean;
 		onChange: (next: boolean) => void;
 	} = $props();
 
@@ -66,6 +75,7 @@
 			min-h-11 / md:min-h-0：与同页其它按钮的触控区下限对齐（移动端 44px、md 以上按内容）。
 
 			pending 时**禁用**而不是只降透明度：不禁用的话连点会发出两次互相覆盖的 PATCH。
+			disabled（另一个动作在进行）同样禁用，但**不改文案**：那一刻没有在保存。
 
 			代价是这一档会随请求一起卡住（HttpClient 没有超时，请求不落地就一直是 pending）。
 			仍然选它，是因为这里的卡死有出路：开关显示「保存中…」这个静态可辨识形态，
@@ -78,7 +88,7 @@
 			aria-checked={value}
 			aria-labelledby={titleId}
 			aria-describedby="{descId} {costId}"
-			disabled={pending}
+			disabled={pending || disabled}
 			onclick={() => onChange(!value)}
 			class="inline-flex min-h-11 shrink-0 cursor-pointer items-center gap-2 rounded-lg px-1 text-xs font-medium transition-colors duration-150 ease-out-soft disabled:cursor-not-allowed disabled:opacity-50 md:min-h-0"
 		>

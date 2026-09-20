@@ -46,11 +46,28 @@
 			<div class="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5">
 				<Badge variant="secondary">{labelOf(providerLabel, source.provider)}</Badge>
 
-				<!-- 源级标记放右侧：VIP 是账号级、已停用是源级，两者都属于「标记」而非「状态」，
-				     真正的账号状态交给下面的胶囊单独一行承担。 -->
+				<!-- 标记放右侧：两个源级标记（已停用、自动降级）相邻，账号级 VIP 在后；三者都属于
+				     「标记」而非「状态」，真正的账号状态交给下面的胶囊单独一行承担。 -->
 				<div class="flex shrink-0 items-center gap-1.5">
 					{#if !source.enabled}
 						<StatusBadge tone="neutral">已停用</StatusBadge>
+					{/if}
+					<!--
+						音质自动降级是**源级配置**，但它改变的是实际拿到的文件（上游拒绝所选音质时
+						自动改请求更低档位，下载同样生效），而这一点在卡片上完全看不出来。列表需要
+						它，正是为了「扫一眼就知道哪些音源开着它」，而不是逐个点进详情去问。
+
+						tone 用 success 与详情页开关的「已开启」同色：同一状态在本仓必须同一个颜色
+						（见 $lib/domain/tone），而「开关开着」不是一个待处理事项。代价由详情页写在
+						行内，这里只在 title 里补一句同样的提醒。
+					-->
+					{#if source.quality_fallback}
+						<StatusBadge
+							tone="success"
+							title="音质自动降级已开启：上游拒绝所选音质时会自动改请求更低档位，下载同样生效"
+						>
+							自动降级
+						</StatusBadge>
 					{/if}
 					{#if source.vip_active}
 						<StatusBadge tone={vipTone(true)} dot>VIP</StatusBadge>

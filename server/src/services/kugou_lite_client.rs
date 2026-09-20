@@ -1,6 +1,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use serde_json::Value;
 
 use crate::config::Config;
 use crate::domain::cookie_store::{
@@ -146,17 +147,25 @@ struct SongUrlResponse {
     url: Option<StringOrStrings>,
     // 下面这几个观测字段在三次实测抓包里都在**顶层**（与 `url` 同为顶层键），
     // 但 `url` 的既有处理已经证明上游会把同一个值放在两层里的任意一层，所以这里
-    // 照同样的宽容度两层都读（`SongUrlResponse::observation` 里合并，顶层优先）。
+    // 照同样的宽容度两层都读（`observation` 里合并，顶层优先）。
+    //
+    // 类型是 `Option<Value>` 而不是 `Option<i64>` / `Option<Vec<String>>`：这几个字段
+    // **没有一个参与取链**，全是记录，因此不该有「让这次响应解析失败」的权力。定型的
+    // `Option<i64>` 会让一份**带着可用 `url` 的成功响应**整条失败——只要上游把某个
+    // 数字写成字符串（它已经在同一个响应体里对 `url` 干过一次：有时字符串、有时
+    // 数组），用户拿到的还是「上游请求失败」，指向完全错误的方向。
+    //
+    // 取值时的窄化在 `observation`：认不出的形状读成 `None`（「上游没说」），**不猜值**。
     #[serde(default)]
-    status: Option<i64>,
+    status: Option<Value>,
     #[serde(default, alias = "privStatus")]
-    priv_status: Option<i64>,
+    priv_status: Option<Value>,
     #[serde(default, alias = "failProcess")]
-    fail_process: Option<Vec<String>>,
+    fail_process: Option<Value>,
     #[serde(default, alias = "extName")]
-    ext_name: Option<String>,
+    ext_name: Option<Value>,
     #[serde(default, alias = "fileSize")]
-    file_size: Option<i64>,
+    file_size: Option<Value>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -167,10 +176,12 @@ enum StringOrStrings {
 }
 
 impl StringOrStrings {
-    fn first_non_empty(self) -> Option<String> {
+    /// 借用而不是取走：`SongUrlResponse::play_url` 手里只有 `&self`，为拿一个地址把
+    /// 整棵树 move 掉没有道理。
+    fn first_non_empty(&self) -> Option<String> {
         match self {
-            Self::String(value) => (!value.is_empty()).then_some(value),
-            Self::Strings(values) => values.into_iter().find(|value| !value.is_empty()),
+            Self::String(value) => (!value.is_empty()).then(|| value.clone()),
+            Self::Strings(values) => values.iter().find(|value| !value.is_empty()).cloned(),
         }
     }
 }
@@ -179,16 +190,48 @@ impl StringOrStrings {
 struct SongUrlData {
     #[serde(default)]
     url: Option<StringOrStrings>,
+    /// 与 `SongUrlResponse` 上同名的五个字段同理：只作记录，类型必须宽松。
     #[serde(default)]
-    status: Option<i64>,
+    status: Option<Value>,
     #[serde(default, alias = "privStatus")]
-    priv_status: Option<i64>,
+    priv_status: Option<Value>,
     #[serde(default, alias = "failProcess")]
-    fail_process: Option<Vec<String>>,
+    fail_process: Option<Value>,
     #[serde(default, alias = "extName")]
-    ext_name: Option<String>,
+    ext_name: Option<Value>,
     #[serde(default, alias = "fileSize")]
-    file_size: Option<i64>,
+    file_size: Option<Value>,
+}
+
+/// 观测字段的窄化：认不出的形状读成 `None`（「上游没说」），**不猜值**。
+///
+/// 数字字符串（`"9412859"`）刻意**不**当数字用。理由不是洁癖，而是 `status` 参与
+/// 「该不该降级」这个判断：在判断输入上猜错，等于在一个错误的档位上执行策略，比不动作
+/// 更糟；而收益只是某一行的记录更完整一点。
+fn observed_i64(value: Option<&Value>) -> Option<i64> {
+    value.and_then(Value::as_i64)
+}
+
+/// 字符串取值：只有真的是字符串才算。
+fn observed_string(value: Option<&Value>) -> Option<String> {
+    value.and_then(|value| value.as_str()).map(str::to_string)
+}
+
+/// `fail_process` 取值：只要是数组就收下，元素不是字符串就记它的 JSON 文本。
+///
+/// 这里比别处宽一档，理由不是「形状不可控」（三次实测都是字符串数组），而是：整条读成
+/// `None` 会把「上游说了什么」抹成「上游没说」，而那正是本仓反复禁止的那种混淆。
+/// 转成文本至少保真。
+fn observed_string_list(value: Option<&Value>) -> Option<Vec<String>> {
+    value.and_then(|value| value.as_array()).map(|items| {
+        items
+            .iter()
+            .map(|item| match item {
+                Value::String(text) => text.clone(),
+                other => other.to_string(),
+            })
+            .collect()
+    })
 }
 
 impl SongUrlResponse {
@@ -200,21 +243,31 @@ impl SongUrlResponse {
     fn observation(&self) -> UpstreamObservation {
         let data = self.data.as_ref();
         UpstreamObservation {
-            status: self.status.or_else(|| data.and_then(|d| d.status)),
-            priv_status: self
-                .priv_status
-                .or_else(|| data.and_then(|d| d.priv_status)),
-            fail_process: self
-                .fail_process
-                .clone()
-                .or_else(|| data.and_then(|d| d.fail_process.clone()))
+            status: observed_i64(self.status.as_ref())
+                .or_else(|| observed_i64(data.and_then(|d| d.status.as_ref()))),
+            priv_status: observed_i64(self.priv_status.as_ref())
+                .or_else(|| observed_i64(data.and_then(|d| d.priv_status.as_ref()))),
+            fail_process: observed_string_list(self.fail_process.as_ref())
+                .or_else(|| observed_string_list(data.and_then(|d| d.fail_process.as_ref())))
                 .map(truncate_fail_process),
-            ext_name: self
-                .ext_name
-                .clone()
-                .or_else(|| data.and_then(|d| d.ext_name.clone())),
-            file_size: self.file_size.or_else(|| data.and_then(|d| d.file_size)),
+            ext_name: observed_string(self.ext_name.as_ref())
+                .or_else(|| observed_string(data.and_then(|d| d.ext_name.as_ref()))),
+            file_size: observed_i64(self.file_size.as_ref())
+                .or_else(|| observed_i64(data.and_then(|d| d.file_size.as_ref()))),
         }
+    }
+
+    /// 这次响应里那个可用的播放地址。
+    ///
+    /// 两层都看，顺序不变（`data` 先、顶层后），但**每层各自判空**：此前是「先选层
+    /// 再判空」，`data.url` 只要是 `Some("")` 就已经选中了它，顶层那个有效地址根本
+    /// 轮不到——而「同一个值可能放在两层里的任意一层」正是当初写两层的理由。
+    fn play_url(&self) -> Option<String> {
+        self.data
+            .as_ref()
+            .and_then(|d| d.url.as_ref())
+            .and_then(StringOrStrings::first_non_empty)
+            .or_else(|| self.url.as_ref().and_then(StringOrStrings::first_non_empty))
     }
 }
 
@@ -599,14 +652,8 @@ impl KugouLiteClient {
             .map_err(|e| AppError::upstream_request_failed(format!("parse song url: {}", e)))?;
         let auth_failed = is_auth_failure(status, &body);
 
-        // 先摘观测、再取 url：`observation()` 只借用 `parsed`，而下面的 url 提取
-        // 会把它的一部分 move 走，顺序反了就编译不过。
         let observation = parsed.observation();
-        let play_url = parsed
-            .data
-            .and_then(|d| d.url)
-            .or(parsed.url)
-            .and_then(|u| u.first_non_empty());
+        let play_url = parsed.play_url();
 
         match play_url {
             Some(u) => Ok(MusicUrlResult {
@@ -846,9 +893,8 @@ mod tests {
         assert!(!upstream_refused_quality(observation.status));
     }
 
-    /// 上游把值放在顶层还是 `data` 下并不稳定——`url` 的既有处理
-    /// （`.data(..).or(top_level)`）就是为此而写。观测字段必须同样两层都认，
-    /// 否则换一种包裹方式落盘的就是一片空白。
+    /// 上游把值放在顶层还是 `data` 下并不稳定——`play_url` 就是为此写了两层。
+    /// 观测字段必须同样两层都认，否则换一种包裹方式落盘的就是一片空白。
     #[test]
     fn parses_observation_nested_under_data() {
         let parsed = parse(
@@ -921,6 +967,80 @@ mod tests {
                 .observation()
                 .fail_process,
             None
+        );
+    }
+
+    // ---- 观测字段的宽容度：只让它们读不出来，不让它们弄挂请求 ----
+
+    /// 上游把某个**只作记录**的字段换成另一种写法时，这次响应仍然要能播。
+    ///
+    /// 钉的是一个已复现的失败：`fileSize` 是字符串时，定型的 `Option<i64>` 会让**整条
+    /// 响应解析失败**——而那份响应里 `url` 就在同一个 body 里，用户拿到的却是「上游请求
+    /// 失败」，指向完全错误的方向。这几个字段没有一个参与取链，不该有否决这次播放的权力。
+    #[test]
+    fn unreadable_observation_shapes_do_not_fail_the_request() {
+        let parsed = parse(
+            r#"{"status":1,"data":{},"extName":"mp3","fileSize":"9412859","url":"http://x/y.mp3"}"#,
+        );
+        let observation = parsed.observation();
+        assert_eq!(observation.status, Some(1), "认得出的字段照常读出来");
+        assert_eq!(observation.ext_name.as_deref(), Some("mp3"));
+        assert_eq!(
+            observation.file_size, None,
+            "数字字符串不算数字：这里不猜值"
+        );
+        assert_eq!(
+            parsed.play_url().as_deref(),
+            Some("http://x/y.mp3"),
+            "一个读不出来的观测字段不得让这次响应里可用的地址失效"
+        );
+
+        // `fail_process` 不是数组：整条读不出来，别的字段不受影响。
+        let observation =
+            parse(r#"{"status":2,"data":{},"priv_status":0,"fail_process":"pkg"}"#).observation();
+        assert_eq!(observation.status, Some(2));
+        assert_eq!(observation.priv_status, Some(0));
+        assert_eq!(observation.fail_process, None);
+
+        // 元素类型不对：整条数组照收，元素记它的 JSON 文本——读成「没说」等于抹掉
+        // 上游刚说过的话。
+        assert_eq!(
+            parse(r#"{"status":2,"data":{},"fail_process":[1,"buy"]}"#)
+                .observation()
+                .fail_process,
+            Some(vec!["1".to_string(), "buy".to_string()])
+        );
+    }
+
+    /// 边界写清楚：本次**只**放宽了观测字段。`url` 的形状仍然定型（字符串或字符串
+    /// 数组），认不出的形状照样整条失败——那是本次改动之前就有的行为，本次不顺手改。
+    #[test]
+    fn url_shape_is_still_typed() {
+        assert!(
+            serde_json::from_str::<SongUrlResponse>(r#"{"url":123}"#).is_err(),
+            "这条断言如果开始失败，说明有人放宽了 url 的形状——那是另一件事，要单独论证"
+        );
+    }
+
+    /// 一层的空值不得盖掉另一层的有效值。这是本次**有意改了行为**的一处（见 `play_url`）。
+    ///
+    /// 没有证据表明上游真的这么答过；它是「同一个值可能放在两层里任意一层」这条既有前提
+    /// 的自然结论——旧的「先选层再判空」在 `data.url` 为空串时会直接返回「没地址」，
+    /// 而顶层的地址是可用的。
+    #[test]
+    fn an_empty_data_url_does_not_mask_the_top_level_one() {
+        assert_eq!(
+            parse(r#"{"data":{"url":""},"url":"http://top/a.mp3"}"#)
+                .play_url()
+                .as_deref(),
+            Some("http://top/a.mp3")
+        );
+        // 数组形态取第一个非空项：原有行为，一并钉住。
+        assert_eq!(
+            parse(r#"{"url":["","http://first/a.mp3"]}"#)
+                .play_url()
+                .as_deref(),
+            Some("http://first/a.mp3")
         );
     }
 
