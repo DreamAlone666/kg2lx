@@ -93,6 +93,7 @@ export const errorCodeLabel: Record<string, string> = {
 	UPSTREAM_LOGIN_FAILED: '上游登录失败',
 	UPSTREAM_VIP_CHECK_FAILED: 'VIP 校验失败',
 	UPSTREAM_PLAY_URL_EMPTY: '播放地址为空',
+	UPSTREAM_RATE_LIMITED: '上游限流',
 	INVALID_REQUEST: '参数无效',
 	INTERNAL_ERROR: '内部错误',
 };
@@ -163,4 +164,34 @@ export function describeApiError(error: unknown): string {
 	// AdminApiError 自造的是 `API error {status}` 这类给开发者看的串。换成中文，
 	// 但保留状态码——它本身仍是有效的排查线索。
 	return `请求失败（HTTP ${error.status}）`;
+}
+
+/**
+ * 落盘的账号错误字段 → 可直接展示给中文用户的文案；无可展示内容时返回 null。
+ *
+ * 它和 describeApiError 回答的是同一个问题（这个码该说哪句中文），但数据形状不同：
+ * 那边接的是当场抛出的 AdminApiError，这边接的是账号记录里**落盘后再读出**的
+ * `last_error_code` / `last_error`。差别只在兜底那一步——本次改动之前写入的账号
+ * 没有 code（服务端用 `#[serde(default)]` 补成 null），只剩一句已经落盘的 message。
+ * 此时宁可原样显示那句散文，也好过让「最后一次错误」整块消失：它往往含上游返回的
+ * 原文，是运维当下唯一的线索。这正是上一轮修接口错误信封时漏掉这个字段的原因——
+ * 两者走的是不同的读取路径，不能用同一处判断覆盖。
+ *
+ * 其余分支与 describeApiError 同一套推理：已知的非诊断码只给中文标签（后端 message
+ * 是写给开发者的英文散文，展示等于没翻译）；诊断码保留 `中文抬头：原文`，因为抬头
+ * 只说「哪一步坏了」；未知码（后端先于前端上线）退回原文而非通用文案，免得把唯一
+ * 线索丢掉。
+ */
+export function describeAccountError(code: string | null, message: string | null): string | null {
+	const label = code ? errorCodeLabel[code] : undefined;
+	if (label) {
+		if (code && diagnosticErrorCodes.has(code)) {
+			return message ? `${label}：${message}` : label;
+		}
+		return label;
+	}
+
+	// 「没有 code」与「有码但词典里没有」在这里合流：两种情况下原文都是仅剩的线索，
+	// 原样回显。空串与 null 一视同仁——它们都没有可展示的内容，交给调用方跳过整块。
+	return message || null;
 }

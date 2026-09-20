@@ -104,8 +104,8 @@ const TH = 'px-4 py-2.5 font-medium shadow-[inset_0_-1px_0_0_var(--color-border)
 	/**
 	 * 耗时列：0 不是「很快」，而是「没测到」。
 	 *
-	 * 服务端在「失败发生在发出请求之前」的两条路径（ensure_dfid / refresh_login 失败）
-	 * 写的是占位 0，而真实的上游耗时也会向下取整成 0。渲染成 `0ms` 会被读作「极快」，
+	 * 服务端在「失败发生在发出请求之前」的各条路径（预检、ensure_dfid 失败、refresh_login
+	 * 失败）写的是占位 0，而真实的上游耗时也会向下取整成 0。渲染成 `0ms` 会被读作「极快」，
 	 * 还会与成功行的 2ms 混为一谈——一个没有被测量过的值被显示成了测量结果。
 	 * 统一显示 `—`：既不为未测量的值背书，也不丢掉 30ms / 86ms 这类真实测量。
 	 */
@@ -128,8 +128,9 @@ const TH = 'px-4 py-2.5 font-medium shadow-[inset_0_-1px_0_0_var(--color-border)
 	 * （写日志时填入，见 server/src/services/runtime.rs 的 append_log）。前端曾经复制过
 	 * 一张映射表，那等于把服务端逻辑的影子副本放进界面——服务端一改，界面只会安静地说错话。
 	 *
-	 * upstream_quality 为空时整段不显示，有两种成因：① 本行描述的是刷新登录 / DFID 那两次
-	 * 调用，它们压根不带质量参数（服务端据此不记）；② 该行产生于服务端开始记录之前。
+	 * upstream_quality 为空时整段不显示，成因不止一种：① 本行不是 `song/url` 那次调用
+	 * （预检 / 刷新登录 / DFID 都不带质量参数，服务端据此不记，见 runtime.rs 的
+	 * upstream_quality_for）；② 该行产生于服务端开始记录之前。
 	 *
 	 * 这里**不用** labelOf：它在查表未命中时回退的是原值本身（见 labels.ts），而这个原值
 	 * 已经是本 tooltip 的第一段，回退过去会渲染成 `hires｜hires`。labelOf 的那个行为对
@@ -156,14 +157,26 @@ const TH = 'px-4 py-2.5 font-medium shadow-[inset_0_-1px_0_0_var(--color-border)
 	 * 服务端与 KuGouMusicApi 的日志，而「中文标签」是给人读的中间层，不能成为
 	 * 唯一出口。
 	 *
-	 * 这里放 upstream_endpoint 而不是 stage 的中文标签：两者严格 1:1 冗余
-	 * （runtime.rs 里 9 个落盘点的 stage 与 endpoint 逐一对上），但 endpoint 是
-	 * **能直接拿去 grep 的那个字符串**（song/url / refresh_login / ensure_dfid），
+	 * 这里放 upstream_endpoint 而不是 stage 的中文标签：在**真的调用过上游**的落盘
+	 * 点上两者一一对应（FetchMusicUrl ⟺ "song/url"、RefreshLogin ⟺ "refresh_login"、
+	 * EnsureDfid ⟺ "ensure_dfid"），而 endpoint 是**能直接拿去 grep 的那个字符串**，
 	 * 中文标签做不到。冗余字段放进 title 是零布局成本的——这正是它该待的地方，
 	 * 而不是在诊断列里再占一格。
 	 *
-	 * 不再拼接 log.error：它在服务端被 sanitize_runtime_log_error 统一写成常量
-	 * "upstream error"，胶囊上的中文标签已经表达了同一件事，拼进来只是重复。
+	 * 预检的落盘点**故意**不在这个对应关系里，这也是本函数的 tooltip 必须带条件的
+	 * 原因：预检（`LogErrorContext::precheck()`）把 upstream_endpoint 写成空串——音源
+	 * 停用 / 账号不存在 / 账号禁用 / VIP 失效都发生在任何上游调用之前，给它们编一个
+	 * 端点就是发明一次没发生过的调用（同一条纪律见 runtime.rs 的 upstream_quality_for：
+	 * 只有 song/url 那次调用才记质量参数）。有了 `if (log.upstream_endpoint)` 这一兜，
+	 * 预检行的 tooltip 退化成只剩「错误码 XXX」，而不是渲染出一句「上游端点 」悬着。
+	 *
+	 * 于是落盘点总数与带端点的落盘点数不再相等：13 与 9。复核是两条 grep：
+	 * `grep -c 'LogErrorContext::precheck(),'` 得 4（尾逗号排除 doc 里的提及；按裸
+	 * 标识符数会得 5）；`grep -c 'stage: RuntimeLogStage::'` 得 10，扣掉 precheck()
+	 * 里那一处定义得 9。这组数已经错过一次（预检落盘加入时 9→13），别裸抄常量。
+	 *
+	 * 不再拼接 log.error：它在服务端被 sanitize_runtime_log_error 无差别地塌成同一个
+	 * 常量（刻意不复述那个字面量），胶囊上的中文标签已经表达了同一件事，拼进来只是重复。
 	 */
 	function failureDetail(log: RuntimeLogListItem): string {
 		const parts: string[] = [];
@@ -289,9 +302,9 @@ const TH = 'px-4 py-2.5 font-medium shadow-[inset_0_-1px_0_0_var(--color-border)
 		   那句是错的：同一首歌换音质取链，hash 相同而请求体不同。现在它回到歌曲列
 		   并改回本名（见 songCell）。
 
-		上游端点（song/url / refresh_login / ensure_dfid）刻意不进来：它与 stage
-		严格 1:1 冗余，放进布局只是再加一个零信息元素。它是 title 的原料，见
-		failureDetail。
+		上游端点（song/url / refresh_login / ensure_dfid）刻意不进来：在带端点的行上
+		它与 stage 一一对应，放进布局只是再加一个零信息元素；预检行压根没有端点，
+		就更没什么可放。它是 title 的原料，见 failureDetail。
 	-->
 	<div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-caption text-muted-foreground">
 		<span class="font-medium text-foreground">{labelOf(runtimeStageLabel, log.stage)}</span>
@@ -300,9 +313,11 @@ const TH = 'px-4 py-2.5 font-medium shadow-[inset_0_-1px_0_0_var(--color-border)
 
 			① 冗余：stage=refresh_login 时 refresh_attempted 恒为 true。187 行线上日志里
 			   refresh_login 出现 5 次，refresh_attempted 全是 true，零反例；代码上也是必然
-			   ——runtime.rs 两处 stage=RefreshLogin 的落盘点（:133 / :174）都在 do_refresh
-			   的 Err 分支里，也就是说这条日志只在刷新失败时才产生。既然「这次就是刷新那一步」
-			   已经由左边的阶段标签说了，再挂一枚「已刷新 Token」不增加任何信息。
+			   ——runtime.rs 里两处 stage=RefreshLogin 的落盘点，都挂在
+			   `if let Err(e) = self.do_refresh(&mut account).await {` 的 Err 分支上
+			   （grep 这个 `if let` 恰好两处命中），也就是说这条日志只在刷新失败时才产生。
+			   既然「这次就是刷新那一步」已经由左边的阶段标签说了，再挂一枚「已刷新
+			   Token」不增加任何信息。
 
 			② 更糟的是它会变成假话：字段是 refresh_attempted（**试图**），文案却是「已刷新」
 			   （**完成**）。在 refresh_login 那些行上刷新按定义就是失败的那个——同一格会渲染成
@@ -340,15 +355,18 @@ const TH = 'px-4 py-2.5 font-medium shadow-[inset_0_-1px_0_0_var(--color-border)
 		现在收敛成一枚胶囊，两个字段合一：
 
 		- `error` 不再单独占一行。它在服务端已被 sanitize 成常量
-		  （runtime_log.rs 的 sanitize_runtime_log_error 把所有原因统一写成
-		  "upstream error"），而它非 null 意味着 {#if log.error} 永远成立，
-		  于是每个失败行都被一个常量吃掉整整一行。真实原因仍进 title。
-		- 错误码换成中文标签（原始码进 title）。`UPSTREAM_*` 三个码在前 9 个字符上
-		  完全相同，却各要 166px；换成「上游请求失败」后只要约 84px。
+		  （runtime_log.rs 的 sanitize_runtime_log_error 不看原因、一律写同一个值；
+		  **刻意不复述那个字面量**，免得常量一改名这半句就变成假话），而它非 null
+		  意味着 {#if log.error} 永远成立，于是每个失败行都被一个常量吃掉整整一行。
+		  真实原因仍进 title。
+		- 错误码换成中文标签（原始码进 title）。`UPSTREAM_*` 这一族码在前 9 个字符上
+		  完全相同，却各要 166px；换成「上游请求失败」后只要约 84px。刻意不写这一族
+		  有几个码——本轮刚加了一个，写死的数量下一次改动就会变成假话，而论证本身
+		  不依赖它（码越多，共用前缀越浪费列宽）。
 
 		顺带删掉一条死分支：此前是 flex-wrap + 原因 min-w-24(96px)，号称「装得下时
 		同行」。实测等宽字符 6.71px、诊断列内容宽 192px，同行需要
-		6.71n + 12 + 6 + 96 ≤ 192，即错误码不超过 11 字符；而 13 个真实错误码里最短的
+		6.71n + 12 + 6 + 96 ≤ 192，即错误码不超过 11 字符；而全部错误码里最短的
 		INTERNAL_ERROR 也有 14 字符。也就是说这条分支在真实取值域内一次都不会命中，
 		调宽度是徒劳的——问题出在「用一列同时承载机器码与人读文案」这个前提上。
 	-->

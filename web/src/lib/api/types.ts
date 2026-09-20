@@ -69,6 +69,7 @@ export type SourceDetail = {
     vip_type: number;
     status: AccountStatus;
     last_refresh_at: number | null;
+    last_error_code: string | null;
     last_error: string | null;
   };
 };

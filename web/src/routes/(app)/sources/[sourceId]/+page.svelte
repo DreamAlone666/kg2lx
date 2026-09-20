@@ -17,6 +17,7 @@
 	import {
 		accountStatusLabel,
 		accountStatusTone,
+		describeAccountError,
 		formatDateTime,
 		labelOf,
 		vipTone
@@ -190,11 +191,11 @@
 					{/if}
 				</div>
 
-				{#if source.account.last_error}
+				{#if describeAccountError(source.account.last_error_code, source.account.last_error)}
 					<div class="rounded-lg border border-danger/20 bg-danger-soft/60 p-4">
 						<h3 class="text-xs font-bold tracking-wider text-danger uppercase">最后一次错误</h3>
 						<p class="mt-1.5 text-sm leading-relaxed text-danger">
-							{source.account.last_error}
+							{describeAccountError(source.account.last_error_code, source.account.last_error)}
 						</p>
 					</div>
 				{/if}
