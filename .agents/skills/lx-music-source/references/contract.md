@@ -30,7 +30,7 @@ What a script actually gets from its header is narrower than the list of fields 
 - `@name` is the title shown in the custom-source list; `@description` is the line under it. Both must stay **single-line** — a raw newline inside the comment breaks the metadata parse.
 - Metadata is read and frozen **at import time**. The host keeps its own copy of the script text, so editing the script on a server does not change what an already-imported source displays. A user only sees a new title, description, or version after deleting the entry and importing again.
 - There is **no auto-update** and **no de-duplication** for custom sources: importing the same URL twice yields two entries, and the host never compares versions, so an already-imported entry changes only when the user deletes it and imports again. `@version`, like `@name` and `@description`, is therefore a value only a human ever reads.
-- The length limits are **advisory, not enforced**. The official documentation says 建议不要过长, 24 个字符以内 for `@name` and 36 个字符以内 for `@description`. Exceeding them does not fail the import; it only makes the list entry harder to read. Do not add hard validation that rejects an over-length name.
+- The length limits are **advisory, not a rejection criterion**. The official documentation says 建议不要过长, 24 个字符以内 for `@name` and 36 个字符以内 for `@description`, and exceeding them does not fail the import. Nor is the parsed value left intact: for every field the host knows a limit for, an over-length value is truncated at that limit with `...` appended. So an over-length `@name` or `@description` still imports, but what the source list displays and what the script reads back through `currentScriptInfo` is the cut string, not the full header text; only `currentScriptInfo.rawScript` carries the unmodified script. Do not add hard validation that rejects an over-length name.
 - Because `@name` sits inside a block comment, a value containing `*/` closes the comment early and makes the whole script a syntax error on import. Strip `*/` (repeatedly — removing one occurrence can splice a new one together) before writing any user-controlled text into the header.
 
 ### `sources[key].name` Is Platform-Level, Not Instance-Level
@@ -97,9 +97,7 @@ Common payload fields:
 - Return value: an HTTP or HTTPS song URL string.
 
 #### What The Script Actually Receives As `musicInfo`
-The object handed to the script is the **legacy flat shape**, not the host's internal one. The call site is
-`musicSdk[musicInfo.source].getMusicUrl(toOldMusicInfo(musicInfo), itemQuality)` (`src/renderer/core/music/utils.ts`), and
-`toOldMusicInfo()` (`src/common/utils/tools.ts`) flattens the nested `MusicInfo` before handing it over:
+The object handed to the script is the **legacy flat shape**, not the host's internal one. The host calls a source's `getMusicUrl` with `toOldMusicInfo(musicInfo)`, and that transform flattens the nested `MusicInfo` before handing it over:
 
 | Script sees (flat) | Meaning | Internal path it came from |
 | --- | --- | --- |
@@ -123,7 +121,7 @@ Consequences that are easy to get wrong:
 - **`singer` is one string, not an array.** Multiple artists arrive joined by `、` (for example `Beyond、黄家驹`). Do not call `.join()` on it or index it.
 - **Do not assume the ids are the only thing worth forwarding.** `name` / `singer` / `albumName` are populated whenever the song came from a list or search result, and are free to pass on. A backend that only receives ids can never recover the names later — see the proxy watch-out in `patterns.md`.
 
-Provenance and evidence boundary: the official documentation only says `info.musicInfo` is 音乐信息对象，里面有音乐 ID、名字等信息 and **does not enumerate any field names**. The table above was verified by reading `lx-music-desktop` `master` (`src/common/utils/tools.ts` `toOldMusicInfo`, its call site in `src/renderer/core/music/utils.ts`, and the `LX.Music.MusicInfo*` types in `src/common/types/music.d.ts`). Treat it as source-verified but undocumented: stable in practice, yet not part of the published contract.
+Provenance and evidence boundary: the official documentation only says `info.musicInfo` is 音乐信息对象，里面有音乐 ID、名字等信息 and **does not enumerate any field names**. The table above was verified against the host implementation, not the docs. Treat it as source-verified but undocumented: stable in practice, yet not part of the published contract.
 
 #### `lyric`
 `info` shape: `{ musicInfo }`
@@ -148,54 +146,54 @@ send(EVENT_NAMES.updateAlert, {
 
 ## How The Host Renders A Rejection
 
-Everything in this section was read out of `lx-music-desktop` `master` (v2.12.6) and is **source-verified but undocumented**: the official documentation never describes what happens to a rejected `request()`. It is the difference between a script that reports something a user can act on and one that reports nothing at all.
+Everything in this section was read out of `lx-music-desktop` `master` (v2.12.6, commit `ad95d50`, read 2026-09-20) and is **source-verified but undocumented**: the official documentation never describes what happens to a rejected `request()`. It is the difference between a script that reports something a user can act on and one that reports nothing at all. To re-derive any of it, grep the host source for the symbols and literals named in this section — `setAllStatus`, `getOtherSource`, `assertApiSupport`, `delayRetry`, `requestMsg`, `toOldMusicInfo`, `INFO_NAMES`, `Cancel request` — a grep anchor survives line drift and file reorganisation; a position does not.
 
 ### The Only Surface Is One Ellipsized Line
 A rejection's `err.message` is the only text a script can put in front of the user:
 
-- The last stop in the chain is `setAllStatus(err.message)` in `src/renderer/core/player/action.ts:138`; `setAllStatus` writes the same string into both `status` and `statusText` (`src/renderer/store/player/action.ts:53`).
-- `statusText` is rendered as one `<div>` in every play-bar layout: `src/renderer/components/layout/PlayBar/MiniWidthProgress.vue:11`, `MiddleWidthProgress.vue:11`, `FullWidthProgress.vue:14`.
-- That element is `.status { .mixin-ellipsis-1(); height: 23px }` (`MiniWidthProgress.vue:253`, `MiddleWidthProgress.vue:251`, `FullWidthProgress.vue:263`) inside a 13px `line-height: 1.5` box (`MiniWidthProgress.vue:241`). It carries **no `title` attribute and no tooltip** — unlike the song title two lines above it, which is selectable and click-to-copy.
+- The last stop in the chain is `setAllStatus(err.message)`, which writes the same string into both `status` and `statusText`.
+- `statusText` is rendered as a single line in every play-bar layout.
+- That line is one ellipsized line (`.mixin-ellipsis-1()`, a 23px box inside 13px `line-height: 1.5`). It carries **no `title` attribute and no tooltip** — unlike the song title two lines above it, which is selectable and click-to-copy.
 - Consequence: text past the visible width is replaced by an ellipsis with no way to recover the full string. **Lead with the actionable words.** A message that opens with a script name, an error code, or a stacked-up sentence spends its whole visible budget on text the user cannot act on.
 
 ### The Message Is Usually Discarded Before Display
 Where a rejection travels decides whether the script's own text survives:
 
-1. `getMusicUrl` (`src/renderer/core/music/index.ts:22`) → `src/renderer/core/music/online.ts:58` → `handleGetOnlineMusicUrl` (`src/renderer/core/music/utils.ts:291`).
-2. On failure, `handleGetOnlineMusicUrl` calls `onToggleSource()` (`:318`) and then `getOtherSource(musicInfo)` (`:320`) — a cross-platform search with a **15 s** deadline (`:56-59`).
-3. If that search returns any candidate, the request is walked against them by `getOnlineOtherSourceMusicUrl` (`:237`). That loop **skips every candidate failing `assertApiSupport()`** (`:257`), and `assertApiSupport` is `source == 'local' || qualityList.value[source] != null` (`src/renderer/store/utils.ts:14`).
-4. With no supported candidate left, the loop falls out and throws the host's own `toggle_source_failed` (`:265`) — the long sentence `换源失败，请尝试手动在搜索页指定其他来源搜索该歌曲播放` (`src/lang/zh-cn.json:719`).
-5. The script's own error is rethrown only on the branch where the cross-platform search returned **nothing** (`:331`).
+1. `getMusicUrl` → `handleGetOnlineMusicUrl`.
+2. On failure, `handleGetOnlineMusicUrl` calls `onToggleSource()` and then `getOtherSource(musicInfo)` — a cross-platform search with a **15 s** deadline.
+3. If that search returns any candidate, the request is walked against them by `getOnlineOtherSourceMusicUrl`. That loop **skips every candidate failing `assertApiSupport()`**, and `assertApiSupport` is `source == 'local' || qualityList.value[source] != null`.
+4. With no supported candidate left, the loop falls out and throws the host's own `toggle_source_failed` — the long sentence `换源失败，请尝试手动在搜索页指定其他来源搜索该歌曲播放`.
+5. The script's own error is rethrown only on the branch where the cross-platform search returned **nothing**.
 
 So a script declaring a single source key can almost never get its message displayed: the search still finds the song on other platforms, but step 3 discards every one of them, and the user reads the host's sentence instead.
 
 Confirmed empirically **2026-09-20**: with the backend stopped and an uncached song, the play bar showed `换源失败，请尝试手动在搜索页指定其他来源搜索该歌曲播放`, not the script's `err.message`.
 
 ### Two Message Strings Are Compared With Exact Equality
-The constants live in `src/renderer/utils/message.ts`: `cancelRequest: '取消http请求'` (`:7`) and `tooManyRequests: '服务器繁忙'` (`:8`). Both are compared against `err.message` with `==` (whole-string, no `includes`):
+The host's message constants are `cancelRequest: '取消http请求'` and `tooManyRequests: '服务器繁忙'`. Both are compared against `err.message` with `==` (whole-string, no `includes`):
 
-- `src/renderer/core/player/action.ts:118` — `err.message == requestMsg.cancelRequest` is treated as a **user cancellation**: the promise resolves `null`, no status is written, nothing is shown, no auto-skip.
-- `src/renderer/core/player/action.ts:120` — `err.message == requestMsg.tooManyRequests` routes into `delayRetry` (`:67`), which waits `getRandom(2, 6)` seconds (`:70`) and re-requests.
-- `src/renderer/core/music/utils.ts:317` and `:282` — the same busy string is rethrown **before** `onToggleSource()` and before the candidate loop, so it short-circuits the source-switch fallback described above.
+- `err.message == requestMsg.cancelRequest` is treated as a **user cancellation**: the promise resolves `null`, no status is written, nothing is shown, no auto-skip.
+- `err.message == requestMsg.tooManyRequests` routes into `delayRetry`, which waits `getRandom(2, 6)` seconds and re-requests.
+- The same busy string is rethrown **before** `onToggleSource()` and before the candidate loop, so it short-circuits the source-switch fallback described above.
 
 Two rules follow:
 
 - **A script's message must never collide with `'取消http请求'`**, or the failure is silently swallowed as if the user had cancelled.
-- **`'服务器繁忙'` is a retry signal and must be the entire message.** Because the comparison is exact, any prefix or decoration breaks it. It is also checked *before* the already-retried guard: `delayRetry` re-enters `getMusicPlayUrl` with `isRetryed = true` (`:73`), and that flag is only consulted on the non-busy path (`:122`). A script that keeps answering `服务器繁忙` keeps the player in a 2–6 s retry loop indefinitely. Use it only for genuinely transient conditions, and only a bounded number of times; a permanent answer of `服务器繁忙` is a hang, not a message.
+- **`'服务器繁忙'` is a retry signal and must be the entire message.** Because the comparison is exact, any prefix or decoration breaks it. It is also checked *before* the already-retried guard: `delayRetry` re-enters `getMusicPlayUrl` with `isRetryed = true`, and that flag is only consulted on the non-busy path. A script that keeps answering `服务器繁忙` keeps the player in a 2–6 s retry loop indefinitely. Use it only for genuinely transient conditions, and only a bounded number of times; a permanent answer of `服务器繁忙` is a hang, not a message.
 
 ### The Host's Own Deadline Produces An Untranslated English String
-`src/main/modules/userApi/rendererEvent/rendererEvent.ts:137` arms a 20 s timer for every script request; when it fires it calls `cancelRequest(requestKey)`, which rejects the pending request with the hardcoded literal `new Error('Cancel request')` (`:119`).
+The host's script-event layer arms a 20 s timer for every script request; when it fires it calls `cancelRequest(requestKey)`, which rejects the pending request with the hardcoded literal `new Error('Cancel request')`.
 
-That string is **not** `requestMsg.cancelRequest` (`'取消http请求'`), so it matches neither the cancellation branch nor the busy branch. It falls through to `setAllStatus(err.message)` and the user reads an English `Cancel request` on the play bar — plus an auto-skip when `player.autoSkipOnError` is enabled (`action.ts:140`). A script should set its own `request()` timeout well below 20 s so the failure is reported in its own words first.
+That string is **not** `requestMsg.cancelRequest` (`'取消http请求'`), so it matches neither the cancellation branch nor the busy branch. It falls through to `setAllStatus(err.message)` and the user reads an English `Cancel request` on the play bar — plus an auto-skip when `player.autoSkipOnError` is enabled. A script should set its own `request()` timeout well below 20 s so the failure is reported in its own words first.
 
 ### `request()` Timeout Is In Milliseconds And Defaults To 60 s
-`src/main/modules/userApi/renderer/preload.js:194` accepts `{ timeout }`; `:211` does `options.response_timeout = typeof timeout == 'number' && timeout > 0 ? Math.min(timeout, 60_000) : 60_000`. The value is **milliseconds**, clamped to 60 000, and **defaults to 60 000 when omitted** — longer than the host's own 20 s deadline, so relying on the default means the script's timeout never fires first.
+`request()` accepts `{ timeout }` and normalizes it with `typeof timeout == 'number' && timeout > 0 ? Math.min(timeout, 60_000) : 60_000`. The value is **milliseconds**, clamped to 60 000, and **defaults to 60 000 when omitted** — longer than the host's own 20 s deadline, so relying on the default means the script's timeout never fires first.
 
 ### The `musicUrl` Return Value Is Validated With A Literal `failed`
-`preload.js:78` (and `:96` for `pic`) rejects any `musicUrl` response that is not a string, exceeds 2048 characters, or fails `/^https?:/` — with the untranslated literal message `failed`. Validate the URL in the script so a user never reads `failed` on the play bar.
+The host rejects any `musicUrl` (and `pic`) response that is not a string, exceeds 2048 characters, or fails `/^https?:/` — with the untranslated literal message `failed`. Validate the URL in the script so a user never reads `failed` on the play bar.
 
 ### Init Failures Get Attribution; Runtime Failures Do Not
-A failure thrown before `inited` is shown in a dialog the host prefixes itself: `自定义源「{name}」初始化失败：` + the message, in full and selectable (`src/renderer/core/useApp/useInitUserApi.ts:136`, string at `src/lang/zh-cn.json:735`). A runtime rejection gets none of that — the play-bar line carries no source name at all. A script that wants its runtime errors attributable must sign them itself, with a short fixed prefix.
+A failure thrown before `inited` is shown in a dialog the host prefixes itself: `自定义源「{name}」初始化失败：` + the message, in full and selectable. A runtime rejection gets none of that — the play-bar line carries no source name at all. A script that wants its runtime errors attributable must sign them itself, with a short fixed prefix.
 
 ## Official Source And Action Rules
 
@@ -210,8 +208,8 @@ A failure thrown before `inited` is shown in a dialog the host prefixes itself: 
 ### These Keys Are Built-In For Lists, Search, Lyric And Cover Art
 None of these keys are blank slots for list/search/lyric/pic. Each one already has a built-in implementation inside LX for those actions, and those still resolve through the host:
 
-- Song lists, search, lyric, and cover art stay built-in. Verified for `kg` in `src/renderer/utils/musicSdk/kg/index.js`: `songList` / `musicSearch` / `hotSearch` / `pic` / `lyric` are direct local imports (`:3-7`, used at `:14-16`, `:22`, `:28`), while only `getMusicUrl` goes through the pluggable layer (`:18-19`, delegating to `apis('kg')`).
-- `useInitUserApi.ts` builds `apis[source].getMusicUrl = (songInfo, type) => sendUserApiRequest({ source, action: 'musicUrl', info: { type, musicInfo: songInfo } })` for every declared action, and `src/renderer/utils/musicSdk/api-source.js:34` returns that user-api object when the active api source matches `/^user_api/`.
+- Song lists, search, lyric, and cover art stay built-in. For `kg`, `songList` / `musicSearch` / `hotSearch` / `pic` / `lyric` are direct local imports of the built-in music SDK, while only `getMusicUrl` goes through the pluggable layer (delegating to `apis('kg')`).
+- The user-api init builds `apis[source].getMusicUrl = (songInfo, type) => sendUserApiRequest({ source, action: 'musicUrl', info: { type, musicInfo: songInfo } })` for every declared action, and `apis(source)` returns that user-api object when the active api source matches `/^user_api/`.
 
 Two practical consequences:
 
@@ -221,9 +219,9 @@ Two practical consequences:
 ### There Is No Built-In `musicUrl` To Shadow
 The pluggable layer is **empty** on a stock install, so there is nothing behind `apis(source)` for a custom source to fall back on:
 
-- `src/renderer/utils/musicSdk/api-source-info.ts:32` default-exports a `sources` array whose only entries are commented out (`:9-29`), so it is empty.
-- `src/main/modules/userApi/config/index.ts:2` is `export const userApis: LX.UserApi.UserApiInfoFull[] = []`.
-- `src/renderer/utils/musicSdk/api-source.js:33-38`: `apis(source)` returns the user-api implementation only when the active api source matches `/^user_api/` (`:34`); otherwise it looks the source up in `apiList` — which is built from the empty `apiSourceInfo` (`:24-29`) — finds nothing, and throws `Api is not found` (`:37`).
+- The built-in API-source list default-exports a `sources` array whose only entries are commented out, so it is empty.
+- The user-api config is `export const userApis: LX.UserApi.UserApiInfoFull[] = []`.
+- `apis(source)` returns the user-api implementation only when the active api source matches `/^user_api/`; otherwise it looks the source up in `apiList` — which is built from that empty list — finds nothing, and throws `Api is not found`.
 
 Consequence: **a single-source custom script cannot rely on the host having any other playable source.** There is no built-in `musicUrl` implementation to shadow, so once the script's `musicUrl` handler rejects, resolution necessarily falls through to the source-switch path described in `How The Host Renders A Rejection` — and the user sees the host's sentence, not the script's.
 
