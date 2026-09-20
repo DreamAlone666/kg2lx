@@ -26,7 +26,7 @@ Put the request into one of these buckets and only read the minimum needed files
 - Do not assume a backend `200` guarantees LX playback. Script-side parse mistakes and wrong return shapes can still make playback fail.
 - Pass `request()` `body` as an object, not a `JSON.stringify`'d string, and tolerate the JSON-string-wrapped body shape in backends; see `references/contract.md` (Mobile Differences) for why.
 - Header metadata is parsed and **frozen at import time**: the host keeps its own copy, so re-rendering a script server-side changes nothing until the user deletes the entry and re-imports. Keep `@name`/`@description`/`@version` single-line, and never let user-controlled text reach the header without stripping `*/`.
-- A script's `@version` tracks the **script contract**, not the backend's release version. Bump it when the LX-facing request/response contract or the script template changes — not when the service behind it ships unrelated features. There is no auto-update, so a noisy version number only pushes users into pointless re-imports.
+- `@version` is header metadata like any other field, and the host uses it for **display only**: the source list renders it as `v{value}` when the value starts with a digit (`UserApiModal.vue:10`, `SettingBasic.vue:273`), and the script receives it back as `currentScriptInfo.version` (`preload.js:320`). Nothing in the host compares versions or decides anything from one — the only update path is `updateAlert`, which the script must send itself and which the user can switch off (`rendererEvent.ts:66`).
 - `sources[key].name` is the **platform** display name (like `酷我音乐` / `本地音乐`), a different level from the header `@name`. Never drive it from a per-instance or user-editable title; see `references/contract.md` (`sources[key].name` Is Platform-Level).
 - `info.musicInfo` is the host's **flattened legacy shape** (`toOldMusicInfo`), not the nested internal `MusicInfo` — read `musicInfo.albumName`, never `musicInfo.meta.albumName`. It carries the song's display fields (`name` / `singer` / `albumName`) alongside the source-specific ids, and they are populated because lists and search come from the built-in implementation; see `references/contract.md` (`What The Script Actually Receives As musicInfo`).
 
@@ -54,6 +54,9 @@ Put the request into one of these buckets and only read the minimum needed files
 - Common proxy mistakes are `JSON.parse(resp.body)` when `resp.body` is already an object, assuming `data.url` when the backend returns top-level `url`, and forgetting to unwrap a URL array.
 - If desktop works but mobile fails, first separate script loading from runtime execution: confirm `/s/*.js` is fetched, confirm `/api/.../music-url` is called, then inspect whether the POST body is an object or a JSON-string-wrapped object. A server-side `400`/`422` before business logs usually means request extraction failed, not upstream playback failed.
 - Do not blindly rewrite `http` audio URLs to `https`. Verify that the CDN host actually has a valid certificate for that hostname first.
+- If your own error text never appears, assume it was **replaced** before display, not lost. On the common failure path the host runs a cross-platform search, skips every candidate it cannot support, and shows its own `换源失败，请尝试手动在搜索页指定其他来源搜索该歌曲播放` instead of your `err.message`; your message only survives when that search returns nothing. The discriminator is whether the cross-platform search found any candidate — see `references/contract.md` (How The Host Renders A Rejection).
+- Untranslated English on the play bar (`Cancel request`) means the host's 20 s deadline fired, not that the script chose to fail. The host rejects its own timeout with a hardcoded English literal that matches none of its localized message constants.
+- If the play bar shows `服务器繁忙`, the host is in its own 2–6 s retry loop rather than reporting a failure. A script that answers `服务器繁忙` on every attempt keeps the player retrying forever.
 
 ## Pattern Selection
 - If the task is just wrapping an existing backend endpoint, use the static proxy pattern from `references/patterns.md`.
@@ -68,7 +71,6 @@ Before finishing, verify at least these points:
 - The header has at most one line per field, `@name` / `@description` / `@version` stay single-line, and no field value can contain `*/` (repeatedly strip it — removing one occurrence can splice a new one together).
 - No hard validation rejects a title merely for exceeding the official advisory lengths (24 characters for `@name`, 36 for `@description`); those are suggestions, and over-length values still import fine.
 - `sources[key].name` is a fixed platform name, not an instance title or anything user-customizable.
-- Any `@version` bump is justified by an LX-facing contract or script-template change, not by an unrelated backend release.
 - Every branch of `on(EVENT_NAMES.request, handler)` returns a `Promise`.
 - `sources` keys, `actions`, and `qualitys` match the official contract.
 - Non-`local` sources do not incorrectly expose `lyric` or `pic`.
@@ -79,6 +81,11 @@ Before finishing, verify at least these points:
 - If the backend renders, logs, or attributes per song, the outgoing request body carries the song's display fields (`musicInfo.name` / `singer` / `albumName`), not just the identifier. An id-only body is not something the backend can enrich later without an extra upstream lookup.
 - `musicInfo` field reads use the flat names (`albumName`, `singer`, `hash`, `albumAudioId`) and never `musicInfo.meta.*`; no source-specific id is assumed to exist on another source.
 - Headers, auth, UA strings, timeouts, and logging exist because the task needs them, not because example scripts had them.
+- Every user-facing failure string is a fixed, short, front-loaded, self-attributable message picked from a code→message table; the backend's own prose is never displayed, and every table has a fallback for unknown codes.
+- No failure message can equal the host's reserved signals verbatim: a message must never be exactly `服务器繁忙` except as a deliberate retry signal, and never exactly `取消http请求`.
+- The retry signal, if used, is bare (no prefix or decoration) and bounded by a retry cap; it is never returned indefinitely.
+- `request()` calls carry an explicit `timeout` below the host's 20 s deadline, in milliseconds.
+- The value returned from `musicUrl` is validated locally (a string, at most 2048 characters, matching `/^https?:/`) before it resolves.
 - If the script uses `env`, `version`, `currentScriptInfo`, or `utils`, only read the fields that are actually needed.
 
 ## Output Expectations
