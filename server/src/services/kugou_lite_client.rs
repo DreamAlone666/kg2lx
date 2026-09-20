@@ -453,6 +453,13 @@ impl KugouLiteClient {
             .await
             .map_err(|e| AppError::upstream_request_failed(format!("song url: {}", e)))?;
         let status = resp.status().as_u16();
+        // 429 在这里就短路，不读 body。限流响应体常常根本不是 JSON（网关/防护页
+        // 直接回 HTML 或空体），若让它继续走到下面 serde_json 那条通用失败路径，
+        // 就会被折回 UPSTREAM_REQUEST_FAILED —— 那正是脚本唯一能分支的瞬时信号
+        // 被抹掉的地方。刻意不消费 body：这条路径上不需要它。
+        if status == 429 {
+            return Err(AppError::upstream_rate_limited());
+        }
         merge_cookies_from_headers(&mut merged, resp.headers());
         let body = resp
             .text()

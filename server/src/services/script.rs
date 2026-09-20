@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::config::Config;
 use crate::domain::source::sanitize_script_meta;
-use crate::error::AppError;
+use crate::error::{AppError, ErrorCode};
 use crate::repos::account::AccountRepo;
 use crate::repos::source::SourceRepo;
 
@@ -13,16 +13,144 @@ use crate::repos::source::SourceRepo;
 /// 没有自动更新，`@version` 是用户判断「值不值得重新导入」的唯一信号，被
 /// 服务端发布节奏带着乱跳会诱导用户做无意义的「删旧 + 重新导入」。
 ///
-/// bump 规则只有三档：
-/// 1. `music-url` 请求/响应契约变化 —— 必须 bump，用户不重新导入就无法继续用；
-/// 2. 脚本模板实现变化 —— 应 bump，用户重新导入才有收益；
-/// 3. 服务端内部变化（路由、存储、日志等） —— **不 bump**。
+/// bump 规则的**锚点是上一次发行的脚本版本**，不是当前工作树里的值：
+/// 1. 相对上次发行，`music-url` 请求/响应契约变了 —— 必须 bump，用户不重新导入
+///    就无法继续用；
+/// 2. 相对上次发行，脚本模板实现变了 —— 应 bump，用户重新导入才有收益；
+/// 3. 相对上次发行，脚本没有变（只有服务端内部改动）—— **不 bump**。
 ///
-/// 本轮按规则 2：脚本开始转发 LX 提供的歌曲元数据（见 `render_script` 里
-/// 以「歌曲元数据的字段名来自…」开头的那段注释），用户重新导入后日志面板才会
-/// 出现歌名，故 `0.1.2` -> `0.1.3`。此前那一轮的 `0.1.1` -> `0.1.2` 是头部
-/// 元信息重排与 `sources.kg.name` 改为静态平台名。
-const SCRIPT_VERSION: &str = "0.1.3";
+/// **未发行窗口内不累积**：一连串都还没发出去的改动，合计只对应一个号。这不是
+/// 洁癖——中间那些号没有任何用户见过，而 `@version` 的全部作用就是回答「我手上
+/// 冻结的那个号与现在这个号等不等」；不等就够了，多出来的中间值零信息量。逐次
+/// 累积等于凭空造出一串谁也没拥有过的号，而它们一旦随发行发出去，诱导的效果与
+/// 「版本号乱跳」完全一样。
+///
+/// 当前取值 `0.1.2` 的来历：`v0.1.3` 发行时带的脚本版本是 `0.1.1`。此后至今的
+/// 脚本改动（头部元信息重排与 `sources.kg.name` 静态化、转发 LX 提供的歌曲
+/// 元数据、自带错误文案字典并自控请求超时与返回地址校验）全部**尚未发行**，
+/// 故合计只 +1。
+///
+/// 任一版都必须靠**删除音源后重新导入**才能在用户侧生效——洛雪音乐从不自动更新
+/// 已导入的脚本。服务端无法代劳。
+const SCRIPT_VERSION: &str = "0.1.2";
+
+/// 脚本自研错误的前缀，与字典一起构成用户在播放条上能看到的那一行。
+///
+/// **Why:** 洛雪音乐的播放条只渲染一行省略号文本，且在最常见的那条失败路径上
+/// 会把脚本给的 `err.message` 整个换成它自己写死的「换源失败…」句子
+/// （`src/renderer/core/music/utils.ts:315-333` 的 `onToggleSource()` 分支）。
+/// 前缀是我们在那一行开头唯一能留下的署名：用户至少能分辨这条消息来自 kg2lx
+/// 还是来自别的音源。
+const SCRIPT_ERROR_PREFIX: &str = "kg2lx：";
+
+/// 用户可见文案的唯一真源：错误码 → 中文短句。
+///
+/// **Why 必须放在脚本里：** 洛雪音乐在脚本边界上只把信封里的 `message` 交给
+/// 脚本，随后客户端会用一句自己写死的通用句子把它顶掉；我们能控制的只有「短、
+/// 把要用户做的那件事前置、能看出是谁说的」。字典若留在服务端，等于让播放条上
+/// 的一句话多绕一次网络往返，而它要挤进的那一行只有大约 15~25 个汉字。
+///
+/// 值里**不带** `SCRIPT_ERROR_PREFIX`：拼接由脚本里的 `fail()` 独占完成，字典
+/// 再写一次就会重复。
+///
+/// `SOURCE_NAME_EMPTY` / `SOURCE_NAME_TOO_LONG` / `LOGIN_SESSION_NOT_FOUND` 是
+/// 管理面（后台改名、管理接口）的错误码，运行时链路上不可能出现。它们仍然列在
+/// 这里，是因为这张表的价值在于**穷尽**：穷尽性正是
+/// `dictionary_covers_every_error_code` 能成立的前提，而任何一个漏掉的码都会让
+/// 脚本回退到后端的英文诊断文本——那才是要杜绝的事。
+const SCRIPT_ERROR_MESSAGES: &[(ErrorCode, &str)] = &[
+    (ErrorCode::AdminUnauthorized, "脚本令牌无效，请重新导入"),
+    (ErrorCode::SourceNotFound, "音源不存在，请重新导入音源"),
+    (ErrorCode::SourceDisabled, "音源已停用，请在后台启用"),
+    (ErrorCode::AccountNotFound, "账号不存在，请重新绑定"),
+    (ErrorCode::AccountDisabled, "账号已停用，请在后台启用"),
+    (ErrorCode::AccountNotVip, "账号 VIP 已失效，请续费"),
+    (ErrorCode::LoginSessionNotFound, "登录已过期，请重新扫码"),
+    (ErrorCode::UpstreamRequestFailed, "连接酷狗失败，请稍后重试"),
+    (ErrorCode::UpstreamLoginFailed, "登录态失效，请在后台刷新"),
+    (
+        ErrorCode::UpstreamVipCheckFailed,
+        "VIP 校验失败，请稍后重试",
+    ),
+    (ErrorCode::UpstreamPlayUrlEmpty, "该歌曲暂无可用音质"),
+    (ErrorCode::UpstreamRateLimited, "酷狗繁忙，请稍后重试"),
+    (ErrorCode::InvalidRequest, "请求参数有误，请重新导入"),
+    (ErrorCode::SourceNameEmpty, "音源名称为空，请在后台修改"),
+    (ErrorCode::SourceNameTooLong, "音源名称过长，请在后台修改"),
+    (ErrorCode::InternalError, "服务内部错误，请稍后重试"),
+];
+
+/// 字典里查不到的 `code` 的兜底文案，同样不含前缀。
+///
+/// 它存在的意义是保证「永远不回退到后端文本」这条规则没有缺口：后端确实可能
+/// 返回字典里没有的码（老脚本遇到新码，或信封本身被中间件改写）。
+const SCRIPT_UNKNOWN_ERROR: &str = "服务异常，请稍后重试";
+
+/// 前缀 + 文案的字符上限。
+///
+/// **Why 24：** 播放条上大约能看到 15~25 个汉字，而 `kg2lx：` 要占掉其中 3~4 个。
+/// 这个上限故意留得保守——它比「实际能显示」更严格，于是字典里的每一条都
+/// **永远不会被截断**。反例就是洛雪音乐自己那句「换源失败，请尝试手动在搜索页指定
+/// 其他来源搜索该歌曲播放」：27 个字符（26 汉字 + 1 个全角逗号，2026-09-20 在
+/// master `ad95d50` 上实测），超出可视宽度的部分被省略号吃掉，用户看到的是半句话。
+const SCRIPT_ERROR_MAX_CHARS: usize = 24;
+
+/// 脚本自己给 `request()` 设的超时，单位毫秒。
+///
+/// **Why 15 秒：** 宿主自己会在 20 秒时硬超时并把请求以字面量 `Cancel request`
+/// 拒绝（`src/main/modules/userApi/rendererEvent/rendererEvent.ts:119,137-139`）。
+/// 那句英文既不等于宿主本地化的取消常量，也不经过任何翻译，会直接显示在播放条
+/// 上。我们要抢在它前面失败，好让用户看到中文原因，因此留出约 5 秒余量。
+const SCRIPT_REQUEST_TIMEOUT_MS: u64 = 15_000;
+
+/// 播放地址的本地护栏，与宿主的判断保持一致。
+///
+/// 宿主的 `preload.js` 会以字面量 `failed` 拒绝「不是字符串 / 不匹配 `/^https?:/`
+/// / 超过 2048 字符」的 `musicUrl`。先在这里拦下，用户看到的才是中文原因而不是
+/// 那个 untranslated 的 `failed`。
+const SCRIPT_MAX_URL_LEN: usize = 2048;
+
+/// 与宿主逐字相等的重试信号。
+///
+/// 宿主用 `===` 比较 `'服务器繁忙'`：字面量定义在
+/// `src/renderer/utils/message.ts:8`，比较在 `src/renderer/core/player/action.ts:120`。
+/// 紧邻的 `:118` 比的是另一个常量（`'取消http请求'`，`message.ts:7`），撞上它会被
+/// 当成用户主动取消而静默——两者相差一行，引用时别指错。命中后会等 2~6 秒再重新
+/// 发起一次取链；它的好处是这条分支在
+/// `src/renderer/core/music/utils.ts:317` 就短路了，能绕开那句会把责任推给用户
+/// 的「换源失败」兜底。因此它值得在**真·瞬时错误**上借用，但每次借用都让用户
+/// 多等 2~6 秒，必须有次数上限。
+const SCRIPT_BUSY_MESSAGE: &str = "服务器繁忙";
+
+/// 借用宿主重试信号的次数上限：同一音源连续失败到第三次之后就不再借。
+const SCRIPT_BUSY_RETRY_LIMIT: u8 = 3;
+
+/// 用尽上限后的冷却窗口，单位毫秒。
+///
+/// **Why 需要它：** 计数会在一次非瞬时失败（例如某首歌取不到链接）后被清零，
+/// 于是紧接着的限流又会重新借到重试信号。冷却窗口是第二道闸：窗口内无论计数
+/// 是多少，都直接给用户可读消息，不再让宿主静默重试。
+const SCRIPT_BUSY_COOLDOWN_MS: u64 = 60_000;
+
+/// 把字典渲染成一段 JS 对象字面量。
+///
+/// 键取 `ErrorCode::as_str()`（服务端线上字符串，即信封里的 `code`），而不是
+/// Rust 变体名——脚本查的是信封的字段，写成变体名的话这张表在运行时永远命中
+/// 不了，所有错误都会掉进兜底文案。键与值都走 `js_string_literal`，与脚本里其他
+/// 插值保持同一套转义规则。
+fn render_error_messages() -> String {
+    let entries: Vec<String> = SCRIPT_ERROR_MESSAGES
+        .iter()
+        .map(|(code, message)| {
+            format!(
+                "  {}: {},",
+                js_string_literal(code.as_str()),
+                js_string_literal(message)
+            )
+        })
+        .collect();
+    format!("{{\n{}\n}}", entries.join("\n"))
+}
 
 pub struct ScriptService {
     config: Arc<Config>,
@@ -142,9 +270,19 @@ fn render_script(
     // 取值一律 `|| null`：LX 对缺失字段可能给 `undefined` 或空串，而空串会让后端
     // 落盘成「有元数据但是空标题」，前端 `{#if log.track_title}` 的分支判断与
     // 「这一行没有元数据」就再也分不开了。统一归一化成 `null`。
+    //
+    // 用户可见文案同理必须由服务端渲染进脚本，不能指望运行时再问一次后端：
+    // 宿主的失败渲染路径会把我们的文本换掉，我们唯一能控制的就是「在脚本里
+    // 就写好、短到能装进播放条一行」的那句话（见 `SCRIPT_ERROR_MESSAGES`）。
+    // 字典的键是线上 code，所以服务端加了新码、脚本不重新导入时，用户看到的是
+    // 兜底文案而不是英文诊断文本。
     let api_literal = js_string_literal(&format!("{public_base_url}/api/v1/runtime/music-url"));
     let token_literal = js_string_literal(runtime_token);
     let platform_literal = js_string_literal(platform_name);
+    let error_prefix_literal = js_string_literal(SCRIPT_ERROR_PREFIX);
+    let error_messages = render_error_messages();
+    let unknown_error_literal = js_string_literal(SCRIPT_UNKNOWN_ERROR);
+    let busy_message_literal = js_string_literal(SCRIPT_BUSY_MESSAGE);
 
     format!(
         r#"/**
@@ -157,6 +295,37 @@ const {{ EVENT_NAMES, request, on, send }} = globalThis.lx
 const API = {api_literal}
 const TOKEN = {token_literal}
 const qualityMap = {{ '128k': '128k', '320k': '320k', flac: 'flac', flac24bit: 'flac24bit' }}
+// 错误码 -> 用户文案。键是后端信封里的 code（SCREAMING_SNAKE_CASE），由服务端
+// 从 ErrorCode::as_str() 生成，两侧不会各写一份字符串。
+const ERROR_PREFIX = {error_prefix_literal}
+const ERROR_MESSAGES = {error_messages}
+const UNKNOWN_ERROR = {unknown_error_literal}
+const MAX_ERROR_CHARS = {SCRIPT_ERROR_MAX_CHARS}
+const MAX_URL_LEN = {SCRIPT_MAX_URL_LEN}
+const REQUEST_TIMEOUT_MS = {SCRIPT_REQUEST_TIMEOUT_MS}
+const BUSY_MESSAGE = {busy_message_literal}
+const BUSY_RETRY_LIMIT = {SCRIPT_BUSY_RETRY_LIMIT}
+const BUSY_COOLDOWN_MS = {SCRIPT_BUSY_COOLDOWN_MS}
+// 自研错误的唯一构造入口：前缀不会被漏掉，长度上限也不会被绕过。
+const fail = (m) => new Error(ERROR_PREFIX + String(m).slice(0, MAX_ERROR_CHARS))
+// 响应体解析：任何失败都返回 null，绝不把引擎文案抛出去。反向代理在 502 时会
+// 回一整个 HTML 页，JSON.parse 抛出的 V8 SyntaxError 会被宿主原样显示——对用户
+// 那是一句没有意义的英文。
+const parseBody = (body) => {{
+  if (body && typeof body === 'object') return body
+  if (typeof body !== 'string') return null
+  try {{
+    const parsed = JSON.parse(body)
+    return parsed && typeof parsed === 'object' ? parsed : null
+  }} catch (e) {{
+    return null
+  }}
+}}
+// 播放地址护栏，与宿主 preload.js 的判断一致（非字符串 / 非 http(s) / 超过
+// 2048 字符都会被它用字面量 failed 拒绝）。先在这里拦下，用户看到的中文原因
+// 才不会被那句 failed 顶掉。
+const isPlayableUrl = (u) =>
+  typeof u === 'string' && u.length <= MAX_URL_LEN && /^https?:/.test(u)
 const httpPost = (url, body) => new Promise((resolve, reject) => {{
   request(url, {{
     method: 'POST',
@@ -165,23 +334,43 @@ const httpPost = (url, body) => new Promise((resolve, reject) => {{
       authorization: `Bearer ${{TOKEN}}`,
     }},
     body: body,
+    // 单位是毫秒。宿主自己会在 20 秒时硬超时并抛出英文的 'Cancel request'，
+    // 我们要抢在它前面用自己的消息失败。
+    timeout: REQUEST_TIMEOUT_MS,
   }}, (err, resp) => {{
-    if (err) return reject(err)
-    try {{
-      const data = typeof resp.body === 'string' ? JSON.parse(resp.body) : (resp.body || {{}})
-      if (resp.statusCode && resp.statusCode >= 400) return reject(new Error(data.message || `request failed: ${{resp.statusCode}}`))
-      if (!data.url) return reject(new Error('empty url'))
-      resolve(data.url)
-    }} catch (e) {{
-      reject(e)
+    // 传输层失败（连不上服务端 / 被宿主的超时打断）：只给固定短句，绝不透出
+    // err.message——那里是 ECONNREFUSED、证书错误一类的引擎文本。
+    if (err) return reject(fail(UNKNOWN_ERROR))
+    // 这个回调抛出的异常不会被 promise 捕获（它已经离开了 executor），会让
+    // promise 永不 settle、最后退化成宿主的英文超时。所以响应对象一律先判空。
+    const statusCode = resp && resp.statusCode
+    const data = parseBody(resp && resp.body)
+    if (!data) return reject(fail(UNKNOWN_ERROR))
+    if (statusCode && statusCode >= 400) {{
+      // 只用 code 查本地字典：后端的 message 是写给服务端日志的诊断散文，
+      // 不是给用户看的文案，绝不能显示。
+      const e = fail(ERROR_MESSAGES[data.code] || UNKNOWN_ERROR)
+      // 该不该重试由服务端判定（脚本导入后不会自动更新，判定写在脚本里就无法
+      // 随服务端演进），这里只是把标记原样传给上层的 catch。
+      e.retryable = data.retryable === true
+      return reject(e)
     }}
+    if (!isPlayableUrl(data.url)) return reject(fail(ERROR_MESSAGES.UPSTREAM_PLAY_URL_EMPTY))
+    resolve(data.url)
   }})
 }})
+// busyStreak / busyCooldownUntil 是模块级状态，因此在音源被导入后的整个生命周期
+// 内**跨歌曲**共享：换一首歌不会清零。这是刻意的权衡——按 hash 建一张 map 能让
+// 冷却更精准，但那要引入一个会持续增长的表和它的淘汰规则，而这里要挡的只是
+// 「宿主把一次失败放大成无界重试」，一份全局计数已经够用。代价是同一音源在窗口期内
+// 播另一首歌时，也会直接拿到可读消息而不是先重试一次。
+let busyStreak = 0
+let busyCooldownUntil = 0
 on(EVENT_NAMES.request, ({{ source, action, info }}) => {{
-  if (source !== 'kg' || action !== 'musicUrl') return Promise.reject(new Error('unsupported action'))
+  if (source !== 'kg' || action !== 'musicUrl') return Promise.reject(fail(ERROR_MESSAGES.INVALID_REQUEST))
   const musicInfo = info.musicInfo || {{}}
   const quality = qualityMap[info.type]
-  if (!quality) return Promise.reject(new Error(`unsupported quality: ${{info.type}}`))
+  if (!quality) return Promise.reject(fail(ERROR_MESSAGES.INVALID_REQUEST))
   return httpPost(API, {{
     hash: musicInfo.hash,
     album_audio_id: musicInfo.albumAudioId || null,
@@ -189,6 +378,26 @@ on(EVENT_NAMES.request, ({{ source, action, info }}) => {{
     track_title: musicInfo.name || null,
     artist_name: musicInfo.singer || null,
     album_name: musicInfo.albumName || null,
+  }}).catch((err) => {{
+    // 服务端没有说这是瞬时错误：清零计数（一次失败不代表后面都会失败）并原样抛出。
+    if (!err || err.retryable !== true) {{
+      busyStreak = 0
+      throw err
+    }}
+    // 只有服务端声明的瞬时错误才借宿主的重试信号，而且有上限。宿主收到信号后会等
+    // 2~6 秒再发起一次请求（player/action.ts 的 delayRetry），每一次借用都意味着
+    // 用户多等这么久，无限借用就成了一条永远不结束的重试环。
+    // 冷却窗口是第二道闸：计数可能被上面那次非瞬时失败清零，窗口内仍然不借。
+    if (Date.now() < busyCooldownUntil || busyStreak >= BUSY_RETRY_LIMIT) {{
+      busyStreak = BUSY_RETRY_LIMIT
+      busyCooldownUntil = Date.now() + BUSY_COOLDOWN_MS
+      throw fail(ERROR_MESSAGES.UPSTREAM_RATE_LIMITED)
+    }}
+    busyStreak += 1
+    // 逐字相等是必须的：宿主用 === 比较这个字符串，带上前缀就不再是它认得的那个
+    // 信号，会掉回「换源失败」那条误导路径。
+    // 这里刻意不清零计数：宿主收到信号后会静默重试，清零等于每轮都重新发放额度。
+    throw new Error(BUSY_MESSAGE)
   }})
 }})
 send(EVENT_NAMES.inited, {{
@@ -267,7 +476,7 @@ mod tests {
             vec![
                 " * @name 酷狗概念版 12345678",
                 " * @description 127.0.0.1:8787 · 12345678",
-                " * @version 0.1.3",
+                " * @version 0.1.2",
             ],
             "header metadata layout changed; update this test deliberately"
         );
@@ -424,5 +633,140 @@ mod tests {
             !script.contains("musicInfo.album_audio_id"),
             "LX never sends an `album_audio_id` field on the script boundary"
         );
+    }
+
+    /// 字典必须**恰好**覆盖每一个错误码。
+    ///
+    /// 少一个：该码在运行时回退成后端的英文诊断文本，而这正是本轮要消灭的东西。
+    /// 多一个：表里有一行永远不会被命中的文案，读代码的人会以为那个码还会从
+    /// 运行时冒出来。
+    #[test]
+    fn dictionary_covers_every_error_code() {
+        assert_eq!(
+            SCRIPT_ERROR_MESSAGES.len(),
+            ErrorCode::ALL.len(),
+            "字典条数与 ErrorCode::ALL 不一致"
+        );
+        for code in ErrorCode::ALL {
+            assert!(
+                SCRIPT_ERROR_MESSAGES.iter().any(|(c, _)| *c == code),
+                "{code:?} 在字典里没有对应文案"
+            );
+        }
+        // 键必须是线上字符串（SCREAMING_SNAKE_CASE）。写成 Rust 变体名的话，
+        // 这张表在运行时一次都命中不了，所有错误都会掉进兜底文案。
+        let script = sample_script();
+        assert!(
+            script.contains(&format!(
+                "{}:",
+                js_string_literal(ErrorCode::UpstreamRateLimited.as_str())
+            )),
+            "字典的键必须是信封里的线上 code"
+        );
+    }
+
+    /// 前缀 + 文案必须装得下播放条那一行。
+    ///
+    /// Rust 的 `chars()` 数的是 Unicode 标量值，JS 的 `slice` 数的是 UTF-16 码元；
+    /// 对中文与全角标点，两者逐个相等，所以这条断言同时钉住了脚本侧 `slice` 的
+    /// 截断语义——只要它成立，字典里没有任何一条会被截断。
+    #[test]
+    fn dictionary_messages_fit_the_play_bar() {
+        for (code, message) in SCRIPT_ERROR_MESSAGES {
+            let rendered = format!("{SCRIPT_ERROR_PREFIX}{message}");
+            assert!(
+                rendered.chars().count() <= SCRIPT_ERROR_MAX_CHARS,
+                "{code:?} 的文案「{rendered}」有 {} 字符，超过上限 {}",
+                rendered.chars().count(),
+                SCRIPT_ERROR_MAX_CHARS
+            );
+        }
+    }
+
+    /// 字典文案不得包含宿主用 `===` 比较的那两个魔术字符串。
+    ///
+    /// `'服务器繁忙'` 会被宿主当成「重试」信号，`'取消http请求'` 会被当成「用户
+    /// 主动取消」。任何一条普通文案只要含有它们，就会在不该重试、不该静默的场合
+    /// 被宿主的字符串比较命中——那不是我们能从服务端观测到的行为。
+    #[test]
+    fn dictionary_never_collides_with_host_magic_strings() {
+        for (code, message) in SCRIPT_ERROR_MESSAGES {
+            assert!(!message.contains("服务器繁忙"), "{code:?} 撞上了重试信号");
+            assert!(!message.contains("取消http请求"), "{code:?} 撞上了取消信号");
+        }
+    }
+
+    /// 借道宿主重试时抛出的必须是**裸**文案：宿主用 `===` 比较，带前缀即失效。
+    #[test]
+    fn busy_rejection_is_bare_and_exact() {
+        let script = sample_script();
+        assert!(
+            script.contains("const BUSY_MESSAGE = \"服务器繁忙\""),
+            "BUSY_MESSAGE 必须逐字等于宿主的重试信号"
+        );
+        assert!(
+            script.contains("new Error(BUSY_MESSAGE)"),
+            "重试路径必须原样抛出 BUSY_MESSAGE"
+        );
+        assert!(
+            !script.contains("kg2lx：服务器繁忙"),
+            "前缀会让重试信号不再被宿主识别"
+        );
+    }
+
+    /// 「有界」不能只是注释里的一句话：上限与冷却窗口都要真的出现在守卫里。
+    #[test]
+    fn busy_retry_is_bounded() {
+        let script = sample_script();
+        const MARKER: &str = ".catch((err) => {";
+        let start = script
+            .find(MARKER)
+            .expect("the request handler must own the busy-retry decision");
+        let guard = &script[start..];
+        assert!(guard.contains("BUSY_RETRY_LIMIT"), "缺少次数上限");
+        assert!(guard.contains("BUSY_COOLDOWN_MS"), "缺少冷却窗口");
+    }
+
+    /// 自己的超时必须早于宿主的 20 秒硬超时，否则用户看到的是那句未翻译的
+    /// `Cancel request`。
+    #[test]
+    fn request_timeout_beats_the_host_deadline() {
+        // 两个都是编译期常量，放进 const block 让「余量确实存在」这件事在编译期
+        // 就被证明一次，而不是等这条测试跑起来。
+        const { assert!(SCRIPT_REQUEST_TIMEOUT_MS < 20_000) };
+        assert!(
+            sample_script().contains("timeout: REQUEST_TIMEOUT_MS"),
+            "request() 必须真的收到这个超时值"
+        );
+    }
+
+    /// 返回地址前后两侧的护栏：宿主的 preload.js 会用字面量 `failed` 拒绝
+    /// 非 http(s) 或超长的地址，我们必须先给出中文原因。
+    #[test]
+    fn returned_url_is_guarded() {
+        let script = sample_script();
+        assert!(script.contains("/^https?:/"), "缺少 scheme 校验");
+        assert!(script.contains("MAX_URL_LEN"), "缺少长度校验");
+    }
+
+    /// 后端的 `message` 是写给服务端日志的诊断散文，一个字都不该到用户眼前。
+    #[test]
+    fn backend_message_is_never_displayed() {
+        assert!(
+            !sample_script().contains("data.message"),
+            "后端诊断文本不得进入脚本"
+        );
+    }
+
+    /// 字典里没有的 code 必须落到本地化兜底，而不是后端的英文 text。
+    #[test]
+    fn unknown_code_has_a_localized_fallback() {
+        let script = sample_script();
+        assert!(
+            script.contains("ERROR_MESSAGES[data.code] || UNKNOWN_ERROR"),
+            "未命中的 code 必须回退到 UNKNOWN_ERROR"
+        );
+        assert_ne!(SCRIPT_UNKNOWN_ERROR, SCRIPT_BUSY_MESSAGE);
+        assert!(!SCRIPT_UNKNOWN_ERROR.contains("取消http请求"));
     }
 }

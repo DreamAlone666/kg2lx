@@ -3,6 +3,21 @@ use super::provider::ProviderKind;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeLogStage {
+    /// 取链之前的准入检查失败（`services/runtime.rs` 的 `fetch_music_url` 顶部）。
+    ///
+    /// 由四条早退路径构造：音源被停用、账号记录不存在、账号被禁用、会员无效。
+    /// 它此前只被设计、被前端词典标注（`web/src/lib/domain/labels.ts` 的
+    /// 「预检」），生产代码却从不构造——于是最常落到用户身上的几种失败一条日志
+    /// 都不写，而日志面板是 kg2lx 用户唯一能看到诊断的地方（洛雪音乐丢弃脚本抛出
+    /// 的 `err.message`，只显示自己的「换源失败…」）。
+    ///
+    /// 本阶段的行只描述「没走到取链」：`upstream_endpoint` 为空、`status_code`
+    /// 为 `None`、`retry_count` 为 0、`refresh_attempted` 为 false。该行真正承重的
+    /// 是 `error_code`——读路径上 `RuntimeLog::sanitized` 会把 `error` 文本塌成
+    /// 常量，机器可读的具体原因只剩这一个字段。
+    ///
+    /// 未知 runtime token（查不到音源）**不**走这里：`RuntimeLog.source_id` 是必填
+    /// 字段、面板也按它过滤，凭空造一个 id 只会产出任何面板都查不出来的孤儿行。
     Precheck,
     EnsureDfid,
     RefreshLogin,
