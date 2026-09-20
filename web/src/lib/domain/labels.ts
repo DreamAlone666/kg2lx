@@ -131,9 +131,9 @@ const diagnosticErrorCodes = new Set([
  * 用户只能反过来找我们，所以这几个码保留 `中文抬头：后端 message`。
  *
  * 未知码（后端先于前端上线）回退到错误自身的 message —— 与 labelOf 同一套前向兼容
- * 思路。完全没有 `code` 的是另一种情况：AdminApiError 在响应体不是 JSON 时会自造
- * `API error {status}`，那是给开发者看的串，故换成「请求失败（HTTP xxx）」并保留
- * 状态码，而不是把它原样塞给用户。
+ * 思路。完全没有 `code` 的是另一种情况：AdminApiError 在响应体不是本仓的错误信封
+ * 时会自造一个给开发者看的串，故换成一句说明「响应不是接口数据」的中文并保留状态码
+ * （状态码本身仍是排查线索），而不是把它原样塞给用户。
  *
  * 已知边界：`/api/v1/runtime/music-url` 的报错不经过这里——那条路径由冻结的
  * LX Music 脚本直接消费，不经过本 UI，其文案不能靠改前端来修。
@@ -160,10 +160,10 @@ export function describeApiError(error: unknown): string {
 		return error.message || generic;
 	}
 
-	// 没有 code 只可能是响应体不是 JSON（正常错误信封必带 code），此时
-	// AdminApiError 自造的是 `API error {status}` 这类给开发者看的串。换成中文，
-	// 但保留状态码——它本身仍是有效的排查线索。
-	return `请求失败（HTTP ${error.status}）`;
+	// 没有 code 只可能是响应体不是本仓的错误信封（正常错误信封必带 code），此时
+	// AdminApiError 自造的是给开发者看的串。换成中文，并保留状态码——它本身仍是
+	// 有效的排查线索。
+	return `服务器返回的不是接口数据（HTTP ${error.status}）`;
 }
 
 /**

@@ -69,6 +69,14 @@ function describeConnectError(e: unknown): string {
 	if (e instanceof AdminApiError && e.status === 401) {
 		return '管理员 Token 不正确（401）：请核对部署时设置的 ADMIN_TOKEN。';
 	}
+	// 没有 code 说明响应体不是本仓的错误信封，有两种成因，下一步动作完全不同：
+	// 5xx 是中间层在目标不可达时代回的（开发期由 Vite 代理转发，连不上后端即 502），
+	// 该去把后端起起来；2xx/4xx 则是这个地址上放着的是一份网页，该改地址。
+	if (e instanceof AdminApiError && !e.code) {
+		return e.status >= 500
+			? `后端未响应（HTTP ${e.status}）：请确认 kg2lx 服务已启动，且该地址可达。`
+			: `服务器返回的不是接口数据（HTTP ${e.status}）：请确认该地址指向 kg2lx 后端本身；留空表示使用当前域名。`;
+	}
 	if (e instanceof TypeError) {
 		return '无法连接到服务器：请确认地址以 http(s):// 开头、后端已启动，且浏览器可以访问（跨域或网络问题也会导致此错误）。';
 	}

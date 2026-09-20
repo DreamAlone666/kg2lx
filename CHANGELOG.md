@@ -61,6 +61,8 @@ All notable changes to this project will be documented in this file.
 - 「已刷新 Token」不再出现在「刷新登录」的失败行上：该字段是 `refresh_attempted`（**试图**刷新），而 `refresh_login` 阶段的日志只在刷新失败时产生，两者同屏会渲染成「刷新登录 · 已刷新 Token · 上游登录失败」这种同时宣称刷新成功与失败的自相矛盾组合。
 - 音源详情页的「最后一次错误」不再把 `UPSTREAM_LOGIN_FAILED: token expired` 这类后端诊断散文原样摆给用户看。账号记录改为在 `last_error` 旁并存一个稳定的 `last_error_code`，界面据此查中文词典、只把原文当兜底——上一轮修的是接口错误信封，而这个字段是**落盘后再读出**的，走的是另一条路径，所以那轮修复没有覆盖到它。同时把 `last_error` 收窄为纯 message（不再带 `"CODE: "` 前缀），因为机器身份已由 code 承担，前缀只会成为 Rust 内部字符串漏到界面上的最后一处出口。已落盘的旧账号仍能整条读出：新字段带 `#[serde(default)]`，读出为 `null`，此时界面退回只显示原文。
 
+- 响应不是接口数据时不再把引擎的英文报错摆到用户眼前。`HttpClient` 此前对成功响应直接 `response.json()`，而地址指向静态站点、或命中服务端的 SPA 回退时会拿到一份 HTML，抛出的 `SyntaxError: Unexpected token '<' ... is not valid JSON` 会经连接页的兜底分支原样显示；现在解析失败折成无 `code` 的 `AdminApiError`（本仓既有约定：正常错误信封必带 `code`），由 `describeApiError` 与连接页各自给出中文。只吞 `SyntaxError` 是刻意的：`fetch` 在收到响应头时就 resolve，超时与读体中途的连接失败也是在 `json()` 这一步 reject 的，一并吞掉会把「超时」误报成「响应体不对」。另外把「无 code」的两种成因分开说：5xx 是中间层在目标不可达时代回的（开发期 Vite 代理连不上后端即 502），2xx/4xx 则是这个地址上放着一份网页——前者要启动后端，后者要改地址，合成一句会把最常见的「后端没起来」误报成「地址不对」。顺带改掉 `describeApiError` 里那句「请求失败（HTTP xxx）」：2xx 也能落进这个分支，那句话与状态码自相矛盾。
+
 ## [0.1.3] - 2026-09-01
 
 ### Changed
