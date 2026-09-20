@@ -72,7 +72,12 @@ const SCRIPT_ERROR_MESSAGES: &[(ErrorCode, &str)] = &[
         ErrorCode::UpstreamVipCheckFailed,
         "VIP 校验失败，请稍后重试",
     ),
-    (ErrorCode::UpstreamPlayUrlEmpty, "该歌曲暂无可用音质"),
+    // 「未取到播放地址」刻意不写成「暂无可用音质」：拆分后它的确切含义是
+    // 「没拿到 url、且上游没有表达拒绝」，上游明确拒绝某一档是下面那条。
+    // 两句读起来像同一件事，用户就无法从播放条上分辨该不该去改什么。
+    (ErrorCode::UpstreamPlayUrlEmpty, "未取到播放地址"),
+    (ErrorCode::UpstreamQualityRefused, "该音质不可用"),
+    (ErrorCode::UpstreamQualityExhausted, "所有音质均不可用"),
     (ErrorCode::UpstreamRateLimited, "酷狗繁忙，请稍后重试"),
     (ErrorCode::InvalidRequest, "请求参数有误，请重新导入"),
     (ErrorCode::SourceNameEmpty, "音源名称为空，请在后台修改"),
@@ -371,6 +376,11 @@ on(EVENT_NAMES.request, ({{ source, action, info }}) => {{
   const musicInfo = info.musicInfo || {{}}
   const quality = qualityMap[info.type]
   if (!quality) return Promise.reject(fail(ERROR_MESSAGES.INVALID_REQUEST))
+  // 这个对象里只有 `hash` / `quality` 是取链的入参，其余全部是**记录**：服务端
+  // 把它们落盘供事后诊断，不参与任何判断。`types` 就是宿主扁平 musicInfo 上的
+  // 那个字段（LX 的 `meta.qualitys`：这首歌有哪些档位、各自的大小与 hash）。
+  // 这里刻意不做 `Array.isArray` 之类的形状断言——它是事实记录而非判断输入，
+  // 形状异常也该原样上报，而不是在脚本里被悄悄丢掉。
   return httpPost(API, {{
     hash: musicInfo.hash,
     album_audio_id: musicInfo.albumAudioId || null,
@@ -378,6 +388,7 @@ on(EVENT_NAMES.request, ({{ source, action, info }}) => {{
     track_title: musicInfo.name || null,
     artist_name: musicInfo.singer || null,
     album_name: musicInfo.albumName || null,
+    types: musicInfo.types || null,
   }}).catch((err) => {{
     // 服务端没有说这是瞬时错误：清零计数（一次失败不代表后面都会失败）并原样抛出。
     if (!err || err.retryable !== true) {{
@@ -615,7 +626,8 @@ mod tests {
                 "quality, ",
                 "track_title: musicInfo.name || null, ",
                 "artist_name: musicInfo.singer || null, ",
-                "album_name: musicInfo.albumName || null,"
+                "album_name: musicInfo.albumName || null, ",
+                "types: musicInfo.types || null,"
             ),
             "request body mapping changed; update this test deliberately"
         );
@@ -632,6 +644,27 @@ mod tests {
         assert!(
             !script.contains("musicInfo.album_audio_id"),
             "LX never sends an `album_audio_id` field on the script boundary"
+        );
+    }
+
+    /// 渲染出的脚本是**冻结产物**：用户导入后，洛雪音乐永不自动更新它，因此任何
+    /// 写进脚本的策略都会在用户手上那一份里永久固定下来。
+    ///
+    /// 「上游拒绝了这一档该怎么办」这件事必须只活在服务端（后台的降级开关 +
+    /// 取链循环）：只有这样，改一次就对所有人生效。这条断言挡的是有人图方便把
+    /// 策略写回模板——那会逼每个用户删掉音源重新导入才能受益，正是 `@version`
+    /// 一节反复说明要避免的东西。检查的是**渲染结果**，服务端自己的策略代码
+    /// 不受影响。
+    #[test]
+    fn script_carries_no_quality_policy() {
+        let script = sample_script();
+        assert!(
+            !script.to_lowercase().contains("fallback"),
+            "脚本不得含任何降级策略：策略只应活在服务端"
+        );
+        assert!(
+            !script.contains("降级"),
+            "脚本不得含任何降级策略：策略只应活在服务端"
         );
     }
 

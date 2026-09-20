@@ -54,8 +54,11 @@ impl AppState {
             log_repo.clone(),
         ));
 
+        // 同一个客户端传两次：第一次是具体的 `KugouLiteClient`（登录/DFID/VIP），
+        // 第二次在参数位置上强制转换成 `Arc<dyn MusicUrlFetcher>`（取链，可替换）。
         let runtime_service = Arc::new(RuntimeService::new(
             config.clone(),
+            client.clone(),
             client.clone(),
             source_repo.clone(),
             account_repo.clone(),

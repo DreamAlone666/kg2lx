@@ -285,6 +285,8 @@ impl LoginService {
                     runtime_token,
                     created_at: now3,
                     updated_at: now3,
+                    // 新建音源按保守默认：不自动降级，行为与本次改动之前一致，由用户显式打开。
+                    quality_fallback: false,
                 };
                 self.source_repo.upsert(&s).await?;
                 s

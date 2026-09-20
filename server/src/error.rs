@@ -18,6 +18,18 @@ pub enum ErrorCode {
     UpstreamLoginFailed,
     UpstreamVipCheckFailed,
     UpstreamPlayUrlEmpty,
+    /// 上游**明确拒绝**了这一次取链（`/song/url` 的 `status:2`）。它与
+    /// `UpstreamPlayUrlEmpty` 是两件事：后者是「没拿到 url、且上游也没有表达
+    /// 拒绝」，一个 `status:2` 会被后者含混地吞掉，用户就永远看不出是权益/档位
+    /// 的问题还是别的什么。
+    ///
+    /// 开启降级后，每一个被拒的**中间**档也复用这个码——它只描述上游的态度，
+    /// 不描述我们的策略；「这是同一次请求的第几档」由日志的
+    /// `quality_fallback_index` 与 `client_request_id` 承载。
+    UpstreamQualityRefused,
+    /// 沿档位阶梯降到底仍被拒。与 `UpstreamQualityRefused` 的唯一区别是
+    /// 「我们已经试过更低的档位」，即 `quality_fallback_index > 0`。
+    UpstreamQualityExhausted,
     UpstreamRateLimited,
     InvalidRequest,
     /// 改名被拒的两种原因要用户做的事不同（换个名字 / 缩短），合成一个
@@ -48,6 +60,8 @@ impl ErrorCode {
             Self::UpstreamLoginFailed => "UPSTREAM_LOGIN_FAILED",
             Self::UpstreamVipCheckFailed => "UPSTREAM_VIP_CHECK_FAILED",
             Self::UpstreamPlayUrlEmpty => "UPSTREAM_PLAY_URL_EMPTY",
+            Self::UpstreamQualityRefused => "UPSTREAM_QUALITY_REFUSED",
+            Self::UpstreamQualityExhausted => "UPSTREAM_QUALITY_EXHAUSTED",
             Self::UpstreamRateLimited => "UPSTREAM_RATE_LIMITED",
             Self::InvalidRequest => "INVALID_REQUEST",
             Self::SourceNameEmpty => "SOURCE_NAME_EMPTY",
@@ -66,7 +80,7 @@ impl ErrorCode {
     /// bin target 看不到它，于是会报「从未被使用」。不要因为这条警告把它删掉——
     /// 删了安全网就没了。
     #[allow(dead_code)]
-    pub const ALL: [ErrorCode; 16] = [
+    pub const ALL: [ErrorCode; 18] = [
         ErrorCode::AdminUnauthorized,
         ErrorCode::SourceNotFound,
         ErrorCode::SourceDisabled,
@@ -78,6 +92,8 @@ impl ErrorCode {
         ErrorCode::UpstreamLoginFailed,
         ErrorCode::UpstreamVipCheckFailed,
         ErrorCode::UpstreamPlayUrlEmpty,
+        ErrorCode::UpstreamQualityRefused,
+        ErrorCode::UpstreamQualityExhausted,
         ErrorCode::UpstreamRateLimited,
         ErrorCode::InvalidRequest,
         ErrorCode::SourceNameEmpty,
@@ -207,6 +223,29 @@ impl AppError {
         }
     }
 
+    /// `is_admin: false` 的理由与 `upstream_rate_limited()` 完全一致：运行时链路
+    /// 可达、面向客户端脚本，而脚本只分支 `>= 400`；`into_response` 的脱敏名单
+    /// 只覆盖四个诊断码，所以这个 message 无论取什么值都会原样穿过。选 false 是
+    /// 为了与相邻的运行时错误同档，不是为了把 message 藏起来。
+    pub fn upstream_quality_refused() -> Self {
+        Self {
+            code: ErrorCode::UpstreamQualityRefused,
+            message: "requested quality refused by upstream".into(),
+            status: StatusCode::NOT_FOUND,
+            is_admin: false,
+        }
+    }
+
+    /// `is_admin: false` 的理由同 `upstream_quality_refused()`。
+    pub fn upstream_quality_exhausted() -> Self {
+        Self {
+            code: ErrorCode::UpstreamQualityExhausted,
+            message: "no quality available after fallback".into(),
+            status: StatusCode::NOT_FOUND,
+            is_admin: false,
+        }
+    }
+
     /// `is_admin: false`（与最近的邻居 `upstream_play_url_empty()` 一致）：它是运行
     /// 时链路可达、面向客户端的错误，且 `into_response` 的脱敏名单只覆盖四个诊断码，
     /// 这个 code 的 message 无论取哪个值都会原样穿过——所以这里选 false 不是为了让
@@ -271,10 +310,11 @@ struct ErrorBody {
 /// 给 `skip_serializing_if` 用：`Option` 之外的字段默认没有「缺省即省略」的语义，
 /// 需要一个显式的谓词。
 ///
-/// 为什么必须省略而不是发一个 `retryable: false`：`retryable` 是新字段，而既有的
-/// 15 个错误信封的字节必须保持不变——SvelteKit 的 `describeApiError` 会检查
-/// `code` / `message` 并对四个诊断码做特殊处理，多出来的字段虽不至于直接破坏解析，
-/// 却会改变已上线行为的输入面。只在 true 时出现，等于对既有错误零影响。
+/// 为什么必须省略而不是发一个 `retryable: false`：`retryable` 是新字段，而除
+/// `UPSTREAM_RATE_LIMITED` 之外的每个错误信封，字节都必须保持不变——SvelteKit 的
+/// `describeApiError` 会检查 `code` / `message` 并对四个诊断码做特殊处理，多出来
+/// 的字段虽不至于直接破坏解析，却会改变已上线行为的输入面。只在 true 时出现，
+/// 等于对其余错误零影响。
 fn is_false(v: &bool) -> bool {
     !*v
 }
@@ -337,6 +377,23 @@ mod tests {
         }
     }
 
+    /// 两个新码的线上字符串是**对外契约**：已导入的脚本用信封里的 code 去查脚本
+    /// 自带的本地字典（键正是 `as_str()`），Web 前端也按字面量索引。而 `as_str`
+    /// 与 serde 都从变体名派生，重命名变体时两边会一起变、`as_str_matches_serde`
+    /// 依旧全绿，契约却在无声漂移。这条断言把这两个字面量钉死：改名必须先改到
+    /// 这里，也就必然会被评审看见。
+    #[test]
+    fn quality_error_code_strings_are_pinned() {
+        assert_eq!(
+            ErrorCode::UpstreamQualityRefused.as_str(),
+            "UPSTREAM_QUALITY_REFUSED"
+        );
+        assert_eq!(
+            ErrorCode::UpstreamQualityExhausted.as_str(),
+            "UPSTREAM_QUALITY_EXHAUSTED"
+        );
+    }
+
     /// `ALL` 不受编译器约束，重复项会让上面那条测试悄悄少覆盖一个变体。
     #[test]
     fn all_is_duplicate_free() {
@@ -371,7 +428,8 @@ mod tests {
         assert_eq!(value["retryable"], true);
     }
 
-    /// 既有 15 个错误信封必须逐字节不变：不是 `retryable: false`，而是这个键根本不存在。
+    /// `UPSTREAM_RATE_LIMITED` 之外的每个错误信封都必须逐字节不变：不是
+    /// `retryable: false`，而是这个键根本不存在。
     #[tokio::test]
     async fn non_retryable_envelope_omits_retryable() {
         let resp = AppError::upstream_play_url_empty().into_response();

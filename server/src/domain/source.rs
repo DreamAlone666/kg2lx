@@ -57,6 +57,29 @@ pub struct Source {
     pub runtime_token: String,
     pub created_at: i64,
     pub updated_at: i64,
+    /// 音质自动降级开关，**默认关闭**。
+    ///
+    /// 开着时，上游明确拒绝（`status:2`）用户请求的档位后，服务端会沿 LX 的档位
+    /// 阶梯（`flac24bit → flac → 320k → 128k`）向下改请求，尽量让用户听到东西，
+    /// 而不是整首播不了。关着则维持原有行为：把拒绝原样抛回去。
+    ///
+    /// **为什么默认关**：这是「宁可失败也不给低档」与「宁可给低档也别播不了」之间的
+    /// 取舍，属于用户偏好，不是显然更优的默认值。保守默认意味着「不开就与改动前完全
+    /// 同行为」。反过来则不然：LX 客户端在播放链路里不渲染音质，默认打开会让静默降级
+    /// 大面积生效而无人察觉。
+    ///
+    /// **下载同样生效，且这一点无法规避**：客户端脚本拿到的 `info` 只有 `type` 与
+    /// `musicInfo`，**无法区分**本次是播放还是下载，因此服务端不可能只对播放降级。
+    /// 用户开启这个开关，就等于一并接受「下载会拿到比所选档位更低的文件」。客户端
+    /// 仍按**请求时**的档位记录与缓存该地址。
+    ///
+    /// `#[serde(default)]` 是必需的，不是风格问题：音源以「一源一 JSON 文件」落盘，
+    /// 而 `FsSourceRepo` 对解析失败的行是 `Err(_) => continue`——少了它，本次改动
+    /// **之前**写下的每一份音源文件都会整份读不出来，runtime token 解析不到、脚本
+    /// 端点 404，且几乎没有日志。字段读出的 `false` 此时精确对应「用户没开过这个
+    /// 开关」，与显式写入的 `false` 同义，无需区分。
+    #[serde(default)]
+    pub quality_fallback: bool,
 }
 
 pub fn now_ts() -> i64 {
@@ -218,5 +241,69 @@ mod tests {
     fn default_name_has_no_trailing_space_when_userid_missing() {
         assert_eq!(default_name(""), "酷狗概念版");
         assert_eq!(default_name("  "), "酷狗概念版");
+    }
+
+    /// 本次改动**之前**落盘的音源 JSON 没有 `quality_fallback` 这个键。
+    ///
+    /// 缺了 `#[serde(default)]`，它会整份反序列化失败，而 `FsSourceRepo` 用
+    /// `Err(_) => continue` 吞掉错误——后果是**现存音源全部消失**：runtime token
+    /// 解析不到、脚本端点 404，且几乎没有日志。这条断言钉住向后兼容，
+    /// fixture 的键集照落盘形态构造
+    /// （取值一律是合成占位）。
+    #[test]
+    fn reads_source_files_written_before_quality_fallback_existed() {
+        let old_source = r#"{
+  "source_id": "src_00000000-0000-4000-8000-000000000001",
+  "account_id": "acc_00000000-0000-4000-8000-000000000000",
+  "provider": "kugou_lite",
+  "name": "kg2lx demo",
+  "enabled": true,
+  "script_token": "st_00000000-0000-0000-0000-000000000000",
+  "runtime_token": "rt_00000000-0000-0000-0000-000000000000",
+  "created_at": 1600000000,
+  "updated_at": 1700100000
+}"#;
+
+        // 断言整份 struct 都能读出来，而不是只挑新字段看：任何一个字段出问题，
+        // 真实的 `FsSourceRepo` 都会把这一份文件整个跳过。
+        let source: Source =
+            serde_json::from_str(old_source).expect("本次改动之前落盘的音源文件必须仍能整份读入");
+        assert!(
+            !source.quality_fallback,
+            "老音源读出 false，语义是「用户没开过这个开关」，不是「开关被显式关掉」"
+        );
+        assert_eq!(source.source_id, "src_00000000-0000-4000-8000-000000000001");
+        assert_eq!(source.provider, ProviderKind::KugouLite, "其余字段不受影响");
+        assert_eq!(source.name, "kg2lx demo");
+        assert!(source.enabled);
+        assert_eq!(source.created_at, 1600000000);
+        assert_eq!(source.updated_at, 1700100000);
+    }
+
+    /// 新值能原样写回读出，且序列化文本里确实带这个键。
+    #[test]
+    fn round_trips_quality_fallback() {
+        let source = Source {
+            source_id: "src_x".into(),
+            account_id: "acc_x".into(),
+            provider: ProviderKind::KugouLite,
+            name: "测试音源".into(),
+            enabled: true,
+            script_token: "st_x".into(),
+            runtime_token: "rt_x".into(),
+            created_at: 1_776_414_582,
+            updated_at: 1_789_832_921,
+            quality_fallback: true,
+        };
+
+        let json = serde_json::to_string(&source).expect("serialize");
+        assert!(
+            json.contains(r#""quality_fallback":true"#),
+            "开关必须真正落盘，否则重启后悄悄退回默认关：{json}"
+        );
+
+        let back: Source = serde_json::from_str(&json).expect("deserialize");
+        assert!(back.quality_fallback);
+        assert_eq!(back.source_id, "src_x");
     }
 }

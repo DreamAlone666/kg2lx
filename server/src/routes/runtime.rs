@@ -130,7 +130,7 @@ mod tests {
         assert_eq!(object.album_audio_id, wrapped.album_audio_id);
     }
 
-    // 0.1.3 起脚本会在请求体里多带三个歌曲元数据字段。这不是线上抓包，而是照
+    // 0.1.2 起脚本会在请求体里多带三个歌曲元数据字段。这不是线上抓包，而是照
     // `services/script.rs` 模板的字段清单手写的等价体——那一侧的
     // `request_body_maps_lx_music_info_fields` 钉住模板，这一侧钉住服务端收得下。
     // 两半合起来才覆盖完整链路；单看任何一半都无法证明元数据能落盘。
@@ -151,7 +151,55 @@ mod tests {
         assert_eq!(r.album_name.as_deref(), Some("《乐与怒》"));
     }
 
-    /// 老脚本（0.1.2 及以前）只发三个字段，必须继续可用。
+    // 同一批：脚本转发的 LX 档位元数据（宿主扁平 `musicInfo.types`，即 `meta.qualitys`）。
+    // 同样是手写等价体而非抓包——服务端把它整块原样落盘，因此这里要钉的不是某个字段的
+    // 位置，而是「任意形状都能收下、且不因形状异常而拒绝整条取链请求」。
+    static REPORTED_TYPES_BODY: &[u8] = r#"{"hash":"A0AEFE0227938F366FF4F9D4F0F6CBE5","album_audio_id":"32143665","quality":"flac24bit","types":{"flac24bit":{"size":123456789,"hash":"ABCD"},"flac":{"size":29183562}}}"#.as_bytes();
+
+    #[test]
+    fn parses_body_carrying_reported_types() {
+        let r = parse_music_url_request(REPORTED_TYPES_BODY).expect("types body should parse");
+        let types = r.types.expect("上报了 types 就必须读出来");
+        assert_eq!(types["flac24bit"]["size"], 123456789);
+        assert_eq!(types["flac24bit"]["hash"], "ABCD");
+        assert_eq!(types["flac"]["size"], 29183562);
+    }
+
+    /// `types` 是**记录**而不是契约，因此形状异常必须照收不误。
+    ///
+    /// 它由 LX 提供、由脚本原样转发，我们无权要求它的形状；而这里解析失败代价极大——
+    /// `parse_music_url_request` 的失败会让**整条取链请求**直接 400，用户在客户端看到的是
+    /// 「换源失败」。一份诊断用的元数据绝不该有这种权力，所以类型是 `Value` 而不是某个
+    /// 具体结构，测试也钉住「什么都能收」。
+    #[test]
+    fn reported_types_of_any_shape_still_parse() {
+        for raw in [
+            r#""types":"not-an-object""#,
+            r#""types":[]"#,
+            r#""types":123"#,
+            r#""types":false"#,
+            r#""types":{"deep":{"nested":{"weird":null}}}"#,
+        ] {
+            let body = format!(r#"{{"hash":"H","album_audio_id":null,"quality":"flac",{raw}}}"#);
+            let r = parse_music_url_request(body.as_bytes())
+                .unwrap_or_else(|e| panic!("形状 `{raw}` 不得导致整条请求被拒：{e:?}"));
+            assert!(r.types.is_some(), "形状 `{raw}` 应当被原样收下");
+        }
+    }
+
+    /// 脚本在 LX 没给 `types` 时发的是显式的 `null`（`musicInfo.types || null`），
+    /// 服务端必须把它读成「没上报」而不是「上报了一个 null 值」。
+    #[test]
+    fn explicit_null_reported_types_reads_as_absent() {
+        let body = br#"{"hash":"H","album_audio_id":null,"quality":"flac","types":null}"#;
+        let r = parse_music_url_request(body).expect("null types should parse");
+        assert_eq!(
+            r.types, None,
+            "脚本发的 `null` 与老脚本完全不发这个键，语义必须一致"
+        );
+    }
+
+    /// 老脚本（0.1.1 及以前）只发三个字段，必须继续可用。
     ///
     /// 这条此前是**隐式**成立的（`OBJECT_BODY` 就只有三个键），本轮往契约里加字段
     /// 之后它变成了承重条件：用户不会因为后台更新而集体重新导入脚本，所以"缺三个
@@ -159,9 +207,10 @@ mod tests {
     /// 可选字段加上 `#[serde(default)]` 之类的改动就会让全部存量用户播放失败。
     #[test]
     fn old_three_field_body_still_parses() {
-        let r = parse_music_url_request(OBJECT_BODY).expect("0.1.2 时代的请求体必须继续可解析");
+        let r = parse_music_url_request(OBJECT_BODY).expect("0.1.1 时代的请求体必须继续可解析");
         assert_eq!(r.track_title, None);
         assert_eq!(r.artist_name, None);
         assert_eq!(r.album_name, None);
+        assert_eq!(r.types, None);
     }
 }

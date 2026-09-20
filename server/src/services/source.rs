@@ -39,6 +39,11 @@ pub struct SourceListItem {
     pub last_refresh_at: Option<i64>,
     /// 源记录的更新时间（绑定/改配置时变动），保留以维持 API 兼容，界面不再展示。
     pub updated_at: i64,
+    /// 音质自动降级开关的当前值（即 `Source.quality_fallback`）。
+    ///
+    /// 列表页要直接渲染开关状态，若只放在详情里，扫一眼列表无法判断哪些音源开了
+    /// 这个会改变实际返回音质的行为。
+    pub quality_fallback: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -54,6 +59,8 @@ pub struct SourceDetail {
     pub default_name: String,
     /// 官方对标题的**建议**字符数上限，仅供后台计数提示，不参与拒绝逻辑。
     pub name_advisory_chars: usize,
+    /// 音质自动降级开关的当前值；详情页据此渲染开关初态。
+    pub quality_fallback: bool,
     pub runtime_token_preview: String,
     pub account: SourceAccountInfo,
 }
@@ -64,6 +71,9 @@ pub struct UpdateSourceResponse {
     pub source_id: String,
     pub name: String,
     pub default_name: String,
+    /// 回显开关的**当前**值：请求里没带这个字段时也必须有值，否则界面上的开关会
+    /// 在一次只改标题的 PATCH 之后被渲染回默认态。
+    pub quality_fallback: bool,
     pub updated_at: i64,
 }
 
@@ -93,6 +103,18 @@ pub struct SourceLogsResponse {
     pub view: RuntimeLogView,
     pub limit: usize,
     pub items: Vec<RuntimeLog>,
+}
+
+/// 音源 PATCH 的输入。
+///
+/// 与路由层的 `UpdateSourceBody` 一一对应：字段的外层 `None` 表示「请求里没提这个
+/// 字段，保持原值」，而不是「把它设成某个默认值」。两个字段分别对应一个可独立
+/// 修改的配置项，任一为 `None` 都不影响另一个。
+pub struct UpdateSourceInput {
+    /// `None` = 不改标题；`Some(None)` / `Some(Some(空白))` = 恢复默认标题；`Some(Some(raw))` = 清洗后写入。
+    pub name: Option<Option<String>>,
+    /// `None` = 不改开关。
+    pub quality_fallback: Option<bool>,
 }
 
 pub struct SourceService {
@@ -150,6 +172,7 @@ impl SourceService {
                 account_status,
                 last_refresh_at,
                 updated_at: s.updated_at,
+                quality_fallback: s.quality_fallback,
             });
         }
         Ok(items)
@@ -185,6 +208,7 @@ impl SourceService {
             name: s.name,
             default_name: source::default_name(&account.upstream_userid),
             name_advisory_chars: SCRIPT_NAME_ADVISORY_CHARS,
+            quality_fallback: s.quality_fallback,
             runtime_token_preview: rt_preview,
             account: SourceAccountInfo {
                 userid: account.upstream_userid,
@@ -198,21 +222,27 @@ impl SourceService {
         })
     }
 
-    /// 修改音源标题。
+    /// 修改音源的可配置项：标题与「音质自动降级」开关。
     ///
-    /// 语义分三档：
-    /// - `None` 或纯空白 => 恢复服务端默认标题（实例前缀 + userid）；
-    /// - 非空但清洗后为空（例如只填了 `*/`）=> 400，而不是静默变成默认名，
-    ///   否则用户会被无声地「改名成功」误导；
+    /// 标题语义分档，且**缺失与 `null` 是两件事**：
+    /// - `name: None` => 标题**原样保留**。这是本端点从「改名端点」变成通用 PATCH 的
+    ///   核心：只改开关的请求绝不能碰到标题，否则用户的自定义标题会被静默重置；
+    /// - `name: Some(None)` 或 `Some(Some(raw))` 且 `raw.trim()` 为空 => 恢复服务端
+    ///   默认标题（实例前缀 + userid）；
+    /// - `name: Some(Some(raw))` 非空但清洗后为空（例如只填了 `*/`）=> 400，而不是
+    ///   静默变成默认名，否则用户会被无声地「改名成功」误导；
     /// - 清洗后超过 [`SCRIPT_NAME_MAX_BYTES`] => 400。
     ///
     /// 写入的是清洗后的值，因此 `Source.name` 永远不含 `*/`；渲染路径再洗一遍
     /// 只是纵深防御，而非唯一防线。注意建议长度（`SCRIPT_NAME_ADVISORY_CHARS`）
     /// 不参与拒绝逻辑，只由列表/详情回显给后台做计数提示。
-    pub async fn update_source_name(
+    ///
+    /// 开关语义：`quality_fallback: None` = 不改；`Some(v)` = 直接写入 `v`。
+    /// 两个字段都是 `None` 时**完全不写盘**——见下面的注释。
+    pub async fn update_source(
         &self,
         source_id: &str,
-        name: Option<String>,
+        input: UpdateSourceInput,
     ) -> Result<UpdateSourceResponse, AppError> {
         let mut s = self
             .source_repo
@@ -221,6 +251,7 @@ impl SourceService {
             .ok_or_else(AppError::source_not_found)?;
 
         // userid 仅用于生成默认名；查不到就降级为空串，`default_name` 会省略尾随空格。
+        // 无论本次改不改标题都要算出它：响应必须始终带一个正确的 `default_name`。
         let userid = match self.account_repo.find_by_id(&s.account_id).await {
             Ok(Some(account)) => account.upstream_userid,
             Ok(None) => String::new(),
@@ -235,10 +266,14 @@ impl SourceService {
         };
         let default_name = source::default_name(&userid);
 
-        let new_name = match name {
-            None => default_name.clone(),
-            Some(ref raw) if raw.trim().is_empty() => default_name.clone(),
-            Some(ref raw) => {
+        // 标题先解析完再落盘：清洗失败要在写入任何字段之前返回 400，绝不允许
+        // 「开关写进去了、标题报 400」这种半成功状态。
+        let new_name = match input.name {
+            // 请求没提标题 => 保持存储值不动，而不是「恢复默认名」。
+            None => s.name.clone(),
+            Some(None) => default_name.clone(),
+            Some(Some(ref raw)) if raw.trim().is_empty() => default_name.clone(),
+            Some(Some(ref raw)) => {
                 let cleaned = sanitize_script_meta(raw);
                 if cleaned.is_empty() {
                     return Err(AppError::source_name_empty());
@@ -253,7 +288,25 @@ impl SourceService {
             }
         };
 
+        // 两个字段都没出现在请求里 => 空操作，**不 upsert**。此时唯一会变的只有
+        // `updated_at`，而界面拿它回答「这个音源刚被改过吗」：空推一次时间戳会把
+        // 一次什么都没做的请求显示成一次修改，也让详情页的「保存成功」看起来成立。
+        // 原样回传当前的 `updated_at`，前端据此不会刷新时间。
+        if input.name.is_none() && input.quality_fallback.is_none() {
+            return Ok(UpdateSourceResponse {
+                ok: true,
+                source_id: s.source_id,
+                name: s.name,
+                default_name,
+                quality_fallback: s.quality_fallback,
+                updated_at: s.updated_at,
+            });
+        }
+
         s.name = new_name;
+        if let Some(value) = input.quality_fallback {
+            s.quality_fallback = value;
+        }
         s.updated_at = source::now_ts();
         self.source_repo.upsert(&s).await?;
 
@@ -262,6 +315,7 @@ impl SourceService {
             source_id: s.source_id,
             name: s.name,
             default_name,
+            quality_fallback: s.quality_fallback,
             updated_at: s.updated_at,
         })
     }
@@ -358,5 +412,343 @@ impl SourceService {
             limit: query.limit,
             items: items.into_iter().map(RuntimeLog::sanitized).collect(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::sync::Mutex;
+
+    use async_trait::async_trait;
+
+    use crate::domain::account::ProviderAccount;
+    use crate::domain::cookie_store::CookieStore;
+    use crate::domain::provider::ProviderKind;
+    use crate::domain::runtime_log::ListRuntimeLogsQuery;
+    use crate::domain::source::Source;
+
+    // ---- 测试替身 ----
+    //
+    // `update_source` 只在「查音源 → 查账号 → 写音源」这三步里活动，没有任何上游
+    // 调用，所以这些测试不需要网络。刻意不用真实 `Fs*` 仓库：那要读写临时目录，
+    // 会把「到底写没写」这个断言埋进文件系统噪声里。
+
+    /// 把 `upsert` 写进来的东西留一份。
+    ///
+    /// 与 `services/runtime.rs` 的同名替身关键差别有两处：`find_by_id` 必须真的
+    /// 返回音源（更新路径是先查后写），`upsert` 必须能被**计数**——「两个字段都
+    /// 没传时不得写盘」这条断言的全部意义就在计数上。
+    struct RecordingSourceRepo {
+        source: Option<Source>,
+        upserts: Mutex<Vec<Source>>,
+    }
+
+    impl RecordingSourceRepo {
+        fn new(source: Source) -> Self {
+            Self {
+                source: Some(source),
+                upserts: Mutex::new(Vec::new()),
+            }
+        }
+
+        /// 已落盘的写入，按发生顺序。
+        fn upserts(&self) -> Vec<Source> {
+            self.upserts.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl SourceRepo for RecordingSourceRepo {
+        async fn find_by_id(&self, _source_id: &str) -> Result<Option<Source>, AppError> {
+            Ok(self.source.clone())
+        }
+
+        async fn find_by_script_token(&self, _token: &str) -> Result<Option<Source>, AppError> {
+            Ok(None)
+        }
+
+        async fn find_by_runtime_token(&self, _token: &str) -> Result<Option<Source>, AppError> {
+            Ok(None)
+        }
+
+        async fn find_by_account_id(&self, _account_id: &str) -> Result<Option<Source>, AppError> {
+            Ok(None)
+        }
+
+        async fn upsert(&self, source: &Source) -> Result<(), AppError> {
+            self.upserts.lock().unwrap().push(source.clone());
+            Ok(())
+        }
+
+        async fn list_all(&self) -> Result<Vec<Source>, AppError> {
+            Ok(self.source.clone().into_iter().collect())
+        }
+    }
+
+    struct FakeAccountRepo {
+        account: Option<ProviderAccount>,
+    }
+
+    #[async_trait]
+    impl AccountRepo for FakeAccountRepo {
+        async fn find_by_id(&self, _account_id: &str) -> Result<Option<ProviderAccount>, AppError> {
+            Ok(self.account.clone())
+        }
+
+        async fn find_by_provider_userid(
+            &self,
+            _provider: ProviderKind,
+            _upstream_userid: &str,
+        ) -> Result<Option<ProviderAccount>, AppError> {
+            Ok(None)
+        }
+
+        async fn upsert(&self, _account: &ProviderAccount) -> Result<(), AppError> {
+            Ok(())
+        }
+    }
+
+    /// 本模块不查日志，只需要一个「查了也不炸」的空实现。
+    #[derive(Default)]
+    struct EmptyLogRepo;
+
+    #[async_trait]
+    impl RuntimeLogRepo for EmptyLogRepo {
+        async fn append(&self, _log: &RuntimeLog) -> Result<(), AppError> {
+            Ok(())
+        }
+
+        async fn list_by_source(
+            &self,
+            _query: &ListRuntimeLogsQuery,
+        ) -> Result<Vec<RuntimeLog>, AppError> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn test_config() -> Arc<Config> {
+        Arc::new(Config {
+            listen_addr: "127.0.0.1:0".into(),
+            public_base_url: "http://127.0.0.1:8787".into(),
+            admin_token: "test-admin-token".into(),
+            // 更新路径不该发出任何上游请求。端口取 1 是有意为之：万一哪天真的发了，
+            // 连不上会比「连上了测试环境」更早、更明显地失败。
+            kugou_api_base_url: "http://127.0.0.1:1".into(),
+            data_dir: "./data".into(),
+            upstream_timeout_ms: 1_000,
+            refresh_interval_secs: 6 * 3600,
+            web_dist_dir: None,
+        })
+    }
+
+    const TEST_USERID: &str = "userid_test";
+
+    fn sample_source() -> Source {
+        Source {
+            source_id: "src_test".into(),
+            account_id: "acc_test".into(),
+            provider: ProviderKind::KugouLite,
+            name: "我的自定义标题".into(),
+            enabled: true,
+            script_token: "script_test".into(),
+            runtime_token: "runtime_test".into(),
+            // 取一个非 0 的小值：`updated_at` 必须能被断言「没被动过」，
+            // 也要能与 `now_ts()` 写出的真实时间戳区分开。
+            created_at: 100,
+            updated_at: 100,
+            quality_fallback: false,
+        }
+    }
+
+    fn sample_account() -> ProviderAccount {
+        ProviderAccount {
+            account_id: "acc_test".into(),
+            provider: ProviderKind::KugouLite,
+            upstream_userid: TEST_USERID.into(),
+            display_name: None,
+            status: AccountStatus::Active,
+            vip_type: 0,
+            vip_active: true,
+            cookies: CookieStore::new(),
+            last_refresh_at: None,
+            last_success_at: None,
+            last_error: None,
+            last_error_code: None,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    fn build_service(source: Source) -> (SourceService, Arc<RecordingSourceRepo>) {
+        let config = test_config();
+        let client = Arc::new(KugouLiteClient::new(&config));
+        let source_repo = Arc::new(RecordingSourceRepo::new(source));
+        let account_repo: Arc<dyn AccountRepo> = Arc::new(FakeAccountRepo {
+            account: Some(sample_account()),
+        });
+        let log_repo: Arc<dyn RuntimeLogRepo> = Arc::new(EmptyLogRepo);
+        let service =
+            SourceService::new(config, client, account_repo, source_repo.clone(), log_repo);
+        (service, source_repo)
+    }
+
+    /// 只改开关时，标题必须**原样保留**。
+    ///
+    /// 这正是把 `name` 从 `Option<String>` 改成 `Option<Option<String>>` 要保住的
+    /// 行为：旧类型下「请求没提标题」与「请求显式 null」不可区分，于是只想拨一下
+    /// 开关的用户会发现自己的自定义标题被静默重置成默认名。
+    #[tokio::test]
+    async fn only_switching_quality_fallback_leaves_title_untouched() {
+        let (service, repo) = build_service(sample_source());
+
+        let resp = service
+            .update_source(
+                "src_test",
+                UpdateSourceInput {
+                    name: None,
+                    quality_fallback: Some(true),
+                },
+            )
+            .await
+            .expect("只改开关必须成功");
+
+        assert_eq!(resp.name, "我的自定义标题", "标题不得被这次请求碰到");
+        assert!(resp.quality_fallback, "回显的必须是写入后的值");
+        assert_eq!(resp.default_name, format!("酷狗概念版 {TEST_USERID}"));
+
+        let writes = repo.upserts();
+        assert_eq!(writes.len(), 1, "有字段变更就必须恰好写一次");
+        assert_eq!(writes[0].name, "我的自定义标题");
+        assert!(writes[0].quality_fallback);
+    }
+
+    /// 空 PATCH（`{}`）是空操作：不得 `upsert`，`updated_at` 不得变。
+    ///
+    /// 界面用 `updated_at` 回答「这个音源刚被改过吗」。空推一次时间戳会把一次
+    /// 什么都没做的请求显示成一次修改。
+    #[tokio::test]
+    async fn empty_patch_does_not_write() {
+        let (service, repo) = build_service(sample_source());
+
+        let resp = service
+            .update_source(
+                "src_test",
+                UpdateSourceInput {
+                    name: None,
+                    quality_fallback: None,
+                },
+            )
+            .await
+            .expect("空 PATCH 是合法请求");
+
+        assert!(
+            repo.upserts().is_empty(),
+            "没有任何字段变更时不得写盘，否则会空推 updated_at"
+        );
+        assert_eq!(resp.updated_at, 100, "updated_at 必须原样回传");
+        assert_eq!(resp.name, "我的自定义标题");
+        assert!(!resp.quality_fallback);
+    }
+
+    /// 显式 `null` 才是「恢复默认标题」——且恢复之后 `updated_at` 要真的动。
+    #[tokio::test]
+    async fn explicit_null_name_restores_default() {
+        let (service, repo) = build_service(sample_source());
+
+        let resp = service
+            .update_source(
+                "src_test",
+                UpdateSourceInput {
+                    name: Some(None),
+                    quality_fallback: None,
+                },
+            )
+            .await
+            .expect("恢复默认名必须成功");
+
+        let expected = format!("酷狗概念版 {TEST_USERID}");
+        assert_eq!(resp.name, expected);
+        assert_eq!(resp.default_name, expected);
+        assert!(resp.updated_at > 100, "真的改了东西，时间戳必须往后走");
+
+        let writes = repo.upserts();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].name, expected);
+        assert!(
+            !writes[0].quality_fallback,
+            "没提开关就必须保持存储值（false），不能被顺手重置"
+        );
+    }
+
+    /// 两个字段同时提供时在**一次**写入里落地，不产生两次落盘。
+    #[tokio::test]
+    async fn title_and_switch_are_applied_in_one_write() {
+        let source = Source {
+            quality_fallback: true,
+            ..sample_source()
+        };
+        let (service, repo) = build_service(source);
+
+        let resp = service
+            .update_source(
+                "src_test",
+                UpdateSourceInput {
+                    name: Some(Some("新标题".into())),
+                    quality_fallback: Some(false),
+                },
+            )
+            .await
+            .expect("同时改两项必须成功");
+
+        assert_eq!(resp.name, "新标题");
+        assert!(!resp.quality_fallback);
+
+        let writes = repo.upserts();
+        assert_eq!(writes.len(), 1, "两项改动必须合并为一次 upsert");
+        assert_eq!(writes[0].name, "新标题");
+        assert!(!writes[0].quality_fallback);
+    }
+
+    /// 空白串走的是「恢复默认名」这一档，与改动前的语义一致——它不是 400，
+    /// 也不是把空串写进 `Source.name`。
+    #[tokio::test]
+    async fn blank_name_restores_default() {
+        let (service, repo) = build_service(sample_source());
+
+        let resp = service
+            .update_source(
+                "src_test",
+                UpdateSourceInput {
+                    name: Some(Some("   ".into())),
+                    quality_fallback: None,
+                },
+            )
+            .await
+            .expect("纯空白等同恢复默认名");
+
+        let expected = format!("酷狗概念版 {TEST_USERID}");
+        assert_eq!(resp.name, expected);
+        assert_eq!(repo.upserts().len(), 1);
+        assert_eq!(repo.upserts()[0].name, expected);
+    }
+
+    /// 新增字段必须出现在列表与详情响应里：界面据此渲染开关初态，
+    /// 少一个字段会让开关永远显示为关。
+    #[tokio::test]
+    async fn list_and_detail_echo_quality_fallback() {
+        let source = Source {
+            quality_fallback: true,
+            ..sample_source()
+        };
+        let (service, _repo) = build_service(source);
+
+        let list = service.list_sources().await.expect("list");
+        assert_eq!(list.len(), 1);
+        assert!(list[0].quality_fallback, "列表必须回显开关当前值");
+
+        let detail = service.get_source("src_test").await.expect("detail");
+        assert!(detail.quality_fallback, "详情必须回显开关当前值");
     }
 }
