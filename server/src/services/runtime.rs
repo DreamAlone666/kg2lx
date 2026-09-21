@@ -661,6 +661,10 @@ impl RuntimeService {
             upstream_fail_process: input.observation.and_then(|o| o.fail_process.clone()),
             upstream_ext_name: input.observation.and_then(|o| o.ext_name.clone()),
             upstream_file_size: input.observation.and_then(|o| o.file_size),
+            // 码率与时长同样只是「上游说过什么」。码率在无损两档恒为 0（那是上游没报，
+            // 不是 0 bps），因此这里不做任何归一化——0 照样落成 0，回退算法在展示侧。
+            upstream_bit_rate: input.observation.and_then(|o| o.bit_rate),
+            upstream_time_length: input.observation.and_then(|o| o.time_length),
             upstream_endpoint: input.upstream_endpoint.into(),
             stage: input.stage,
             refresh_attempted: input.refresh_attempted,
@@ -1032,12 +1036,18 @@ mod tests {
                 fail_process: Some(vec!["pkg".into(), "buy".into()]),
                 ext_name: None,
                 file_size: None,
+                bit_rate: None,
+                time_length: None,
             },
         }
     }
 
     /// 成功形状。观测里带上 `ext_name` / `file_size`——它们正是「实际拿到的是不是
     /// 所要档位」的自证材料（`quality=high` 会静默回落到 128k mp3 却仍是 `status:1`）。
+    ///
+    /// 码率与时长这次也一并造出来（mp3 320 的形状：精确的 `320000` 加 180 秒），
+    /// 因为落盘映射的每一行都是穷举字段的——不造出来，`append_log` 里少映射一个字段
+    /// 不会有任何一条测试变红（映射成 `None` 与「本来就没有」长得一样）。
     fn success_result(url: &str) -> MusicUrlResult {
         MusicUrlResult {
             url: url.into(),
@@ -1050,6 +1060,8 @@ mod tests {
                 fail_process: None,
                 ext_name: Some("mp3".into()),
                 file_size: Some(9_412_859),
+                bit_rate: Some(320_000),
+                time_length: Some(180),
             },
         }
     }
@@ -1068,6 +1080,8 @@ mod tests {
                 fail_process: None,
                 ext_name: None,
                 file_size: None,
+                bit_rate: None,
+                time_length: None,
             },
         }
     }
@@ -1283,6 +1297,8 @@ mod tests {
         assert_eq!(row.upstream_fail_process, None);
         assert_eq!(row.upstream_ext_name, None);
         assert_eq!(row.upstream_file_size, None);
+        assert_eq!(row.upstream_bit_rate, None);
+        assert_eq!(row.upstream_time_length, None);
         assert_eq!(row.upstream_quality, None);
         assert_eq!(row.reported_types, None);
     }
@@ -1617,6 +1633,18 @@ mod tests {
         assert_ne!(
             first.upstream_quality, second.upstream_quality,
             "两行记同一个 upstream_quality 就意味着降级在最该看得见的列上消失了"
+        );
+
+        // 实测到的格式 / 字节 / 码率 / 时长必须从观测一路走到落盘行。
+        // `bit_rate` 与 `time_length` 是本轮新增的两个，少映射一个都不会有别的测试
+        // 变红——`append_log` 写 `None` 与「上游没说」在断言层面长得一样。
+        assert_eq!(second.upstream_ext_name.as_deref(), Some("mp3"));
+        assert_eq!(second.upstream_file_size, Some(9_412_859));
+        assert_eq!(second.upstream_bit_rate, Some(320_000));
+        assert_eq!(second.upstream_time_length, Some(180));
+        assert_eq!(
+            first.upstream_bit_rate, None,
+            "被拒的那一档没有文件，就没有码率可谈：不许写成 0"
         );
 
         // 阶梯位置不得借用 retry_count——那一列另有含义（刷新登录后重试同一档）。

@@ -159,6 +159,26 @@ pub struct RuntimeLog {
     /// 的自证据（请求 `high` 却拿到与 `quality=128` 完全相同的 `file_size`，就是静默回落）。
     #[serde(default)]
     pub upstream_file_size: Option<i64>,
+    /// 上游自报的码率（bps）。**两个无损档恒为 0**——0 是「上游没报」而不是「0 bps」。
+    ///
+    /// 为什么要两个字段而不是一个：展示侧的码率取「本字段 > 0 时用它，否则用
+    /// `upstream_file_size × 8 ÷ upstream_time_length`」。
+    /// 实测同一首歌四档（本机带账号 cookie）：mp3 两档 `bitRate` 是精确的 128000 / 320000，
+    /// 而 `flac` / `high` 两档**恒为 0**；同四档的 `fileSize × 8 ÷ timeLength` 则全有值，
+    /// 约为 128 / 321 / 1038 / 1747 kbps，分离度足够区分 16bit 与 24bit。
+    ///
+    /// 于是两个字段各承担一半：`upstream_bit_rate` 是 mp3 档上更可信的精确值，
+    /// `upstream_time_length` 只是那个回退公式的除数。**缺了时长就没有任何办法从已落盘的
+    /// 数据里算出无损档的码率**，而 `ext_name` 分不出 `flac` 与 `flac24bit`（两者都是
+    /// `flac`），只靠格式会漏掉「24bit 静默掉到 16bit」这一整类回落。
+    ///
+    /// 落盘层只陈述事实：这里**不做**码率回退、也不判断「本次返回是否低于所请求档位」。
+    /// 回退算法属于展示侧（web/src/lib/domain/format.ts 的 effectiveBitRate）。
+    #[serde(default)]
+    pub upstream_bit_rate: Option<i64>,
+    /// 上游返回的音频时长（秒）。单独看没有诊断价值，是上面那条回退公式的除数。
+    #[serde(default)]
+    pub upstream_time_length: Option<i64>,
     pub upstream_endpoint: String,
     #[serde(default = "default_runtime_log_stage")]
     pub stage: RuntimeLogStage,
@@ -210,7 +230,7 @@ mod tests {
     use super::*;
 
     /// 本次改动**之前**落盘的 jsonl 行没有 `upstream_quality` 这个键，也没有后来加进来
-    /// 的上游观测 / 本次档位 / 关联 id 那九个。
+    /// 的上游观测 / 本次档位 / 关联 id 那一批。
     ///
     /// 缺了 `#[serde(default)]`，它们会整行反序列化失败——那意味着 logs 目录里现存的
     /// 全部历史行一行都读不出来，日志面板直接空掉（而不是少一个字段）。后来每加一个字段
@@ -246,7 +266,7 @@ mod tests {
         );
         assert_eq!(log.requested_quality, "flac", "其余字段不受影响");
 
-        // 九个新字段在**读**侧也一律是 None / 0：老行根本没有这些键，而
+        // 这批新字段在**读**侧也一律是 None / 0：老行根本没有这些键，而
         // `Option` 的缺省必须是「没记录」而不是任何看起来像事实的值。
         assert_eq!(
             (
@@ -259,9 +279,13 @@ mod tests {
                 log.upstream_fail_process,
                 log.upstream_ext_name,
                 log.upstream_file_size,
+                log.upstream_bit_rate,
+                log.upstream_time_length,
             ),
-            (None, 0, None, None, None, None, None, None, None),
-            "老行读出的九个新字段必须全部是「未记录」"
+            (
+                None, 0, None, None, None, None, None, None, None, None, None
+            ),
+            "老行读出的这批新字段必须全部是「未记录」"
         );
     }
 
@@ -325,6 +349,8 @@ mod tests {
             upstream_fail_process: Some(Vec::new()),
             upstream_ext_name: Some("flac".into()),
             upstream_file_size: Some(9_412_859),
+            upstream_bit_rate: Some(320_000),
+            upstream_time_length: Some(180),
             upstream_endpoint: "song/url".into(),
             stage: RuntimeLogStage::FetchMusicUrl,
             refresh_attempted: false,
@@ -355,6 +381,46 @@ mod tests {
         assert_eq!(back.upstream_priv_status, Some(1));
         assert_eq!(back.upstream_ext_name.as_deref(), Some("flac"));
         assert_eq!(back.upstream_file_size, Some(9_412_859));
+        assert_eq!(back.upstream_bit_rate, Some(320_000));
+        assert_eq!(back.upstream_time_length, Some(180));
+    }
+
+    /// 无损档的 `bitRate` 是 `0`，落盘必须**如实**存成 `Some(0)`，不能塌成 `None`。
+    ///
+    /// fixture 是实测那一行（本机带账号 cookie 请求 `quality=flac`）：`extName: "flac"`
+    /// 配 `bitRate: 0`。两条断言各钉一个方向——json 里那个键要真的写成 `0`（不是被
+    /// skip、也不是被写成 null），读回来要是 `Some(0)`。
+    ///
+    /// 为什么值得单独钉：`Some(0)` 与 `None` 在这里含义相反（「上游报了个 0」vs
+    /// 「上游没说」），混同之后展示侧就分不出「这份观测里码率不可用」与「这份观测里
+    /// 压根没有码率这一项」。**本层只陈述事实**：这里不断言任何算出来的码率，
+    /// `file_size × 8 ÷ time_length` 那条回退属于展示侧（web 的 effectiveBitRate），
+    /// 在服务端断言它等于把一个展示选择钉进落盘契约里。
+    #[test]
+    fn lossless_zero_bit_rate_is_stored_verbatim() {
+        let row = r#"{
+			"log_id":"log_flac","source_id":"src_x","account_id":"acc_x",
+			"provider":"kugou_lite","action":"musicUrl",
+			"track_title":null,"artist_name":null,"album_name":null,
+			"request_hash":"H","album_audio_id":null,"requested_quality":"flac",
+			"upstream_endpoint":"song/url","stage":"fetch_music_url",
+			"refresh_attempted":false,"retry_count":0,"ok":true,"status_code":200,
+			"error_code":null,"latency_ms":86,"error":null,"created_at":1690000000,
+			"upstream_status":1,"upstream_ext_name":"flac","upstream_file_size":17525993,
+			"upstream_bit_rate":0,"upstream_time_length":135
+		}"#;
+
+        let log: RuntimeLog = serde_json::from_str(row).expect("落盘行必须能读入");
+        assert_eq!(log.upstream_bit_rate, Some(0), "上游报了 0 就得读成 0");
+        assert_eq!(log.upstream_time_length, Some(135));
+        assert_eq!(log.upstream_ext_name.as_deref(), Some("flac"));
+
+        let json = serde_json::to_string(&log).expect("serialize");
+        assert!(
+            json.contains(r#""upstream_bit_rate":0"#),
+            "0 必须原样写回 json，不能被折叠成 null 或被 skip：实际 json：{json}"
+        );
+        assert!(json.contains(r#""upstream_time_length":135"#));
     }
 
     /// **`None` 必须序列化成 `null`，不能把键整个省掉。**
@@ -389,6 +455,8 @@ mod tests {
             upstream_fail_process: None,
             upstream_ext_name: None,
             upstream_file_size: None,
+            upstream_bit_rate: None,
+            upstream_time_length: None,
             upstream_endpoint: "".into(),
             stage: RuntimeLogStage::Precheck,
             refresh_attempted: false,
@@ -408,6 +476,8 @@ mod tests {
             "upstream_fail_process",
             "upstream_ext_name",
             "upstream_file_size",
+            "upstream_bit_rate",
+            "upstream_time_length",
             "attempted_quality",
             "client_request_id",
             "reported_types",

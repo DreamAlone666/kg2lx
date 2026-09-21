@@ -80,3 +80,63 @@ export function formatCountdown(seconds: number): string {
 	const rest = total % 60;
 	return `${minutes}:${rest.toString().padStart(2, '0')}`;
 }
+
+/**
+ * 实测码率（bps）：优先上游自报的 `bitRate`，为 0 时按 `fileSize × 8 ÷ timeLength` 回退。
+ *
+ * **为什么必须有这条回退**（实测，同一首歌四档）：
+ *
+ * - 上游的 `bitRate` 对 mp3 两档是精确的（`128000` / `320000`），而对 `flac` /
+ *   `high` 两个无损档**恒为 0**。0 在那里是「上游没报这个值」，不是「0 bps」，
+ *   所以它单独用不了。
+ * - 同四档的 `fileSize × 8 ÷ timeLength`（bytes × 8 ÷ 秒 = bps）四档全有值，约为
+ *   128 / 321 / 1038 / 1747 kbps，分离度足够看出「24bit 静默掉到 16bit」。
+ * - `extName` 分不出这两档（`flac` 与 `flac24bit` 都返回 `flac`），只靠格式会漏掉
+ *   这一整类回落——这是必须带实测码率的原因。
+ *
+ * 回退值与 `bitRate` **量纲相同、语义相同**，调用方不必知道拿到的是哪一种。
+ * 两者都不可用（没有时长、时长为 0 或负、算不出有限值）时返回 `null`，由调用方决定
+ * 不显示——返回 0 或 NaN 会一路渲染成 `0kbps` / `NaNkbps` 这种界面上的假事实。
+ *
+ * 该文件保持零依赖：进出都是标量，刻意不 import `RuntimeLogListItem`——日志行的字段
+ * 形状变化不该把展示格式化拖下水。
+ */
+export function effectiveBitRate(
+	bitRate: number | null,
+	fileSize: number | null,
+	timeLength: number | null
+): number | null {
+	if (bitRate !== null && Number.isFinite(bitRate) && bitRate > 0) return bitRate;
+	if (fileSize === null || timeLength === null) return null;
+	// NaN 参与任何比较都是 false，所以 `<= 0` 拦不住它，必须显式判有限。
+	if (!Number.isFinite(timeLength) || timeLength <= 0) return null;
+	const derived = (fileSize * 8) / timeLength;
+	return Number.isFinite(derived) && derived > 0 ? derived : null;
+}
+
+/**
+ * 码率（bps）→ `1747kbps` 形态。
+ *
+ * **取整规则：向下取整到整千位（截断）**，只有这一条规则、四档同一个方向。
+ * 实测四档的回退值经本函数换算：
+ *
+ * | bps | 本函数输出 |
+ * |---|---|
+ * | 128 538 | `128kbps` |
+ * | 321 296 | `321kbps` |
+ * | 1 038 577 | `1038kbps` |
+ * | 1 746 914 | `1746kbps` |
+ *
+ * **为什么不四舍五入**：实测时人工记下的四档读数是 128 / 321 / 1038 / 1747，截断与
+ * 其中三档逐字一致，四舍五入只对上两档（它会把第一档读成 129、第三档读成 1039）。
+ * 同一份数据在「实测记录」与「界面」上呈现两个不同的数字，正是本仓反复禁止的口径
+ * 分叉——而截断付出的代价只是系统性低估不到 1 kbps。
+ *
+ * **这条不到 1 kbps 的差为什么可以接受**：这个值要回答的问题是「拿到的是 16bit 的
+ * ~1038 还是 24bit 的 ~1747」，两档相差 700+ kbps，取整方向不会改变任何结论。
+ * （mp3 两档走的是精确的 `bitRate`，128000 / 320000 在两种规则下都是 128 / 320，
+ * 不受这里的影响。）
+ */
+export function formatBitRate(bps: number): string {
+	return `${Math.floor(bps / 1000)}kbps`;
+}

@@ -269,6 +269,24 @@ export type RuntimeLogListItem = {
    */
   upstream_file_size: number | null;
   /**
+   * 上游自报的码率（bps）。**两个无损档恒为 0**（实测 flac / high 都是 `0`，
+   * 而 mp3 两档是精确的 `128000` / `320000`），所以 0 是「上游没报这个值」，
+   * 不是「0 kbps」——展示时要用 `upstream_file_size × 8 ÷ upstream_time_length`
+   * 回退（见 lib/domain/format.ts 的 effectiveBitRate）。
+   *
+   * 与 `upstream_file_size` 一样是「上次观测」而不是「这次请求」：它由服务端在
+   * 写那一行日志时从上游响应里摘下来，前端只读、不推导。
+   */
+  upstream_bit_rate: number | null;
+  /**
+   * 上游返回的音频时长（秒）。单独看没有诊断价值，它存在的唯一理由是给上面那条
+   * 回退公式当除数：`file_size × 8 ÷ time_length` 实测四档全有值且分离度足够
+   * （约 128 / 321 / 1038 / 1747 kbps）。
+   *
+   * 这个字段本轮才落盘，因此更早的行读出来是 null，回退也就退不了——那时只显示格式。
+   */
+  upstream_time_length: number | null;
+  /**
    * 本次入站 LX 请求的关联 id：一次请求一个 id，同一请求的多次尝试共用它。
    *
    * 用途是把「同一次请求的第 N 档」与「两次独立请求」区分开。上文两处说的

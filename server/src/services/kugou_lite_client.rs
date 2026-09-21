@@ -198,6 +198,20 @@ pub struct UpstreamObservation {
     /// 实际返回的字节数。与 `ext_name` 配合可以校验静默降级（回落的 128k 与
     /// 直接请求 128k 的 `fileSize` 完全相同）。
     pub file_size: Option<i64>,
+    /// 上游自报的码率（bps）。
+    ///
+    /// **只有 mp3 两档能用**：同一首歌四档实测里 128 / 320 分别是精确的 `128000` /
+    /// `320000`，而 `flac` / `high` 两个无损档**恒为 0**——0 在这里是「上游没报这个
+    /// 值」，不是「0 bps」。因此它不能单独支撑展示，展示侧要按 `file_size × 8 ÷
+    /// time_length` 回退（见 domain/runtime_log.rs 上 `upstream_bit_rate` 的说明）。
+    /// 落盘的理由正是另一面：mp3 两档上它是**精确值**，比回退算出来的近似值更可信。
+    pub bit_rate: Option<i64>,
+    /// 音频时长（秒）。
+    ///
+    /// **存在的唯一理由是给上面那个回退算法当除数**：`file_size × 8 ÷ time_length`
+    /// 实测四档全有值且分离度足够（约 128 / 321 / 1038 / 1747 kbps），是无损档唯一
+    /// 可用的码率来源。它单独看没有诊断价值，不要拿它做别的判断。
+    pub time_length: Option<i64>,
 }
 
 /// `fail_process` 落盘前保留的最大条目数。
@@ -235,6 +249,14 @@ struct SongUrlResponse {
     ext_name: Option<Value>,
     #[serde(default, alias = "fileSize")]
     file_size: Option<Value>,
+    // `bitRate` / `timeLength` 与上面几个同类：只作记录、类型必须宽松（理由见
+    // 本结构体顶上那段）。注意上游对两个无损档把 `bitRate` 写成 0，
+    // 那是「没说」而不是「0 bps」——窄化后 `Some(0)` 与 `None` 仍要分开落盘，
+    // 由展示侧决定 0 要不要走回退算法。
+    #[serde(default, alias = "bitRate")]
+    bit_rate: Option<Value>,
+    #[serde(default, alias = "timeLength")]
+    time_length: Option<Value>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -259,7 +281,7 @@ impl StringOrStrings {
 struct SongUrlData {
     #[serde(default)]
     url: Option<StringOrStrings>,
-    /// 与 `SongUrlResponse` 上同名的五个字段同理：只作记录，类型必须宽松。
+    /// 与 `SongUrlResponse` 上同名的七个字段同理：只作记录，类型必须宽松。
     #[serde(default)]
     status: Option<Value>,
     #[serde(default, alias = "privStatus")]
@@ -270,6 +292,10 @@ struct SongUrlData {
     ext_name: Option<Value>,
     #[serde(default, alias = "fileSize")]
     file_size: Option<Value>,
+    #[serde(default, alias = "bitRate")]
+    bit_rate: Option<Value>,
+    #[serde(default, alias = "timeLength")]
+    time_length: Option<Value>,
 }
 
 /// 观测字段的窄化：认不出的形状读成 `None`（「上游没说」），**不猜值**。
@@ -323,6 +349,13 @@ impl SongUrlResponse {
                 .or_else(|| observed_string(data.and_then(|d| d.ext_name.as_ref()))),
             file_size: observed_i64(self.file_size.as_ref())
                 .or_else(|| observed_i64(data.and_then(|d| d.file_size.as_ref()))),
+            // 这两个走同一套「顶层优先、`data` 兜底」。注意 `observed_i64` 只认 JSON
+            // 数字，所以上游把码率写成字符串时读出来是 `None`（不猜值）——这是本仓
+            // 既有取舍，不因为它而放宽。
+            bit_rate: observed_i64(self.bit_rate.as_ref())
+                .or_else(|| observed_i64(data.and_then(|d| d.bit_rate.as_ref()))),
+            time_length: observed_i64(self.time_length.as_ref())
+                .or_else(|| observed_i64(data.and_then(|d| d.time_length.as_ref()))),
         }
     }
 
@@ -912,6 +945,8 @@ mod tests {
                 fail_process: Some(vec!["pkg".to_string(), "buy".to_string()]),
                 ext_name: None,
                 file_size: None,
+                bit_rate: None,
+                time_length: None,
             }
         );
         assert!(upstream_refused_quality(parsed.observation().status));
@@ -942,10 +977,15 @@ mod tests {
 
     /// 形态三：成功。`extName` / `fileSize` 是事后判断"实际拿到的是不是所要档位"
     /// 的唯一材料（`quality=high` 会静默回落到 128k mp3 且 `status` 仍是 1）。
+    ///
+    /// 这里照实落的是**无损档**的形状：`bitRate` 是 `0`。断言写 `Some(0)` 而不是
+    /// `None` 或「有值」——0 是上游明确报出来的一个数，读成「没说」就等于把
+    /// 「上游报了 0」和「上游没报」混成一件事，而展示侧正是靠这个区分走不走
+    /// `fileSize × 8 ÷ timeLength` 的回退。
     #[test]
     fn parses_success() {
         let parsed = parse(
-            r#"{"status":1,"data":{},"priv_status":1,"extName":"flac","fileSize":29183562,"timeLength":180,"fileName":"song.flac","url":"http://example.invalid/a.flac"}"#,
+            r#"{"status":1,"data":{},"priv_status":1,"extName":"flac","fileSize":29183562,"bitRate":0,"timeLength":180,"fileName":"song.flac","url":"http://example.invalid/a.flac"}"#,
         );
         let observation = parsed.observation();
 
@@ -957,6 +997,8 @@ mod tests {
                 fail_process: None,
                 ext_name: Some("flac".to_string()),
                 file_size: Some(29183562),
+                bit_rate: Some(0),
+                time_length: Some(180),
             }
         );
         assert!(!upstream_refused_quality(observation.status));
@@ -964,10 +1006,14 @@ mod tests {
 
     /// 上游把值放在顶层还是 `data` 下并不稳定——`play_url` 就是为此写了两层。
     /// 观测字段必须同样两层都认，否则换一种包裹方式落盘的就是一片空白。
+    ///
+    /// 本轮新增的两个字段也走这条路径：这里的 `bitRate` 刻意取一个非 0 的精确值
+    /// （mp3 320 的形状，与上一条测试的无损 0 配成两种取值），好让「读出来了」
+    /// 与「读成 0 了」不会互相掩盖。
     #[test]
     fn parses_observation_nested_under_data() {
         let parsed = parse(
-            r#"{"data":{"status":2,"priv_status":0,"fail_process":["buy"],"extName":"mp3","fileSize":1234}}"#,
+            r#"{"data":{"status":2,"priv_status":0,"fail_process":["buy"],"extName":"mp3","fileSize":1234,"bitRate":320000,"timeLength":135}}"#,
         );
 
         assert_eq!(
@@ -978,8 +1024,31 @@ mod tests {
                 fail_process: Some(vec!["buy".to_string()]),
                 ext_name: Some("mp3".to_string()),
                 file_size: Some(1234),
+                bit_rate: Some(320000),
+                time_length: Some(135),
             }
         );
+    }
+
+    /// 顶层优先这条规则对新字段同样成立：两层都给了值时取顶层的那个。
+    ///
+    /// 注意这里是**逐字段**择一（每个字段各自 `顶层.or_else(data)`），不是整层择一：
+    /// `data` 里的值只在顶层**那个字段**缺失时才被用到。与 play_url 的
+    /// `an_empty_data_url_does_not_mask_the_top_level_one` 是同一条宽容度的两个面。
+    #[test]
+    fn top_level_observation_wins_over_nested_for_bit_rate() {
+        let parsed = parse(
+            r#"{"data":{"bitRate":128000,"timeLength":135},"bitRate":1746914,"timeLength":135}"#,
+        );
+        let observation = parsed.observation();
+
+        assert_eq!(observation.bit_rate, Some(1746914), "顶层有值就用顶层的");
+        assert_eq!(observation.time_length, Some(135));
+
+        // 反过来（顶层没给）才轮到 `data`：否则上面那条断言可能只是「两层都读到了
+        // 顶层」的巧合，而不是真的走了 or_else 的兜底分支。
+        let parsed = parse(r#"{"data":{"bitRate":128000},"status":1}"#);
+        assert_eq!(parsed.observation().bit_rate, Some(128000));
     }
 
     /// 形状完全不符合预期时也不能让解析失败：观测是"记录"，不该把一次本来能播的
@@ -1049,7 +1118,7 @@ mod tests {
     #[test]
     fn unreadable_observation_shapes_do_not_fail_the_request() {
         let parsed = parse(
-            r#"{"status":1,"data":{},"extName":"mp3","fileSize":"9412859","url":"http://x/y.mp3"}"#,
+            r#"{"status":1,"data":{},"extName":"mp3","fileSize":"9412859","bitRate":"320000","timeLength":"135","url":"http://x/y.mp3"}"#,
         );
         let observation = parsed.observation();
         assert_eq!(observation.status, Some(1), "认得出的字段照常读出来");
@@ -1057,6 +1126,14 @@ mod tests {
         assert_eq!(
             observation.file_size, None,
             "数字字符串不算数字：这里不猜值"
+        );
+        // 新增的两个字段共用 `observed_i64`，因此同样拒绝数字字符串。这条不是顺带
+        // 复述：码率会被展示侧拿去与「所请求档位」对照，猜错一个数等于在一个凭空
+        // 捏出来的值上做判断，比留空更糟。
+        assert_eq!(observation.bit_rate, None, "码率的数字字符串同样不算数字");
+        assert_eq!(
+            observation.time_length, None,
+            "时长的数字字符串同样不算数字"
         );
         assert_eq!(
             parsed.play_url().as_deref(),

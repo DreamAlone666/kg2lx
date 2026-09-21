@@ -4,7 +4,9 @@
 	import { sourceLogsController } from '$lib/features/source-logs/controller.svelte';
 	import { usePageVisible } from '$lib/hooks/use-page-visible.svelte';
 	import {
+		effectiveBitRate,
 		errorCodeLabel,
+		formatBitRate,
 		formatClockTime,
 		formatDateTime,
 		formatLatency,
@@ -117,6 +119,20 @@ const TH = 'px-4 py-2.5 font-medium shadow-[inset_0_-1px_0_0_var(--color-border)
 	}
 
 	/**
+	 * 本文件里那些原生 `title=`（下面 latencyTitle / upstreamTitle / qualityTitle /
+	 * failureDetail / fallbackTitle，以及模板里 hash 与 album_audio_id 两处，共约九处）
+	 * **本轮刻意不换成 tooltip 组件**，只加了这一句说明，行为一个字没动。
+	 *
+	 * 依据（实测）：日志表格 20 行，表内当前可聚焦元素 **0 个**。给这九处各挂一个
+	 * tooltip trigger，tab 停会涨到 60~120 个，键盘导航直接报废；而不加 `tabindex`
+	 * 的话键盘用户照样拿不到内容，等于白换。两条路都不通，所以维持原生 `title`。
+	 *
+	 * 代价是清楚的：原生 `title` 只能放纯文本，排不了版。这些字段的结构化重排（多行、
+	 * 对齐、可复制）推迟到「日志行详情视图」那一轮——那才是它真正的落点（每行一个详情
+	 * 按钮 → 弹出该行全部结构化字段），而不是往表格里塞几十个 tab 停。
+	 */
+
+	/**
 	 * 耗时列：0 不是「很快」，而是「没测到」。
 	 *
 	 * 服务端在「失败发生在发出请求之前」的各条路径（预检、ensure_dfid 失败、refresh_login
@@ -192,10 +208,12 @@ const TH = 'px-4 py-2.5 font-medium shadow-[inset_0_-1px_0_0_var(--color-border)
 	 * - `attempted_quality` 只在**与 requested_quality 不同**时才出现。降级后的那一行里
 	 *   requested_quality 仍是用户当初要的档位（这是事实，不该改写），要看出「本次要的
 	 *   是另一档」只能靠它；两者相等时它等于把第一段再说一遍，故跳过。
-	 * - `upstream_ext_name` / `upstream_file_size` 只在**上游真的返回了一个文件**时才出现，
-	 *   而它们是唯一能看出静默回落的地方：上游对没有该声部的歌仍然返回成功，只是把 128k
-	 *   的 mp3 给你（文件大小与 `quality=128` 完全相同）。不落这两个字段，界面只能显示
-	 *   一个「成功」。
+	 * - `upstream_ext_name` / `upstream_file_size` / `upstream_bit_rate` /
+	 *   `upstream_time_length` 只在**上游真的返回了一个文件**时才出现，而它们是唯一能看出
+	 *   静默回落的地方：上游对没有该声部的歌仍然返回成功，只是把 128k 的 mp3 给你（文件
+	 *   大小与 `quality=128` 完全相同）。不落这几个字段，界面只能显示一个「成功」。
+	 *   时长与实测码率一并拼进来，是因为「拿到的是 16bit 还是 24bit」只有码率说得清
+	 *   ——`extName` 对两者都返回 `flac`。
 	 * - `reported_types` 只在客户端上报过时才出现，原样呈现供比对。它是一个**记录**：
 	 *   用来对照「客户端以为有什么」与「上游实际给了什么」，界面上任何分支都不得读它。
 	 *
@@ -219,13 +237,28 @@ const TH = 'px-4 py-2.5 font-medium shadow-[inset_0_-1px_0_0_var(--color-border)
 		}
 		if (log.upstream_quality) parts.push(`向酷狗请求的质量参数：${log.upstream_quality}`);
 
-		// 判据是「字段有没有值」而不是「本行 ok 是否为真」：这两个字段只在上游真的返回了
+		// 判据是「字段有没有值」而不是「本行 ok 是否为真」：这几个字段只在上游真的返回了
 		// 一个文件时才落盘，按字段取值呈现就不会出现「界面断言成功、字段却没有值」的分叉。
-		if (log.upstream_ext_name !== null || log.upstream_file_size !== null) {
-			const ext = log.upstream_ext_name ?? '格式未记录';
-			const size =
-				log.upstream_file_size !== null ? `${log.upstream_file_size} 字节` : '大小未记录';
-			parts.push(`上游实际返回：${ext}，${size}`);
+		const observed =
+			log.upstream_ext_name !== null ||
+			log.upstream_file_size !== null ||
+			log.upstream_bit_rate !== null ||
+			log.upstream_time_length !== null;
+		if (observed) {
+			const facts = [
+				log.upstream_ext_name ?? '格式未记录',
+				log.upstream_file_size !== null ? `${log.upstream_file_size} 字节` : '大小未记录'
+			];
+			if (log.upstream_time_length !== null) {
+				facts.push(`时长 ${log.upstream_time_length} 秒`);
+			}
+			const rate = effectiveBitRate(
+				log.upstream_bit_rate,
+				log.upstream_file_size,
+				log.upstream_time_length
+			);
+			if (rate !== null) facts.push(`实测码率 ${formatBitRate(rate)}`);
+			parts.push(`上游实际返回：${facts.join('，')}`);
 		}
 
 		if (log.reported_types !== null) {
@@ -233,6 +266,36 @@ const TH = 'px-4 py-2.5 font-medium shadow-[inset_0_-1px_0_0_var(--color-border)
 		}
 
 		return parts.join('｜');
+	}
+
+	/**
+	 * 音质胶囊下面那一行：**上游实际返回了什么**，形如 `实际 flac · 1747kbps`。
+	 *
+	 * 为什么要单独占一行：胶囊上是 `requested_quality`，那是**下游请求的档位**；而上游会
+	 * 静默返回不匹配的档位——实测请求 `flac24bit` 却可能只给 16bit 的 flac，`status` 仍是
+	 * 1。此前要判断这种情况发生得频不频繁，只能人肉重放上游请求。
+	 *
+	 * 缺哪段省哪段：有观测但算不出码率（更早的行没有 `upstream_time_length`，回退退不了）
+	 * 就只显示格式；反过来只有码率就只显示码率；两段都没有则返回 `null`，整行不出现。
+	 * 宁可少一行，也不渲染一行「实际 未记录」——那是占着位置却零信息的文本（同一个教训
+	 * 见状态列的 ERR 胶囊与折叠掉的空「上游」列）。
+	 *
+	 * 码率走 `effectiveBitRate`（`bitRate` 优先，两个无损档 `bitRate` 恒为 0 时代之以
+	 * `fileSize × 8 ÷ timeLength`）。那张实测表与取整规则都在 lib/domain/format.ts，
+	 * **不在本组件里另写一遍**：口径只有一份。
+	 */
+	function actualReturnText(log: RuntimeLogListItem): string | null {
+		const ext = log.upstream_ext_name;
+		const rate = effectiveBitRate(
+			log.upstream_bit_rate,
+			log.upstream_file_size,
+			log.upstream_time_length
+		);
+		if (!ext && rate === null) return null;
+		const facts: string[] = [];
+		if (ext) facts.push(ext);
+		if (rate !== null) facts.push(formatBitRate(rate));
+		return `实际 ${facts.join(' · ')}`;
 	}
 
 	/**
@@ -390,6 +453,7 @@ const TH = 'px-4 py-2.5 font-medium shadow-[inset_0_-1px_0_0_var(--color-border)
 {/snippet}
 
 {#snippet qualityCell(log: RuntimeLogListItem)}
+	{@const actual = actualReturnText(log)}
 	<!--
 		max-w-full + truncate 的**实际**作用是「不让一个过长的音质串顶出列边界、
 		压到邻列」，这一点成立，防御保留。
@@ -404,13 +468,36 @@ const TH = 'px-4 py-2.5 font-medium shadow-[inset_0_-1px_0_0_var(--color-border)
 		为了一个不可达路径给全站共用的 StatusBadge 换布局模型不值得。
 		title 仍保留完整取值，信息不丢失。
 	-->
-	<StatusBadge
-		tone={qualityTone(log.requested_quality)}
-		class="max-w-full truncate font-mono"
-		title={qualityTitle(log)}
-	>
-		{log.requested_quality}
-	</StatusBadge>
+	<div class="flex min-w-0 flex-col items-start gap-0.5">
+		<StatusBadge
+			tone={qualityTone(log.requested_quality)}
+			class="max-w-full truncate font-mono"
+			title={qualityTitle(log)}
+		>
+			{log.requested_quality}
+		</StatusBadge>
+		<!--
+			第二行：上游**实际**给了什么（格式 + 实测码率）。胶囊上那一枚是下游请求的
+			档位，两者不相等时正是「静默回落」——此前只能人肉重放上游请求才看得出。
+			文本的拼法与各段何时缺席见 actualReturnText。
+
+			只有真的拼出了内容才渲染（`actual` 为 null 时整行不出现），否则一页没有观测
+			的行上会出现一列「实际 」这种半句话。
+
+			窄屏（lg 以下）会被 truncate 吃掉尾巴：md 档这一列固定 w-28(112px)，扣掉
+			px-4 两侧只剩 80px，而「实际 flac · 1747kbps」实测 111.3px，放不下。宽度取舍
+			见表头那处注释——md 档宁可截断也不能加宽（歌曲列会只剩 14px）。title 里放的是
+			完整文本加出处说明，截断了也拿得到。
+		-->
+		{#if actual}
+			<span
+				class="w-full truncate text-caption text-muted-foreground"
+				title={`${actual}｜格式与码率都取自上游响应；无损档上游不报 bitRate，码率按「文件大小 × 8 ÷ 时长」算得`}
+			>
+				{actual}
+			</span>
+		{/if}
+	</div>
 {/snippet}
 
 <!--
@@ -696,7 +783,18 @@ const TH = 'px-4 py-2.5 font-medium shadow-[inset_0_-1px_0_0_var(--color-border)
 							<tr class="text-muted-foreground">
 								<!-- 两种档位都不定宽：有元数据时它吃剩余空间，无元数据时随内容比例摊。 -->
 								<th scope="col" class={TH}>歌曲信息</th>
-								<th scope="col" class={cn(hasSongMeta && 'w-28', TH)}>音质</th>
+								<!--
+									音质列：md 档 w-28(112px)，lg 起 w-40(160px)。第二行
+									「实际 flac · 1747kbps」实测 11.2px 下 111.3px，而 w-28 减掉
+									px-4 两侧共 32px 只剩 80px（现有 flac24bit 胶囊恰好 80px，
+									已零余量）——所以 lg 起必须放宽到 w-40，那里可用 128px。
+
+									**md(768px) 刻意不加宽**：那一档歌曲列已经被挤到只剩 62px，
+									再加宽会把它压到 14px，等于用一个「只是补充说明」的第二行
+									换掉歌曲的身份。代价是 md 档第二行被 truncate（完整文本在
+									它的 title 里）。这个取舍是有意的，不是漏改。
+								-->
+								<th scope="col" class={cn(hasSongMeta && 'w-28 lg:w-40', TH)}>音质</th>
 								<!--
 									「错误」视图下每一行都是失败，状态列的 ERR 是零信息，
 									整列让出去（见 showOutcome）。
