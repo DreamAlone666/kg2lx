@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { Button } from '$lib/components/ui';
+	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { toast } from '$lib/state/toast.svelte';
 	import { cn } from '$lib/utils.js';
 
@@ -92,7 +93,24 @@
 	<code
 		class="flex h-11 min-w-0 flex-1 items-center rounded-lg border border-border bg-muted px-3 font-mono text-xs text-muted-foreground md:h-9"
 	>
-		<span class="truncate" title={value}>{value}</span>
+		<!--
+			截断的脚本地址：完整值改用 Tooltip 提示（原生 title 的延迟与样式不可控，
+			键盘用户也只有在长按时才看得见）。
+
+			触发元素是 span，所以走 `child` 渲染委托——Trigger 默认渲染成 <button>，
+			直接包会在 <code> 里凭空多出一个按钮。委托后 span 由 Trigger 授予
+			tabindex=0（默认值），因此这一处换来一个 tab 停：键盘用户终于能读到被截断的地址。
+			`type={null}` 抹掉 Trigger 默认带的 `type="button"`（span 不接受该属性）。
+			title 已删除，否则浏览器提示会与本浮层同时出现。
+		-->
+		<Tooltip.Root>
+			<Tooltip.Trigger type={null}>
+				{#snippet child({ props })}
+					<span class="truncate" {...props}>{value}</span>
+				{/snippet}
+			</Tooltip.Trigger>
+			<Tooltip.Content>{value}</Tooltip.Content>
+		</Tooltip.Root>
 	</code>
 
 	<Button

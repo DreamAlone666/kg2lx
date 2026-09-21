@@ -23,6 +23,8 @@
 		"vite": "^8.2.2"
 	},
 	"dependencies": {
+		"@internationalized/date": "^3.12.4",
+		"bits-ui": "^2.19.2",
 		"clsx": "^2.1.1",
 		"tailwind-merge": "^3.6.0",
 		"tailwind-variants": "^3.3.1"

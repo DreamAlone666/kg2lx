@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { tick } from 'svelte';
 	import { Button, Input, StatusBadge } from '$lib/components/ui';
+	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { sourcesController } from '$lib/features/sources/controller.svelte';
 	import { labelOf, providerLabel } from '$lib/domain';
 	import { toast } from '$lib/state/toast.svelte';
@@ -169,9 +170,30 @@ function handleKeydown(e: KeyboardEvent) {
 		</form>
 	{:else}
 		<div class="flex items-center gap-2">
-			<h1 class="min-w-0 truncate text-2xl font-bold tracking-tight" title={source.name}>
-				{source.name}
-			</h1>
+			<!--
+				截断的标题：完整值改用 Tooltip 提示（原生 title 只能等长按才出现、
+				样式与延迟也不可控）。标题可能远长于容器（后端只净化不截断），
+				这一处是页面上最需要「看到全名」的地方。
+
+				触发元素是 h1，所以走 `child` 渲染委托——Trigger 默认渲染成 <button>，
+				直接包会让标题变成按钮（语义错误），也会多出一个按钮样式的可聚焦元素。
+				委托后 h1 由 Trigger 授予 tabindex=0（默认值），键盘用户也能读到全名。
+				`type={null}` 抹掉 Trigger 默认带的 `type="button"`（h1 不接受该属性）。
+				title 已删除，否则浏览器提示会与本浮层同时出现。
+			-->
+			<Tooltip.Root>
+				<Tooltip.Trigger type={null}>
+					{#snippet child({ props })}
+						<h1
+							class="min-w-0 truncate text-2xl font-bold tracking-tight"
+							{...props}
+						>
+							{source.name}
+						</h1>
+					{/snippet}
+				</Tooltip.Trigger>
+				<Tooltip.Content>{source.name}</Tooltip.Content>
+			</Tooltip.Root>
 			<!--
 				只有文字、没有图标，也不用 size="icon"：本项目的图标目前只表达
 				「状态反馈」（复制成功/失败），铅笔会成为第一个「动作图标」，

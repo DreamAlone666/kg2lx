@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { cn } from '$lib/utils.js';
+	import { untrack } from 'svelte';
+	import { Switch } from '$lib/components/ui/switch';
 
 	/**
 	 * 音质自动降级开关（音源级配置）。
@@ -13,9 +14,13 @@
 	 *   （脚本拿到的只有 type 与 musicInfo），所以降级无法只作用于播放。把它塞进悬停
 	 *   提示等于让用户在不知情的情况下接受一个会落到下载文件上的行为改变。
 	 *
-	 * 控件形态：本仓库没有 switch 原语，也没有 tooltip 原语。按既有惯例用原生
-	 * `<button role="switch" aria-checked>`（角色与状态都由浏览器暴露给辅助技术），
-	 * 说明文字用行内文本而不是 tooltip。
+	 * 控件形态：用 `$lib/components/ui/switch`——引入 bits-ui 之后本仓有了开关原语
+	 * （此前是手写的 `<button role="switch" aria-checked>`，它只声明了角色与状态，
+	 * 键盘与指针行为都得自己补齐）。两处**刻意不变**：
+	 *
+	 * - 说明文字仍是行内文本，不是 tooltip：代价必须常驻可见（见上）。
+	 * - 轨道与滑块的几何仍是本仓尺寸（36×20 / 滑块 14px / 内缩 3px），不随原语换成
+	 *   上游的 16px 轨道——观感已定，本轮只修位移算错，不改设计。
 	 *
 	 * 状态不只用颜色表达：轨道位置、颜色与「已开启 / 已关闭」文字三者同时变化。
 	 *
@@ -40,6 +45,30 @@
 		disabled?: boolean;
 		onChange: (next: boolean) => void;
 	} = $props();
+
+	/**
+	 * 开关的**显示值**，与原语双向绑定（`bind:checked`）。
+	 *
+	 * 为什么不把 `value` 直接交给原语：bits-ui 的 Switch 会把用户这一次拨动先落在
+	 * 自己那一侧的状态里（Radix 系控件的通例），外观随后跟着它走。若只是单向传入
+	 * `value`，保存失败时两者会分叉——实测过：滑块停在右侧、轨道变绿、aria-checked=true，
+	 * 而旁边文字仍写着「已关闭」（控制器不做乐观更新，value 没变，原语也就没收到任何回拉）。
+	 * 那正是本组件注释里说要避免的「留下一个没生效的已开启」。
+	 *
+	 * 收口规则：`value`（服务端事实）是唯一来源，**一次保存结束就以它为准**。
+	 * pending 由真转假即这一刻——成功时 value 已是新值（写入幂等），失败时把外观拉回原值。
+	 * 保存进行中刻意不干预：让乐观位置先顶着，否则请求期间开关纹丝不动，用户会以为没点中
+	 * （与下面「保存中…」那条静态反馈配套）。
+	 *
+	 * `untrack` 只用在初值上：首帧必须直接是服务端事实（挂载后再靠 effect 补会有一次
+	 * 反向闪动），后续同步交给下面那个 effect——它才是持有依赖的一方。
+	 */
+	let checked = $state(untrack(() => value));
+
+	$effect(() => {
+		if (pending) return;
+		checked = value;
+	});
 
 	/** 每次实例化唯一，避免同页多次挂载时 id 撞车。 */
 	const uid = $props.id();
@@ -82,40 +111,22 @@
 			而页面其余部分（导航、日志面板）都不受它影响——与本仓两次栽过的「表单把
 			Escape 与取消一起禁掉、用户被困在里面」不是同一类情形。
 		-->
-		<button
-			type="button"
-			role="switch"
-			aria-checked={value}
+		<Switch
+			bind:checked
+			onCheckedChange={onChange}
+			disabled={pending || disabled}
 			aria-labelledby={titleId}
 			aria-describedby="{descId} {costId}"
-			disabled={pending || disabled}
-			onclick={() => onChange(!value)}
-			class="inline-flex min-h-11 shrink-0 cursor-pointer items-center gap-2 rounded-lg px-1 text-xs font-medium transition-colors duration-150 ease-out-soft disabled:cursor-not-allowed disabled:opacity-50 md:min-h-0"
+			class="min-h-11 text-xs font-medium md:min-h-0"
 		>
-			<!--
-				开启态用 success 而不是强调色：暖橙在本仓只用于主操作、当前导航项与焦点环
-				（见 layout.css 的令牌层注释），而「已开启」是一个**状态**，归状态色系统管，
-				accountStatusTone 把 active 判成 success 用的就是同一条映射。
-			-->
-			<span
-				class={cn(
-					'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors duration-200 ease-out-soft',
-					value ? 'bg-success' : 'bg-neutral/40'
-				)}
-				aria-hidden="true"
-			>
-				<span
-					class={cn(
-						'absolute size-3.5 rounded-full bg-background shadow-soft transition-transform duration-200 ease-out-soft',
-						value ? 'translate-x-[1.375rem]' : 'translate-x-[0.1875rem]'
-					)}
-				></span>
-			</span>
 			<!--
 				pending 文案是静态可辨识形态，不依赖动画：prefers-reduced-motion 会把
 				过渡压平，届时若反馈只剩轨道位移，用户会以为点击没被接住。
+
+				轨道与滑块的配色、以及「开启用 success 而不是强调色」的理由，
+				都随几何一起收在原语里（见 ui/switch/switch.svelte）。
 			-->
 			<span class="text-foreground">{pending ? '保存中…' : value ? '已开启' : '已关闭'}</span>
-		</button>
+		</Switch>
 	</div>
 </div>

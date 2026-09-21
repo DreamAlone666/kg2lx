@@ -3,10 +3,11 @@
 	import favicon from '$lib/assets/favicon.svg';
 	import { onNavigate } from '$app/navigation';
 	import { Toaster } from '$lib/components/ui';
+	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { prefersReducedMotion } from '$lib/utils/motion';
 
 	/**
-	 * 根壳：只负责三件事——引入令牌层、挂载全局提示宿主、接入视图过渡。
+	 * 根壳：只负责四件事——引入令牌层、提供 Tooltip 上下文、挂载全局提示宿主、接入视图过渡。
 	 * 顶栏与认证守卫下沉到 (app) 路由组，因为连接页不属于受保护区域、也不该有导航。
 	 */
 	let { children } = $props();
@@ -43,5 +44,14 @@
 	<link rel="icon" href={favicon} />
 </svelte:head>
 
-{@render children()}
-<Toaster />
+<!--
+	Tooltip 上下文必须存在且只存在一次：bits-ui 的 `Tooltip.Root` 会向上找祖先 Provider 来
+	共享延时策略（默认 delayDuration 700ms，本仓不改——短于它会让鼠标划过时闪出一串提示）。
+	放在根布局而不是 (app) 组：根布局是唯一覆盖全部路由的那一层，挂低了就会变成
+	「某些路由有上下文、某些没有」，而缺上下文是个运行期才炸的错。
+	Provider 本身不渲染 DOM，只透传 children。
+-->
+<Tooltip.Provider>
+	{@render children()}
+	<Toaster />
+</Tooltip.Provider>

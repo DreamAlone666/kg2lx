@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import { adminSession } from '$lib/state/admin-session.svelte';
 	import { Button } from '$lib/components/ui';
+	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { cn } from '$lib/utils.js';
 
 	/**
@@ -78,12 +79,33 @@
 		</nav>
 
 		<div class="ml-auto flex min-w-0 items-center gap-2 sm:gap-3">
-			<span
-				class="hidden max-w-56 truncate font-mono text-xs text-muted-foreground md:block"
-				title={adminSession.serverBaseUrl || '当前域名'}
-			>
-				{adminSession.serverBaseUrl || '当前域名'}
-			</span>
+			<!--
+				截断的服务器地址：完整值改用 Tooltip 提示。原生 title 的延迟、字号与位置
+				都由浏览器决定，与页面里的浮层体系对不上；Tooltip 还能被键盘触发，
+				title 只有长按鼠标才会出现。
+
+				触发元素是 span 而不是按钮，所以必须走 `child` 渲染委托：Trigger 默认渲染成
+				<button>，直接包会凭空多出一个语义不明的按钮，也会在顶栏多一个可聚焦控件。
+				委托之后 span 由 Trigger 授予 tabindex=0（它的默认值），因此这一处换来
+				一个 tab 停——这也是这一处值得换的原因（键盘可用）。
+
+				`type={null}` 是必需的：Trigger 默认带 `type="button"`，该属性会随 `{...props}`
+				摊到 span 上，而 span 不接受它（bits-ui 内部的 mergeProps 会保留 null，
+				Svelte 摊开属性时把 null 当「移除该属性」）。
+			-->
+			<Tooltip.Root>
+				<Tooltip.Trigger type={null}>
+					{#snippet child({ props })}
+						<span
+							class="hidden max-w-56 truncate font-mono text-xs text-muted-foreground md:block"
+							{...props}
+						>
+							{adminSession.serverBaseUrl || '当前域名'}
+						</span>
+					{/snippet}
+				</Tooltip.Trigger>
+				<Tooltip.Content>{adminSession.serverBaseUrl || '当前域名'}</Tooltip.Content>
+			</Tooltip.Root>
 			<Button variant="ghost" size="sm" onclick={() => adminSession.logout()}>断开连接</Button>
 		</div>
 	</div>
