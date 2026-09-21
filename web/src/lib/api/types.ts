@@ -33,7 +33,18 @@ export type SourceSummary = {
   quality_fallback: boolean;
   script_url: string;
   userid: string;
-  vip_active: boolean;
+  /**
+   * 该源账号的会员权益明细，与详情页同一个结构、同一份来源。
+   *
+   * 列表此前只带一个聚合布尔（`vip_active`），于是「这个账号还有什么权益」必须点进详情
+   * 才看得到；而聚合值本身既回答不了「有哪几项」，也回答不了「哪一项快到期了」。现在列表
+   * 直接给事实，命名与否交给 vipProductLabel——与详情页同一张表，两页口径不会分叉。
+   *
+   * 可选的原因与详情页同一套推理：静态产物与服务端二进制可以分别替换，键不存在时这里
+   * 只是不渲染任何权益标记。本页**不**区分「键缺失」与「空数组」——两种情况都不产生
+   * 任何断言，没有详情页那种「空态要不要说话」的问题。
+   */
+  entitlements?: AccountEntitlement[];
   /**
    * 账号状态。空串表示账号记录已不存在（后端不给未知状态造新枚举值），
    * 由 labelOf / accountStatusTone 回退为「未知」与 neutral。
@@ -43,6 +54,30 @@ export type SourceSummary = {
   last_refresh_at: number | null;
   /** 源记录的更新时间，仅在绑定/改配置时变动，界面不再展示。 */
   updated_at: number;
+};
+
+/**
+ * 账号的一条**会员权益明细**（来自 GET /api/v1/sources/{source_id} 的
+ * `account.entitlements`）。
+ *
+ * 这是账号权益的**唯一**口径：各项并列、各自独立到期。这里**不再**有「账号级是否会员」
+ * 那种聚合结论——聚合值既冗余（逐条明细已经说全了），又回答不了「有哪几项」和
+ * 「哪一项快到期了」。因此界面也不得由其中一条反推账号状态：某一条过期不代表账号失效，
+ * 一条都没有也不代表登录态有问题。
+ *
+ * 字段由服务端原样透传上游：`product_type` 是上游自己的类型码，本类型刻意不把它
+ * 收窄成枚举——上游新增一个码不该让前端类型崩塌，中文名缺失时由 vipProductLabel
+ * 回退显示内部码（见 lib/domain/labels.ts）。
+ */
+export type AccountEntitlement = {
+  /** 上游权益类型码，实测出现过 svip / tvip / qvip / dvip；原样透传，不做归一化。 */
+  product_type: string;
+  /** 该条是否**当前**在有效期内；已过期与尚未生效都是 false。 */
+  active: boolean;
+  /** 生效时刻，秒级 Unix 时间戳；上游未给出时为 null。 */
+  begin_at: number | null;
+  /** 到期时刻，秒级 Unix 时间戳；上游未给出时为 null（此时无从谈「还有多久」。） */
+  end_at: number | null;
 };
 
 export type SourceDetail = {
@@ -69,12 +104,23 @@ export type SourceDetail = {
   runtime_token_preview: string;
   account: {
     userid: string;
-    vip_active: boolean;
-    vip_type: number;
     status: AccountStatus;
     last_refresh_at: number | null;
     last_error_code: string | null;
     last_error: string | null;
+    /**
+     * 账号的会员权益明细。**可选字段**，且「键不存在」与「存在但为空数组」是两件事，
+     * 消费方必须分开处理：
+     *
+     * - 键不存在 = 服务端没有提供这条信息。这是真实会发生的版本错配：服务端用
+     *   `WEB_DIST_DIR` 直接服务 web/build 里的静态产物（server/src/routes/static_fs.rs），
+     *   二进制与前端产物是两个可以分别替换的东西，缺了它不该被读成「账号没有权益」。
+     * - 存在但为空数组 = 服务端明确说这个账号一条权益都没有，这是可以如实陈述的事实。
+     *
+     * 所以**不要用 `?? []` 把它折叠成空数组**：那等于把「不知道」渲染成「没有」。
+     * 与本文件其它字段同一条规矩——界面文案不得断言字段本身没说的东西。
+     */
+    entitlements?: AccountEntitlement[];
   };
 };
 
@@ -113,8 +159,6 @@ export type QrLoginPollResponse =
       account: {
         account_id: string;
         userid: string;
-        vip_active: boolean;
-        vip_type: number;
       };
       source: {
         source_id: string;
@@ -131,7 +175,6 @@ export type QrLoginPollResponse =
 export type RefreshSourceResponse = {
   ok: true;
   source_id: string;
-  vip_active: boolean;
   updated_at: number;
 };
 

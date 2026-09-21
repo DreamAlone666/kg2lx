@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::config::Config;
-use crate::domain::account::{self, AccountStatus};
+use crate::domain::account::{self, AccountStatus, VipEntitlement};
 use crate::domain::runtime_log::{ListRuntimeLogsQuery, RuntimeLog, RuntimeLogView};
 use crate::domain::source::{
     self, SCRIPT_NAME_ADVISORY_CHARS, SCRIPT_NAME_MAX_BYTES, sanitize_script_meta,
@@ -25,11 +25,26 @@ pub struct SourceListItem {
     /// `userid` 缺失时返回去掉尾随空格的结果，不会产生「酷狗概念版 」这类文案。
     pub default_name: String,
     pub userid: String,
-    pub vip_active: bool,
+    /// 上游会员权益明细，与详情页的 `account.entitlements` 是**同一个结构体、同一份
+    /// 数据**（`VipEntitlement`），刻意不另造一个精简版：两个页面对「这个账号有哪些
+    /// 权益」必须给出同一个答案，各留一份字段就是留给它们漂移的机会。
+    ///
+    /// 列表**必须**带它：列表要回答「这个音源现在还能不能用」，而此前回答这件事的是
+    /// 账号级的聚合布尔值（`vip_active`）——那个值既冗余又低效，已经删除（权益是
+    /// 并列的增量信息，聚合值只是它的派生品，上游新增一档权益时会静默失真）。改成
+    /// 「有哪些**有名字**的权益」之后，列表与详情口径一致，扫一眼就能看出这个账号
+    /// 有没有权益、是哪几条，而不用逐个点进详情。
+    ///
+    /// 空数组是**正常状态**（这个账号一条权益都没有），不是「查不到上游」：这一列只
+    /// 由**成功**的权益查询写入，因此空数组的成因只可能是「上一次查到的就是空的」；
+    /// 问不到上游时账号会被标成 `login_failed`，权益保持上一次成功时的值不变。
+    pub entitlements: Vec<VipEntitlement>,
     /// 账号状态，与详情页 `account.status` 同源同格式。
     ///
-    /// 列表此前只有 `vip_active`，导致「账号还活着吗」这个最核心的问题必须逐个点进详情
-    /// 才能回答；而列表本来就是用来扫一眼做判断的。
+    /// 列表要回答「账号还活着吗」这个最核心的问题，而列表本来就是用来扫一眼做判断的。
+    /// 它与上面的 `entitlements` 回答的是**两件不相干的事**：账号状态只由登录态决定，
+    /// 权益是并列的增量信息。列表此前只有一个账号级的聚合布尔值（`vip_active`），
+    /// 把「活着吗」和「有权益吗」混成了同一个问题的答案，两项现在各由自己的字段回答。
     pub account_status: String,
     /// 账号最近一次刷新成功的时刻。
     ///
@@ -77,11 +92,21 @@ pub struct UpdateSourceResponse {
     pub updated_at: i64,
 }
 
+/// 详情页里的账号信息。
+///
+/// 会员权益**只有 `entitlements` 这一个口径**：账号级的聚合布尔值（`vip_active`）
+/// 与它的同族 `vip_type` 都已删除——权益本就是并列的增量信息，聚合值只是它的派生品，
+/// 既冗余又会在上游新增一档权益时静默失真。
 #[derive(serde::Serialize)]
 pub struct SourceAccountInfo {
     pub userid: String,
-    pub vip_active: bool,
-    pub vip_type: i32,
+    /// 上游会员权益明细（逐条 `product_type` + 是否在期 + 起止时刻），与列表
+    /// （`SourceListItem`）用的是**同一个结构体**，见那里的说明。
+    ///
+    /// 空数组是**正常状态**（这个账号一条权益都没有），不是「查不到上游」；两者在
+    /// 这里可区分，因为后者走的是 `UPSTREAM_VIP_CHECK_FAILED` 错误路径，根本不会有
+    /// 这一次响应。
+    pub entitlements: Vec<VipEntitlement>,
     pub status: String,
     pub last_refresh_at: Option<i64>,
     pub last_error: Option<String>,
@@ -89,11 +114,15 @@ pub struct SourceAccountInfo {
     pub last_error_code: Option<String>,
 }
 
+/// 手动刷新的回执。
+///
+/// 只回执**这次动作本身**的结果（`ok` / 时间戳），不回执权益：刷新成功与「有没有
+/// 权益」是两件事，权益明细由列表与详情接口给出（口径已经统一在那里），在这里再
+/// 回一个聚合布尔值只会多出第二个口径。
 #[derive(serde::Serialize)]
 pub struct RefreshResponse {
     pub ok: bool,
     pub source_id: String,
-    pub vip_active: bool,
     pub updated_at: i64,
 }
 
@@ -149,14 +178,14 @@ impl SourceService {
             let account = self.account_repo.find_by_id(&s.account_id).await?;
             // 账号缺失时状态写空串：前端 labelOf / accountStatusTone 已有回退，
             // 不为此新增枚举值，避免污染两个穷举词典。
-            let (userid, vip_active, account_status, last_refresh_at) = match account {
+            let (userid, entitlements, account_status, last_refresh_at) = match account {
                 Some(ref a) => (
                     a.upstream_userid.clone(),
-                    a.vip_active,
+                    a.entitlements.clone(),
                     a.status.as_str().to_string(),
                     a.last_refresh_at,
                 ),
-                None => (String::new(), false, String::new(), None),
+                None => (String::new(), Vec::new(), String::new(), None),
             };
             let script_url = format!("{}/s/{}.js", self.config.public_base_url, s.script_token);
             items.push(SourceListItem {
@@ -168,7 +197,7 @@ impl SourceService {
                 name: s.name,
                 default_name: source::default_name(&userid),
                 userid,
-                vip_active,
+                entitlements,
                 account_status,
                 last_refresh_at,
                 updated_at: s.updated_at,
@@ -212,8 +241,7 @@ impl SourceService {
             runtime_token_preview: rt_preview,
             account: SourceAccountInfo {
                 userid: account.upstream_userid,
-                vip_active: account.vip_active,
-                vip_type: account.vip_type,
+                entitlements: account.entitlements,
                 status: account.status.as_str().to_string(),
                 last_refresh_at: account.last_refresh_at,
                 last_error: account.last_error,
@@ -344,8 +372,12 @@ impl SourceService {
 
             let vip = self.client.fetch_vip_status(&account.cookies).await?;
             account.cookies = vip.cookies;
-            account.vip_type = vip.vip_type;
-            account.vip_active = vip.vip_active;
+            // 权益明细**原样**落到账号上，包括空列表：空的意思是「这个账号目前一条
+            // 权益都没有」，而它是一次成功的查询结果，不是失败。真正问不到上游时
+            // 上面那行已经以 `UPSTREAM_VIP_CHECK_FAILED` 返回了，两条路径在这里就
+            // 分开了——不要给空列表加「保留上一次的权益」之类的兜底，那会让界面
+            // 继续显示一份已经不成立的权益。
+            account.entitlements = vip.entitlements;
 
             let now = account::now_ts();
             account.last_refresh_at = Some(now);
@@ -354,11 +386,9 @@ impl SourceService {
             // 否则界面会把上一次失败的 code 翻译成一条已经不成立的错误标签。
             account.last_error = None;
             account.last_error_code = None;
-            account.status = if vip.vip_active {
-                AccountStatus::Active
-            } else {
-                AccountStatus::Expired
-            };
+            // 账号状态只由**登录态**决定，与 runtime.rs 同一约定：能走到这里就说明
+            // 刷新成功了。权益在不在期由 `entitlements` 表达。
+            account.status = AccountStatus::Active;
             account.updated_at = now;
             self.account_repo.upsert(&account).await?;
             Ok(now)
@@ -383,7 +413,6 @@ impl SourceService {
         Ok(RefreshResponse {
             ok: true,
             source_id: source_id.into(),
-            vip_active: account.vip_active,
             updated_at: now,
         })
     }
@@ -562,6 +591,10 @@ mod tests {
         }
     }
 
+    /// 一个**一条权益都没有**的账号（`entitlements` 为空），账号状态正常。
+    ///
+    /// 「没有权益」不再是账号上的一列聚合值（`vip_active` / `vip_type` 已删除），
+    /// 它现在的表述就是这里的空权益列表。
     fn sample_account() -> ProviderAccount {
         ProviderAccount {
             account_id: "acc_test".into(),
@@ -569,8 +602,7 @@ mod tests {
             upstream_userid: TEST_USERID.into(),
             display_name: None,
             status: AccountStatus::Active,
-            vip_type: 0,
-            vip_active: true,
+            entitlements: Vec::new(),
             cookies: CookieStore::new(),
             last_refresh_at: None,
             last_success_at: None,
@@ -582,11 +614,19 @@ mod tests {
     }
 
     fn build_service(source: Source) -> (SourceService, Arc<RecordingSourceRepo>) {
+        build_service_with_account(source, sample_account())
+    }
+
+    /// 同上，但账号由调用方给出：权益明细的曝光测试需要账号真的带着权益。
+    fn build_service_with_account(
+        source: Source,
+        account: ProviderAccount,
+    ) -> (SourceService, Arc<RecordingSourceRepo>) {
         let config = test_config();
         let client = Arc::new(KugouLiteClient::new(&config));
         let source_repo = Arc::new(RecordingSourceRepo::new(source));
         let account_repo: Arc<dyn AccountRepo> = Arc::new(FakeAccountRepo {
-            account: Some(sample_account()),
+            account: Some(account),
         });
         let log_repo: Arc<dyn RuntimeLogRepo> = Arc::new(EmptyLogRepo);
         let service =
@@ -750,5 +790,78 @@ mod tests {
 
         let detail = service.get_source("src_test").await.expect("detail");
         assert!(detail.quality_fallback, "详情必须回显开关当前值");
+    }
+
+    /// 权益明细在**列表与详情上是同一份数据**，且账号级的两个聚合列
+    /// （`vip_active` / `vip_type`）不得以任何形式回到 wire 上。
+    ///
+    /// 断言落在序列化后的 JSON 上而不是结构体的字段上：「列表带不带权益明细」
+    /// 只有在 wire 上才有意义（结构体里多加一个字段、只要它没被序列化出去，用户的
+    /// 列表请求就没变重）。这条同时钉住两件事——列表**必须**带明细（此前那里只有一个
+    /// 聚合布尔值回答「还有没有权益」，那个值已删除，现在由有名字的权益回答），
+    /// 以及两个聚合列**不得**复活。
+    ///
+    /// 列表与详情各自的那一份必须逐字相等：两处口径一旦分叉，用户会看到两个页面对
+    /// 同一个账号给出不同的答案，而没有任何一层会报错。
+    #[tokio::test]
+    async fn entitlements_are_exposed_in_both_the_list_and_the_detail() {
+        let account = ProviderAccount {
+            entitlements: vec![
+                VipEntitlement {
+                    product_type: "svip".into(),
+                    active: true,
+                    begin_at: Some(1700000000),
+                    end_at: Some(1702678400),
+                },
+                VipEntitlement {
+                    product_type: "tvip".into(),
+                    active: false,
+                    begin_at: None,
+                    end_at: None,
+                },
+            ],
+            ..sample_account()
+        };
+        let (service, _repo) = build_service_with_account(sample_source(), account);
+
+        // 「上游没说」的时间必须是 `null` 而不是 0（那是 1970 年）；这条由下面的
+        // 整体相等断言一并钉住。
+        let expected = serde_json::json!([
+            {
+                "product_type": "svip",
+                "active": true,
+                "begin_at": 1700000000,
+                "end_at": 1702678400,
+            },
+            {
+                "product_type": "tvip",
+                "active": false,
+                "begin_at": null,
+                "end_at": null,
+            },
+        ]);
+
+        let list = serde_json::to_value(service.list_sources().await.expect("list")).unwrap();
+        assert_eq!(list.as_array().unwrap().len(), 1);
+        assert_eq!(
+            list[0]["entitlements"], expected,
+            "列表必须带权益明细：扫一眼列表要能看出这个账号有哪些权益"
+        );
+
+        let detail =
+            serde_json::to_value(service.get_source("src_test").await.expect("detail")).unwrap();
+        assert_eq!(
+            detail["account"]["entitlements"], expected,
+            "详情与列表必须是同一份数据，口径不得分叉"
+        );
+
+        for (label, payload) in [("列表", &list[0]), ("详情账号", &detail["account"])] {
+            for column in ["vip_active", "vip_type"] {
+                assert!(
+                    payload.get(column).is_none(),
+                    "{label}上不该再有 {column}：权益的唯一口径是 entitlements"
+                );
+            }
+        }
     }
 }

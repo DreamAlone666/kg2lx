@@ -19,9 +19,11 @@
 		accountStatusLabel,
 		accountStatusTone,
 		describeAccountError,
+		entitlementExpiringTone,
 		formatDateTime,
+		isNamedVipProduct,
 		labelOf,
-		vipTone
+		vipProductLabel
 	} from '$lib/domain';
 
 	let sourceId = $derived(page.params.sourceId ?? '');
@@ -41,6 +43,15 @@
 	);
 	let refreshing = $derived(Boolean(sourcesController.refreshing[sourceId]));
 	let pageTitle = $derived(source ? `${source.name} | kg2lx` : '音源详情 | kg2lx');
+
+	/**
+	 * 会员权益明细，`undefined` 表示**接口里没有这个键**。
+	 *
+	 * 不要把 undefined 折叠成空数组（`?? []`）：键不存在时服务端什么都没说（二进制与
+	 * web/build 是两个可分别替换的东西），此时整段一个字都不该说；只有键存在而筛完没有
+	 * 在期条目，才是「无在期记录」这个可以如实陈述的事实。详见 types.ts 里该字段的说明。
+	 */
+	let entitlements = $derived(source?.account.entitlements);
 
 	/**
 	 * 本次访问内是否改过标题。
@@ -149,23 +160,19 @@
 					用无效内容凑版式，且被 truncate 后连完整读取都做不到。移除后把轨道数
 					一并降到 3，才不会留下死轨道；地址栏里本来就是同一个 ID。
 
+					后来又按同一条判据移掉了「VIP 状态」那一格：它是一个账号级的聚合布尔，而账号
+					权益本身是并列的增量信息——聚合值既回答不了「有哪几项」也回答不了「哪一项快
+					到期」，留着就是同一件事的第二套说法。权限改由下面独立成段的「会员权益」
+					承担，轨道数随之降到 2。
+
 					这条不变量对后续改动同样成立：新内容不够凑满一行时，**不要**往这里塞一格。
 					音质降级开关就是按这条办的——它是可配置项而不是只读事实，下一块独立成段。
 				-->
-				<div class="grid grid-cols-2 gap-6 sm:grid-cols-3">
+				<div class="grid grid-cols-2 gap-6">
 					<div class="min-w-0 space-y-2">
 						<p class="text-xs font-medium tracking-wide text-muted-foreground uppercase">状态</p>
 						<StatusBadge tone={accountStatusTone(source.account.status)} dot>
 							{labelOf(accountStatusLabel, source.account.status)}
-						</StatusBadge>
-					</div>
-
-					<div class="min-w-0 space-y-2">
-						<p class="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-							VIP 状态
-						</p>
-						<StatusBadge tone={vipTone(source.account.vip_active)} dot>
-							{source.account.vip_active ? '已激活' : '未激活'}
 						</StatusBadge>
 					</div>
 
@@ -183,6 +190,74 @@
 						</p>
 					</div>
 				</div>
+
+				<!--
+					会员权益明细。**刻意独立成段**，不挤进上面那个三段栅格：那里把「轨道数 ==
+					内容数」写成了不变量，而这里的条目数随账号变化（0..N），塞进去必然留下
+					装不满的轨道。
+
+					这一段要解决的是「权益会静默过期」：到期后账号一切正常、只是部分歌取不到
+					高音质，而账号状态与登录态在此期间毫无变化，用户无从解释
+					「为什么某些歌突然不能听了」。所以这里给的是逐条的权益名称与到期时刻。只列**有名字的**权益（见 isNamedVipProduct 的白名单说明）：没有名字的权益位不上榜，否则「即将到期」会被 1 天的日结条目常亮撑着，把真正的预警淹掉。
+
+					整段以 entitlements 这个键**存在**为前提：键不存在时服务端什么都没说
+					（二进制与 web/build 可分别替换），此时一个字都不说，而不是渲染成空态——
+					空态是一句「没有在期权益」的断言，缺字段的场合我们无权做这个断言。
+				-->
+				{#if entitlements !== undefined}
+						{@const listedEntitlements = entitlements.filter(
+							(entitlement) =>
+								entitlement.active && isNamedVipProduct(entitlement.product_type)
+						)}
+					<div class="space-y-3">
+						<p class="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+							会员权益
+						</p>
+
+						{#if listedEntitlements.length === 0}
+							<!--
+								这里能说「没查到」是因为键存在（服务端确实给了一张明细表），而且声明的
+								范围只有白名单里那两条——所以空态说的是「没有它们」，不是「没有任何权益」。
+
+								也**不说「未激活」**：账号级是否会员这类聚合结论已经删掉了（它既冗余、
+								又回答不了「有哪几项」），本段没有任何可对照的东西，也就无从替它断言账号
+								状态；登录态是否正常记在上面那一格，与本段无关。
+
+								必须给出下一步动作：空态有两个成因（快照太旧 / 确实没有），两者该做的事
+								不同；只说事实的话，用户看完仍然不知道该做什么——这是端到端验收时实际
+								撞到的情形。
+							-->
+							<p class="text-xs leading-relaxed text-muted-foreground">
+								未检测到概念版VIP / 畅听VIP 的在期记录。这份明细只在重新读取上游时更新，点上方「刷新 Token」可重读。
+							</p>
+						{:else}
+							<!--
+								不显示「剩余 N 天」这类推算值：到期时刻是事实，剩余天数会随时间变旧，
+								而本页没有任何计时器会去刷新它（二维码那种短时交互才配一个）。
+							-->
+							<ul class="space-y-2">
+								{#each listedEntitlements as entitlement}
+									{@const expiringTone = entitlementExpiringTone(entitlement.end_at)}
+									<li class="flex flex-wrap items-center gap-x-3 gap-y-1">
+										<span class="text-sm font-medium">
+											{labelOf(vipProductLabel, entitlement.product_type)}
+										</span>
+										<!--
+											到期时刻复用同页「最后刷新时间」的 formatDateTime（不另造格式）；
+											定长数字同样要 tabular + nowrap，否则多行之间无法纵向对齐、窄屏还会折行。
+										-->
+										<span class="tabular text-xs whitespace-nowrap text-muted-foreground">
+											到期 {formatDateTime(entitlement.end_at, '未知')}
+										</span>
+										{#if expiringTone}
+											<StatusBadge tone={expiringTone}>即将到期</StatusBadge>
+										{/if}
+									</li>
+								{/each}
+							</ul>
+						{/if}
+					</div>
+				{/if}
 
 				<!--
 					音质降级开关。刻意**不在**上面那个三段栅格内：那里的注释把「轨道数 ==

@@ -189,17 +189,12 @@ impl RuntimeService {
                 )
                 .await;
         }
-        if !account.vip_active {
-            return self
-                .log_and_err(
-                    &source,
-                    &account.account_id,
-                    &req,
-                    LogErrorContext::precheck(&client_request_id),
-                    AppError::account_not_vip(),
-                )
-                .await;
-        }
+        // 这里曾是 `if !account.vip_active` 的准入闸，连同它写的
+        // `ACCOUNT_NOT_VIP` 预检行一起删除了：**VIP 不是取链的前提**。账号有没有
+        // 会员只决定上游肯给到哪一档音质（`song/url` 会以 `status:2` 明确拒绝），
+        // 而免费高音质的歌、以及任何免费歌曲，没有会员照样能取到链——旧闸把这类
+        // 请求在打到上游之前就挡掉了，用户看到的是一个与真实原因无关的错误。
+        // 权益是否在期改由账号的 `entitlements` 承载（只作展示）。
 
         let mut refresh_attempted = false;
 
@@ -598,8 +593,7 @@ impl RuntimeService {
 
             let vip = self.client.fetch_vip_status(&account.cookies).await?;
             account.cookies = vip.cookies;
-            account.vip_type = vip.vip_type;
-            account.vip_active = vip.vip_active;
+            account.entitlements = vip.entitlements;
 
             let now = account::now_ts();
             account.last_refresh_at = Some(now);
@@ -608,25 +602,21 @@ impl RuntimeService {
             // 界面按 code 翻译时会显示一条已经不再成立的错误标签。
             account.last_error = None;
             account.last_error_code = None;
-            account.status = if vip.vip_active {
-                AccountStatus::Active
-            } else {
-                AccountStatus::Expired
-            };
+            // 账号状态只由**登录态**决定：能走到这里就说明刷新成功了。权益在不在期
+            // 改由 `entitlements` 表达——那是一件独立的、账号正常与否之外的事。
+            account.status = AccountStatus::Active;
             account.updated_at = now;
             self.account_repo.upsert(account).await?;
-
-            if !account.vip_active {
-                return Err(AppError::account_not_vip());
-            }
 
             Ok(())
         }
         .await;
 
-        if let Err(err) = &result
-            && err.code != ErrorCode::AccountNotVip
-        {
+        // 刷新里的任何失败都记进账号。此前这里额外放行一条错误码
+        // （`ACCOUNT_NOT_VIP`）——「没有会员」不是刷新失败，不该把账号标成
+        // `login_failed`。现在整条准入闸都不存在了，那个例外也就随之消失：这里
+        // 剩下的每一条错误都真的是刷新本身失败。
+        if let Err(err) = &result {
             let now = account::now_ts();
             account.status = AccountStatus::LoginFailed;
             // code 与 message 分开存：code 是界面查中文词典的键，message 是给运维的
@@ -783,15 +773,17 @@ struct LogErrorContext<'a> {
 }
 
 impl<'a> LogErrorContext<'a> {
-    /// 取链之前的准入检查（音源是否启用、账号是否存在 / 是否被禁用 / VIP 是否有效）
-    /// 失败时用的上下文。
+    /// 取链之前的准入检查（音源是否启用、账号是否存在 / 是否被禁用）失败时用的
+    /// 上下文。
     ///
     /// **Why:** 这些失败此前**一行日志都不写**就直接返回，于是最常出现在用户身上的
-    /// 几种情形——后台把音源关了、账号被禁用、会员到期、账号记录已不存在——在日志
-    /// 面板上没有任何痕迹。而面板是 kg2lx 用户唯一能拿到诊断的地方：洛雪音乐会把
-    /// 脚本抛出的 `err.message` 丢掉，只显示它自己的「换源失败…」。所以这里用
+    /// 几种情形——后台把音源关了、账号被禁用、账号记录已不存在——在日志面板上
+    /// 没有任何痕迹。而面板是 kg2lx 用户唯一能拿到诊断的地方：洛雪音乐会把脚本
+    /// 抛出的 `err.message` 丢掉，只显示它自己的「换源失败…」。所以这里用
     /// `stage: Precheck` 把准入失败显式标出来，让面板能区分「没走到取链」与
     /// 「取链失败」。
+    ///
+    /// 会员权益**不在**这张表里：它不是取链的准入条件，因此没有它对应的预检行。
     ///
     /// **How to apply:** 这些检查都发生在任何上游调用之前，因此没有端点、没有状态码、
     /// 没有重试、也没试图刷新登录——四个字段一律取「未发生」的空值，绝不写成看起来
@@ -953,15 +945,18 @@ mod tests {
         }
     }
 
-    fn sample_account(vip_active: bool) -> ProviderAccount {
+    /// 一个**一条权益都没有**的账号（`entitlements` 为空），账号状态正常。
+    ///
+    /// 「没有权益」不再是账号上的一列聚合值（`vip_active` / `vip_type` 已删除），
+    /// 它现在的表述就是这里的空权益列表：权益是并列的增量信息，一条都没有就是空数组。
+    fn sample_account() -> ProviderAccount {
         ProviderAccount {
             account_id: "acc_test".into(),
             provider: ProviderKind::KugouLite,
             upstream_userid: "userid_test".into(),
             display_name: None,
             status: AccountStatus::Active,
-            vip_type: 0,
-            vip_active,
+            entitlements: Vec::new(),
             cookies: CookieStore::new(),
             last_refresh_at: None,
             last_success_at: None,
@@ -985,7 +980,7 @@ mod tests {
     ///
     /// 这两个值一旦被「顺手清理掉」，测试就会变成对着端口 1 发请求，失败得又远又不明显。
     fn account_ready_for_fetch() -> ProviderAccount {
-        let mut account = sample_account(true);
+        let mut account = sample_account();
         account.cookies.insert("dfid", "dfid_test");
         account.last_refresh_at = Some(account::now_ts());
         account
@@ -1178,13 +1173,23 @@ mod tests {
         source: Source,
         fetcher: Arc<dyn MusicUrlFetcher>,
     ) -> (RuntimeService, Arc<CapturingLogRepo>) {
+        build_loop_service_with_account(source, account_ready_for_fetch(), fetcher)
+    }
+
+    /// 同上，但账号由调用方给出：「VIP 不参与准入」这类断言需要账号带着特定的
+    /// 权益状态越过前置步骤，否则测的就只是 `account_ready_for_fetch` 的默认值。
+    fn build_loop_service_with_account(
+        source: Source,
+        account: ProviderAccount,
+        fetcher: Arc<dyn MusicUrlFetcher>,
+    ) -> (RuntimeService, Arc<CapturingLogRepo>) {
         let config = test_config();
         let client = Arc::new(KugouLiteClient::new(&config));
         let source_repo: Arc<dyn SourceRepo> = Arc::new(FakeSourceRepo {
             source: Some(source),
         });
         let account_repo: Arc<dyn AccountRepo> = Arc::new(FakeAccountRepo {
-            account: Some(account_ready_for_fetch()),
+            account: Some(account),
         });
         let log_repo = Arc::new(CapturingLogRepo::default());
         let service = RuntimeService::new(
@@ -1364,30 +1369,86 @@ mod tests {
         assert_eq!(rows[0].account_id, source.account_id);
     }
 
-    /// VIP 到期的行必须带账号 id，且错误码精确到 `ACCOUNT_NOT_VIP`——面板读到的
-    /// `error` 文本会被 `sanitize_runtime_log_error` 塌成常量，code 是唯一信号。
+    /// 预检阶段的早退必须**带账号 id**且**错误码精确**：面板读到的 `error` 文本会被
+    /// `sanitize_runtime_log_error` 塌成常量，code 是那行日志唯一的机器可读信号。
+    ///
+    /// 这条测试原先钉的是 `ACCOUNT_NOT_VIP`（VIP 到期的预检行）。那个闸已随
+    /// 「VIP 不是准入条件」一并删除，但这条要求对**还留着**的闸同样成立，因此把断言
+    /// 换成账号被禁用（另一条带账号对象的预检早退），而不是删掉整条测试。
     #[tokio::test]
-    async fn account_not_vip_precheck_row_uses_account_id() {
-        let source = sample_source("tok_not_vip", true);
-        let account = sample_account(false);
+    async fn precheck_early_exit_carries_the_account_id_and_an_exact_code() {
+        let source = sample_source("tok_gate_removed", true);
+        let mut account = sample_account();
+        account.status = AccountStatus::Disabled;
         let (service, log_repo) = build_service(Some(source.clone()), Some(account.clone()));
 
-        let err = expect_err(service.fetch_music_url("tok_not_vip", sample_req()).await);
-        assert_eq!(err.code, ErrorCode::AccountNotVip);
+        let err = expect_err(
+            service
+                .fetch_music_url("tok_gate_removed", sample_req())
+                .await,
+        );
+        assert_eq!(err.code, ErrorCode::AccountDisabled);
+
+        let rows = log_repo.rows();
+        assert_eq!(rows.len(), 1, "预检失败必须恰好写一行");
+        assert_eq!(rows[0].stage, RuntimeLogStage::Precheck);
+        assert_eq!(rows[0].error_code.as_deref(), Some("ACCOUNT_DISABLED"));
+        assert_eq!(
+            rows[0].error_code.as_deref(),
+            Some(ErrorCode::AccountDisabled.as_str()),
+            "日志里的 code 必须与客户端拿到的 code 同源"
+        );
+        assert_eq!(rows[0].account_id, account.account_id);
+        assert_eq!(rows[0].source_id, source.source_id);
+    }
+
+    /// **闸移除的验收点**：一条在期权益都没有的账号在取链预检**不再早退**，
+    /// 而是照常打上游。
+    ///
+    /// 断言的不只是「没返回 `ACCOUNT_NOT_VIP`」：要钉的是**确实发生了一次上游调用**
+    /// （用 `FakeFetcher` 数次数，`NeverCalledFetcher` 那种替身在这里帮不上忙），
+    /// 以及**一行 `Precheck` 都没有**——旧闸既挡请求又写预检行，两样都得消失。反之，
+    /// 如果哪天有人把权益判定重新塞回预检，这条会同时在这两处失败。
+    #[tokio::test]
+    async fn vip_inactive_account_is_no_longer_rejected_before_fetch() {
+        let fetcher = FakeFetcher::new(vec![Ok(success_result("http://cdn.test/flac.flac"))]);
+        // 前置步骤（dfid / 刷新）保持已满足：否则「没早退」也可能是被别的前置步骤
+        // 挡住了，测不到准入这一段。
+        let mut account = account_ready_for_fetch();
+        // 「这个账号没有任何权益」现在的表述就是空权益列表——账号级的聚合布尔值
+        // （`vip_active`）已删除，权益是并列的增量信息。这里显式写出来而不靠 fixture
+        // 的默认值，测试的前提才不随 fixture 漂移。
+        account.entitlements = Vec::new();
+        let (service, log_repo) = build_loop_service_with_account(
+            sample_source("tok_no_vip", true),
+            account,
+            fetcher.clone(),
+        );
+
+        let resp = service
+            .fetch_music_url("tok_no_vip", sample_req())
+            .await
+            .expect("权益不再是准入闸：一条在期权益都没有的账号也必须真的去取链");
+        assert_eq!(resp.url, "http://cdn.test/flac.flac");
+        assert_eq!(fetcher.call_count(), 1, "应当且只应当打一次上游");
 
         let rows = log_repo.rows();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].stage, RuntimeLogStage::Precheck);
-        assert_eq!(rows[0].error_code.as_deref(), Some("ACCOUNT_NOT_VIP"));
-        assert_eq!(rows[0].account_id, account.account_id);
-        assert_eq!(rows[0].source_id, source.source_id);
+        assert!(
+            rows.iter()
+                .all(|row| row.stage != RuntimeLogStage::Precheck),
+            "没有发生任何预检早退，就不该有 Precheck 行：{:?}",
+            rows.iter().map(|row| row.stage).collect::<Vec<_>>()
+        );
+        assert_eq!(rows[0].stage, RuntimeLogStage::FetchMusicUrl);
+        assert!(rows[0].ok);
     }
 
     /// 账号被禁用同样落在预检阶段，且用的是账号自身的 id。
     #[tokio::test]
     async fn disabled_account_writes_a_precheck_row() {
         let source = sample_source("tok_acc_disabled", true);
-        let mut account = sample_account(true);
+        let mut account = sample_account();
         account.status = AccountStatus::Disabled;
         let (service, log_repo) = build_service(Some(source.clone()), Some(account.clone()));
 

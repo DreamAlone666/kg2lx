@@ -1,7 +1,14 @@
 <script lang="ts">
 	import { Badge, Card, CardContent, CardHeader, StatusBadge } from '$lib/components/ui';
-	import { accountStatusLabel, formatDateTime, labelOf, providerLabel } from '$lib/domain';
-	import { accountStatusTone, vipTone } from '$lib/domain/tone';
+	import {
+	accountStatusLabel,
+	formatDateTime,
+	isNamedVipProduct,
+	labelOf,
+	providerLabel,
+	vipProductLabel
+} from '$lib/domain';
+	import { accountStatusTone, VIP_ENTITLEMENT_TONE } from '$lib/domain/tone';
 	import type { SourceSummary } from '$lib/api/types';
 
 	/**
@@ -20,6 +27,19 @@
 	 * 后连完整读取都做不到。需要时地址栏里就是它。
 	 */
 	let { source }: { source: SourceSummary } = $props();
+
+	/**
+	 * 卡片上要渲染的会员权益：在期的、且我们能命名的那些。
+	 *
+	 * 判据与详情页同源（isNamedVipProduct 与 vipProductLabel 都来自领域层），所以两页不会
+	 * 各自决定「哪些算权益」。1 天窗口的未命名条目不上卡片：它们只要在期就永远落在临近阈值
+	 * 内，标出来只会让标记失去意义。
+	 */
+	const listedEntitlements = $derived(
+		(source.entitlements ?? []).filter(
+			(entitlement) => entitlement.active && isNamedVipProduct(entitlement.product_type)
+		)
+	);
 
 	/** 从未刷新过时不要拼成「最近刷新 从未」，那不是一句人话。 */
 	const lastRefreshText = $derived(
@@ -46,7 +66,7 @@
 			<div class="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5">
 				<Badge variant="secondary">{labelOf(providerLabel, source.provider)}</Badge>
 
-				<!-- 标记放右侧：两个源级标记（已停用、自动降级）相邻，账号级 VIP 在后；三者都属于
+				<!-- 标记放右侧：两个源级标记（已停用、自动降级）相邻，账号级的会员权益在后；它们都属于
 				     「标记」而非「状态」，真正的账号状态交给下面的胶囊单独一行承担。 -->
 				<div class="flex shrink-0 items-center gap-1.5">
 					{#if !source.enabled}
@@ -69,9 +89,17 @@
 							自动降级
 						</StatusBadge>
 					{/if}
-					{#if source.vip_active}
-						<StatusBadge tone={vipTone(true)} dot>VIP</StatusBadge>
-					{/if}
+					<!--
+						去掉 `dot`：这里的胶囊报的是「这一项权益在期」，不是一个需要点亮的账号状态，
+						而 `dot` 在本仓一直表示状态。颜色也不随状态变（见 VIP_ENTITLEMENT_TONE）。
+
+						用 product_type 做 key：同一条权益在一个账号里只出现一次。
+					-->
+					{#each listedEntitlements as entitlement (entitlement.product_type)}
+						<StatusBadge tone={VIP_ENTITLEMENT_TONE}>
+							{labelOf(vipProductLabel, entitlement.product_type)}
+						</StatusBadge>
+					{/each}
 				</div>
 			</div>
 			<h2 class="mt-3 truncate text-lg font-semibold tracking-tight" title={source.name}>

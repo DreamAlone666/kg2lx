@@ -1,9 +1,11 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use chrono::{Local, NaiveDateTime, TimeZone};
 use serde_json::Value;
 
 use crate::config::Config;
+use crate::domain::account::VipEntitlement;
 use crate::domain::cookie_store::{
     CookieStore, merge_cookies_from_body_if_present, merge_cookies_from_headers,
 };
@@ -84,24 +86,91 @@ struct VipDetailResponse {
     data: Option<VipDetailData>,
 }
 
+/// 这里**只解析 `busi_vip`**。上游同一条响应里还有顶层 `is_vip` / `is_music_vip` /
+/// `vip_type` 三个用于聚合的原料字段，本仓曾经拿它们推导出一个账号级的「有没有会员」
+/// 布尔值；权益是并列的增量信息（`busi_vip` 才是事实），聚合值既冗余又低效，已经
+/// 连同推导一起删除，因此这里不再声明它们——那些键留在响应里也不会让解析失败。
 #[derive(Debug, serde::Deserialize)]
 struct VipDetailData {
-    #[serde(default)]
-    vip_type: Option<i64>,
-    #[serde(default)]
-    is_vip: Option<i64>,
-    #[serde(default)]
-    is_music_vip: Option<i64>,
     #[serde(default)]
     busi_vip: Vec<VipBusinessEntry>,
 }
 
+/// `data.busi_vip[]` 的一条：上游把「有哪些会员权益」拆成并列的多条，每条各有
+/// 自己的 `product_type` 与有效期，**没有任何中文名或描述字段**（整条 dump 过，
+/// 13 个 key 里没有 name/title/description），中文名是客户端文案。
+///
+/// `busi_type`（上游的权益分组标识，实测取值 `concept`）**不再解析**：它唯一的用处
+/// 是已删除的聚合推导（判断「概念版权益在不在期」），此后没有任何消费者。上游多发
+/// 一个键不影响解析。
+///
+/// 三个新字段的类型是 `Option<Value>` 而不是 `Option<String>`，理由与
+/// `SongUrlResponse` 上那几个观测字段**完全同类**：它们只记录上游说过什么，不参与
+/// 任何判定，因此不该有「让整条 VIP 查询失败」的权力。一次原本
+/// 成功的 `fetch_vip_status` 因为某个时间字段被写成数字而整条失败，向上表现成
+/// `UPSTREAM_VIP_CHECK_FAILED` → 刷新失败 → 账号被标成 `login_failed`，而用户
+/// 其实一切正常。取值的窄化在 `to_entitlement`：认不出的形状读成「上游没说」，
+/// **不猜值**。
 #[derive(Debug, serde::Deserialize)]
 struct VipBusinessEntry {
     #[serde(default)]
-    busi_type: Option<String>,
-    #[serde(default)]
     is_vip: Option<i64>,
+    /// 权益标识（实测 `svip` / `tvip` / `qvip` / `dvip`）。取值域**刻意不枚举**：
+    /// 上游新增一档时原样透传给后台，比在解析层「认不出就丢」要好——丢掉的正是
+    /// 用户要看的那条信息。
+    #[serde(default)]
+    product_type: Option<Value>,
+    #[serde(default)]
+    vip_begin_time: Option<Value>,
+    #[serde(default)]
+    vip_end_time: Option<Value>,
+}
+
+impl VipBusinessEntry {
+    /// 把一条 `busi_vip` 条目落成对外的权益记录。
+    ///
+    /// `product_type` 缺失（或形状认不出）时落成空串而不是丢弃整条：每一条都是
+    /// 上游明确列出的一个权益位，丢掉它等于把「上游给了什么」抹成「上游什么都没
+    /// 给」。`is_vip` 缺失读成 false——它是「上游没表态」，不是「在期」。
+    fn to_entitlement(&self) -> VipEntitlement {
+        VipEntitlement {
+            product_type: observed_string(self.product_type.as_ref()).unwrap_or_default(),
+            active: self.is_vip.unwrap_or(0) == 1,
+            begin_at: observed_time(self.vip_begin_time.as_ref()),
+            end_at: observed_time(self.vip_end_time.as_ref()),
+        }
+    }
+}
+
+/// 权益时间字段的取值：先按观测字段的宽容度窄化成字符串（形状认不出就是「上游
+/// 没说」），再按本地时区解释成时间戳。两步都不允许失败，理由见
+/// `VipBusinessEntry`。
+fn observed_time(value: Option<&Value>) -> Option<i64> {
+    local_time_to_epoch(observed_string(value).as_deref())
+}
+
+/// 上游的权益时间串（`YYYY-MM-DD HH:MM:SS`）→ 秒级 Unix 时间戳。
+///
+/// **假设（必须写明）：上游这个串不带时区。** 酷狗只给本地时间文本，没有偏移量、
+/// 也没有 `Z` 后缀，因此唯一可用的解释是「它与本服务端所处时区一致」——即假定
+/// 服务端与用户在同一时区。**残留风险**：浏览器与服务器时区不同（出境、多机房、
+/// 或用户手动改过系统时区）时，后台按浏览器本地时区渲染这个时间戳会整体偏移一个
+/// 时差。这是解释层面的缺陷，不是解析缺陷，在上游补出时区之前无法消除；受影响的
+/// 只有展示的钟点，`active`（`is_vip`）这个判断不经过时间。
+///
+/// 任何读不出来的取值（空串、格式不同、不存在的本地时刻）一律 `None`，且**绝不
+/// 让整条响应解析失败**：权益时间只是附带信息，为此把一次成功的 VIP 查询变成
+/// `UPSTREAM_VIP_CHECK_FAILED`，等于把「拿到了权益、只是时间读不出来」说成
+/// 「上游请求失败」，指向完全错误的方向。
+fn local_time_to_epoch(value: Option<&str>) -> Option<i64> {
+    let naive = NaiveDateTime::parse_from_str(value?, "%Y-%m-%d %H:%M:%S").ok()?;
+    // 夏令时切换那一小时里的本地时刻不唯一，`single()` 此时返回 `None`。中国区没有
+    // 夏令时，取「不唯一即 None」比随手挑一个更诚实：宁可少一个时间戳，也不给出
+    // 一个可能错了一小时的值。
+    Local
+        .from_local_datetime(&naive)
+        .single()
+        .map(|dt| dt.timestamp())
 }
 
 /// `song/url` 响应里"上游到底说了什么"的观测结果。
@@ -298,8 +367,10 @@ pub struct RefreshResult {
 }
 
 pub struct VipStatusResult {
-    pub vip_type: i32,
-    pub vip_active: bool,
+    /// 上游给的权益明细：**有哪几条、各自到什么时候**。这是关于会员权益的唯一口径
+    /// ——此前还额外返回一个账号级的聚合布尔值（「有没有会员」），那个值既冗余又
+    /// 低效，已删除。
+    pub entitlements: Vec<VipEntitlement>,
     pub cookies: CookieStore,
 }
 
@@ -558,7 +629,12 @@ impl KugouLiteClient {
         cookies: &CookieStore,
     ) -> Result<VipStatusResult, AppError> {
         let mut merged = cookies.clone();
-        let url = format!("{}/user/vip/detail", self.base_url);
+        // 走 `/youth/union/vip` 而不是 `/user/vip/detail`：两者打的是同一个上游 URL
+        // （`kugouvip.kugou.com/v1/get_union_vip`），差别只在**参数**——`/user/vip/detail`
+        // 只带 `busi_type=concept`，返回 2 条权益；这一条额外带
+        // `opt_product_types=dvip,qvip`，返回 4 条。换路由的**唯一**原因就是拿到完整
+        // 的权益明细，其余语义不变。
+        let url = format!("{}/youth/union/vip", self.base_url);
         let resp = self
             .client
             .get(&url)
@@ -586,27 +662,20 @@ impl KugouLiteClient {
             .map_err(|e| AppError::upstream_vip_check_failed(format!("parse vip: {}", e)))?;
 
         let data = parsed.data.unwrap_or(VipDetailData {
-            vip_type: None,
-            is_vip: None,
-            is_music_vip: None,
             busi_vip: Vec::new(),
         });
 
-        let top_level_vip = data.is_vip.unwrap_or(0) == 1 || data.is_music_vip.unwrap_or(0) == 1;
-        let concept_vip = data.busi_vip.iter().any(|entry| {
-            entry.is_vip.unwrap_or(0) == 1
-                && entry
-                    .busi_type
-                    .as_deref()
-                    .map(|value| value.eq_ignore_ascii_case("concept"))
-                    .unwrap_or(false)
-        });
-        let vip_type = data.vip_type.unwrap_or(0) as i32;
-        let vip_active = top_level_vip || concept_vip;
+        // `busi_vip` 为空是**正常状态**（这个账号一条权益都没有），不是错误：上面的
+        // 解析已经成功，此时得到一个空的 entitlements 并照常返回，绝不在这里报
+        // 「VIP 校验失败」——那会把「没有权益」和「问不到上游」混成同一件事。
+        let entitlements = data
+            .busi_vip
+            .iter()
+            .map(VipBusinessEntry::to_entitlement)
+            .collect();
 
         Ok(VipStatusResult {
-            vip_type,
-            vip_active,
+            entitlements,
             cookies: merged,
         })
     }
@@ -1041,6 +1110,174 @@ mod tests {
                 .play_url()
                 .as_deref(),
             Some("http://first/a.mp3")
+        );
+    }
+
+    // ---- 会员权益明细（`/youth/union/vip`） ----
+    //
+    // 这些测试只走「解析 → 落成权益」这条纯函数路径：真正的 `fetch_vip_status` 要
+    // 打网络（本机 KuGouMusicApi），在这里跑不了，而容易出错的那一段（字段归属、
+    // 时间解释、容错）恰好全在纯函数里。
+
+    /// 复刻 `fetch_vip_status` 里取 `busi_vip` 的两行，好把 fixture 走完生产代码
+    /// 的映射（`VipBusinessEntry::to_entitlement`），而不是在测试里另写一份。
+    fn parse_entitlements(body: &str) -> Vec<VipEntitlement> {
+        let parsed: VipDetailResponse = serde_json::from_str(body).expect("vip fixture 必须能解析");
+        parsed
+            .data
+            .unwrap_or(VipDetailData {
+                busi_vip: Vec::new(),
+            })
+            .busi_vip
+            .iter()
+            .map(VipBusinessEntry::to_entitlement)
+            .collect()
+    }
+
+    /// 四条并列权益。`busi_vip` 的**字段名与条目形状**取自实际响应，
+    /// 顶层包裹（`status` / `data`）只是形状示意——本仓没有存下整条 body。
+    ///
+    /// 断言的是「两个时间字段各自归位、且按**本地时区**解释」而不是某个固定的
+    /// 时间戳数字：那个数字取决于运行机器的时区，写死它等于要求 CI 在特定时区里跑
+    /// （见下面两处断言的说明）。
+    #[test]
+    fn parses_entitlement_details_with_their_own_windows() {
+        let entitlements = parse_entitlements(
+            r#"{"status":1,"data":{"is_vip":1,"is_music_vip":0,"vip_type":0,"busi_vip":[
+                {"product_type":"svip","is_vip":1,"busi_type":"concept","vip_begin_time":"2030-01-01 00:00:00","vip_end_time":"2030-02-01 00:00:00","vip_limit_quota":{"total":500}},
+                {"product_type":"tvip","is_vip":1,"busi_type":"concept","vip_begin_time":"2030-01-01 00:00:00","vip_end_time":"2030-07-01 12:34:56","vip_limit_quota":{}},
+                {"product_type":"qvip","is_vip":0,"busi_type":"concept","vip_begin_time":"2030-01-01 00:00:00","vip_end_time":"2030-01-02 00:00:00"},
+                {"product_type":"dvip","is_vip":0,"busi_type":"concept","vip_begin_time":"2030-01-01 00:00:00","vip_end_time":"2030-01-02 00:00:00"}
+            ]}}"#,
+        );
+
+        assert_eq!(
+            entitlements
+                .iter()
+                .map(|e| e.product_type.as_str())
+                .collect::<Vec<_>>(),
+            vec!["svip", "tvip", "qvip", "dvip"],
+            "busi_vip 有几条就落几条，顺序与上游一致：它是并列列表，不是映射"
+        );
+        assert!(entitlements[0].active);
+        assert!(
+            !entitlements[2].active,
+            "is_vip 为 0 的条目照常落盘，只是 active 为 false"
+        );
+
+        let begin = entitlements[0].begin_at.expect("正常时间串必须解析出来");
+        let end = entitlements[0].end_at.expect("正常时间串必须解析出来");
+        // **不要**在这里断言 `end - begin` 等于 31 天：窗口跨过夏令时切换点时，两个
+        // 本地时刻之间的 UTC 秒数会多/少一个小时（澳大利亚 Lord Howe 岛这种带半小时
+        // 偏移又有夏令时的时区实测会挂）。能钉且与时区无关的写法是两个字段**各自**按
+        // 本地时区渲染回去都等于原串——字段接反、偏移一小时、被当成 UTC 解释，三种
+        // 错法都会让其中一条失败。
+        let rendered = |ts: i64| {
+            Local
+                .timestamp_opt(ts, 0)
+                .unwrap()
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string()
+        };
+        assert_eq!(rendered(begin), "2030-01-01 00:00:00");
+        assert_eq!(rendered(end), "2030-02-01 00:00:00");
+        assert!(end > begin, "接反了这里会失败");
+    }
+
+    /// 时间串的三种读不出：空串、格式不同、形状根本不是字符串。
+    ///
+    /// 它们一律是 `None`，且**不能把整条响应升级成失败**——这一层只是记录。
+    #[test]
+    fn unreadable_time_strings_become_none_without_failing_the_response() {
+        assert!(local_time_to_epoch(Some("2030-01-01 00:00:00")).is_some());
+        assert_eq!(local_time_to_epoch(Some("")), None, "空串是「上游没说」");
+        assert_eq!(local_time_to_epoch(None), None);
+        assert_eq!(
+            local_time_to_epoch(Some("2026-09-20")),
+            None,
+            "只有日期没有钟点的串不是这个格式"
+        );
+        assert_eq!(local_time_to_epoch(Some("2026/09/20 00:00:00")), None);
+
+        let entitlements = parse_entitlements(
+            r#"{"status":1,"data":{"busi_vip":[
+                {"product_type":"svip","is_vip":1,"vip_begin_time":"","vip_end_time":"not-a-time"},
+                {"product_type":"tvip","is_vip":1,"vip_begin_time":1700000000,"vip_end_time":null}
+            ]}}"#,
+        );
+        assert_eq!(entitlements.len(), 2, "时间读不出来不等于整条响应失败");
+        assert_eq!(entitlements[0].begin_at, None);
+        assert_eq!(entitlements[0].end_at, None);
+        assert!(
+            entitlements[0].active,
+            "时间缺失不影响 is_vip 的判定：权益在不在期由 active 说"
+        );
+        assert_eq!(
+            entitlements[1].begin_at, None,
+            "数字形状的时间不算时间：这里不猜值"
+        );
+        assert_eq!(entitlements[1].end_at, None);
+    }
+
+    /// `busi_vip: []`（乃至整个 `data` 缺失）是**正常状态**：这个账号一条权益都没有。
+    /// 它不是「VIP 校验失败」——解析照常成功，给出一个空的权益列表。
+    #[test]
+    fn empty_busi_vip_is_a_normal_state_not_a_failure() {
+        assert!(
+            parse_entitlements(r#"{"status":1,"data":{"is_vip":0,"vip_type":0,"busi_vip":[]}}"#)
+                .is_empty()
+        );
+        assert!(
+            parse_entitlements(r#"{"status":1,"data":{"is_vip":0,"vip_type":0}}"#).is_empty(),
+            "没有 busi_vip 键与空数组是同一件事"
+        );
+        assert!(
+            parse_entitlements(r#"{"status":1}"#).is_empty(),
+            "连 data 都没有也只是「没有权益」"
+        );
+    }
+
+    /// 认不出的 `product_type` 必须**原样透传**。这个取值域不在本仓手里（实测至少
+    /// 4 个），丢掉一条就等于在后台把「这个账号还有一条权益」抹掉；缺失与空串同理
+    /// ——条目本身不能丢，只能把名字留空。
+    #[test]
+    fn unknown_product_types_are_passed_through() {
+        let entitlements = parse_entitlements(
+            r#"{"status":1,"data":{"busi_vip":[
+                {"product_type":"future-type","is_vip":1},
+                {"product_type":"","is_vip":1},
+                {"is_vip":1}
+            ]}}"#,
+        );
+
+        assert_eq!(entitlements.len(), 3, "三条都要留下");
+        assert_eq!(entitlements[0].product_type, "future-type");
+        assert_eq!(entitlements[1].product_type, "");
+        assert_eq!(
+            entitlements[2].product_type, "",
+            "缺失读成空串，不是丢掉这一条"
+        );
+        assert!(entitlements.iter().all(|entry| entry.active));
+    }
+
+    /// `is_vip` 缺失读成「上游没表态」，即 **不在期**。
+    ///
+    /// 这条是 wire 契约的一部分：界面按 `active` 决定这一条的去留与文案，读成
+    /// 「在期」会把一条上游从未承认的权益显示成已生效——而那种错误不会有任何一层
+    /// 报错。时间字段与它互不影响（读得出时间不等于在期）。
+    #[test]
+    fn missing_is_vip_reads_as_not_active() {
+        let entitlements = parse_entitlements(
+            r#"{"status":1,"data":{"busi_vip":[
+                {"product_type":"svip","vip_begin_time":"2030-01-01 00:00:00"}
+            ]}}"#,
+        );
+
+        assert_eq!(entitlements.len(), 1, "`is_vip` 缺失不影响条目本身");
+        assert!(!entitlements[0].active);
+        assert!(
+            entitlements[0].begin_at.is_some(),
+            "能不能读出时间与在不在期是两件事"
         );
     }
 

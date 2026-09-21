@@ -12,7 +12,6 @@ pub enum ErrorCode {
     SourceDisabled,
     AccountNotFound,
     AccountDisabled,
-    AccountNotVip,
     LoginSessionNotFound,
     UpstreamRequestFailed,
     UpstreamLoginFailed,
@@ -54,7 +53,6 @@ impl ErrorCode {
             Self::SourceDisabled => "SOURCE_DISABLED",
             Self::AccountNotFound => "ACCOUNT_NOT_FOUND",
             Self::AccountDisabled => "ACCOUNT_DISABLED",
-            Self::AccountNotVip => "ACCOUNT_NOT_VIP",
             Self::LoginSessionNotFound => "LOGIN_SESSION_NOT_FOUND",
             Self::UpstreamRequestFailed => "UPSTREAM_REQUEST_FAILED",
             Self::UpstreamLoginFailed => "UPSTREAM_LOGIN_FAILED",
@@ -80,13 +78,12 @@ impl ErrorCode {
     /// bin target 看不到它，于是会报「从未被使用」。不要因为这条警告把它删掉——
     /// 删了安全网就没了。
     #[allow(dead_code)]
-    pub const ALL: [ErrorCode; 18] = [
+    pub const ALL: [ErrorCode; 17] = [
         ErrorCode::AdminUnauthorized,
         ErrorCode::SourceNotFound,
         ErrorCode::SourceDisabled,
         ErrorCode::AccountNotFound,
         ErrorCode::AccountDisabled,
-        ErrorCode::AccountNotVip,
         ErrorCode::LoginSessionNotFound,
         ErrorCode::UpstreamRequestFailed,
         ErrorCode::UpstreamLoginFailed,
@@ -164,15 +161,6 @@ impl AppError {
         Self {
             code: ErrorCode::AccountDisabled,
             message: "account is disabled".into(),
-            status: StatusCode::FORBIDDEN,
-            is_admin: false,
-        }
-    }
-
-    pub fn account_not_vip() -> Self {
-        Self {
-            code: ErrorCode::AccountNotVip,
-            message: "account vip is not active".into(),
             status: StatusCode::FORBIDDEN,
             is_admin: false,
         }

@@ -69,6 +69,36 @@ export const qualityLabel: Record<string, string> = {
 };
 
 /**
+ * 会员权益类型码（account.entitlements[].product_type）→ 权益名称。
+ *
+ * 依据是**与 App 会员中心的到期日逐条对齐核对过**：同一个账号下这里的每条明细都能
+ * 在 App 里找到到期日相同的那一项，所以 svip / tvip 各指哪一项权益是可以确信的。
+ *
+ * **只放这两条**，其余码（qvip / dvip 等）刻意不在本表里编中文名：目前没有同类依据
+ * 能判断它们对应哪一项权益，猜一个名字会变成一条用户无法反驳的错误断言。
+ *
+ * 这张表同时是权益段的白名单（见 isNamedVipProduct）：没有名字的权益位既不上榜，
+ * 也不走 labelOf 的原值回退——把一个内部产品码摆给用户看，他既无法据此做任何操作，
+ * 也无从判断它重不重要（同「详情页不再展示 source_id」那条取舍）。
+ */
+export const vipProductLabel: Record<string, string> = {
+	svip: '概念版VIP',
+	tvip: '畅听VIP'
+};
+
+/**
+ * 该 product_type 是否是**我们能命名的**权益——也就是权益段该不该列它。
+ *
+ * Why 需要这条白名单：没有名字的权益位是 1 天窗口的日结条目，只要在期就永远落在
+ * 「临近到期」阈值内，「即将到期」于是常亮；胶囊一旦常亮就不再是信号，而那两条真正
+ * 会掉、真正需要预警的权益反而被淹掉。它们仍由接口返回（服务端不做筛选），只是不上榜，
+ * 将来有需求再说。
+ */
+export function isNamedVipProduct(productType: string | null | undefined): boolean {
+	return !!productType && Object.hasOwn(vipProductLabel, productType);
+}
+
+/**
  * 运行时错误码 → 中文标签。
  *
  * 错误码是写给日志的机器标识，不是写给运维的文案。共享 `UPSTREAM_` 前缀的**每一个**
@@ -88,6 +118,14 @@ export const errorCodeLabel: Record<string, string> = {
 	SOURCE_NAME_TOO_LONG: '标题过长',
 	ACCOUNT_NOT_FOUND: '账号不存在',
 	ACCOUNT_DISABLED: '账号已停用',
+	/**
+	 * 服务端**已不再产生**这个码（准入闸已移除），但必须保留。
+	 *
+	 * 这张表读的不是「服务端现在会抛什么」，而是**已经落盘的字符串**：运行时日志行的
+	 * error_code、账号记录的 last_error_code 都可能是历史行，历史行不会因为服务端
+	 * 改了行为而消失。删掉这一条，那些行会经 labelOf 回退成英文码，用户看到的是内部
+	 * 标识而不是中文——排查时最需要读懂的恰恰是这些老记录。
+	 */
 	ACCOUNT_NOT_VIP: '账号未开通 VIP',
 	LOGIN_SESSION_NOT_FOUND: '登录会话不存在',
 	UPSTREAM_REQUEST_FAILED: '上游请求失败',

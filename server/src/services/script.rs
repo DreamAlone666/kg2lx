@@ -64,7 +64,6 @@ const SCRIPT_ERROR_MESSAGES: &[(ErrorCode, &str)] = &[
     (ErrorCode::SourceDisabled, "音源已停用，请在后台启用"),
     (ErrorCode::AccountNotFound, "账号不存在，请重新绑定"),
     (ErrorCode::AccountDisabled, "账号已停用，请在后台启用"),
-    (ErrorCode::AccountNotVip, "账号 VIP 已失效，请续费"),
     (ErrorCode::LoginSessionNotFound, "登录已过期，请重新扫码"),
     (ErrorCode::UpstreamRequestFailed, "连接酷狗失败，请稍后重试"),
     (ErrorCode::UpstreamLoginFailed, "登录态失效，请在后台刷新"),

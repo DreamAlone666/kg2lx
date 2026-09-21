@@ -30,12 +30,15 @@ pub struct QrLoginPollResponse {
     pub source: Option<SourceInfo>,
 }
 
+/// 扫码绑定成功后回给前端的账号摘要。
+///
+/// 这里**只有身份**，没有会员信息：账号级「有没有会员」的聚合布尔值（`vip_active`
+/// 与 `vip_type`）已随权益口径统一而删除——绑定成功与否只由登录态决定，权益明细
+/// 是另一件事，要看权益请走详情接口的 `entitlements`。
 #[derive(serde::Serialize)]
 pub struct AccountInfo {
     pub account_id: String,
     pub userid: String,
-    pub vip_active: bool,
-    pub vip_type: i32,
 }
 
 #[derive(serde::Serialize)]
@@ -200,13 +203,12 @@ impl LoginService {
         session.updated_at = login_session::now_ts();
         self.session_repo.save(&session).await?;
 
-        if !vip.vip_active {
-            session.status = LoginSessionStatus::Failed;
-            session.error = Some("VIP not active for concept membership".into());
-            session.updated_at = login_session::now_ts();
-            self.session_repo.save(&session).await?;
-            return Err(AppError::account_not_vip());
-        }
+        // 这里曾是「没有 VIP 权益就拒绝绑定」的闸，连同它写下的英文
+        // `VIP not active for concept membership` 一起删除了：**登录态与权益是
+        // 两件事**，扫码授权成功就意味着这个账号可用，而权益只决定能取到哪一档
+        // 音质（免费歌曲与部分高音质歌没有会员照样能取链）。旧闸把账号挡在绑定
+        // 之外，用户拿着一个完全可用的账号却连音源都建不出来。
+        // 权益明细照常随账号落盘（`entitlements`），后台据此展示。
 
         let userid = session
             .temp_cookies
@@ -227,8 +229,9 @@ impl LoginService {
             Some(mut acc) => {
                 acc.cookies = session.temp_cookies.clone();
                 acc.status = AccountStatus::Active;
-                acc.vip_type = vip.vip_type;
-                acc.vip_active = vip.vip_active;
+                // 重新扫码成功即整体覆盖权益明细，包括空的（「这个账号现在一条权益
+                // 都没有」是刚查到的事实，不该保留上一次的条目）。
+                acc.entitlements = vip.entitlements;
                 acc.last_refresh_at = Some(now2);
                 acc.last_success_at = Some(now2);
                 // 重新登录成功即视为错误已消失：code 与 message 一起清，避免界面
@@ -247,8 +250,7 @@ impl LoginService {
                     upstream_userid: userid.clone(),
                     display_name: None,
                     status: AccountStatus::Active,
-                    vip_type: vip.vip_type,
-                    vip_active: vip.vip_active,
+                    entitlements: vip.entitlements,
                     cookies: session.temp_cookies.clone(),
                     last_refresh_at: Some(now2),
                     last_success_at: Some(now2),
@@ -306,8 +308,6 @@ impl LoginService {
             account: Some(AccountInfo {
                 account_id: account.account_id,
                 userid,
-                vip_active: vip.vip_active,
-                vip_type: vip.vip_type,
             }),
             source: Some(SourceInfo {
                 source_id: src.source_id,
@@ -346,8 +346,6 @@ impl LoginService {
             account: Some(AccountInfo {
                 account_id: account.account_id,
                 userid: account.upstream_userid,
-                vip_active: account.vip_active,
-                vip_type: account.vip_type,
             }),
             source: Some(SourceInfo {
                 source_id: src.source_id,
