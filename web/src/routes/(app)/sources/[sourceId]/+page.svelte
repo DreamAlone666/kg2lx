@@ -23,6 +23,8 @@
 		formatDateTime,
 		isNamedVipProduct,
 		labelOf,
+		vipEntitlementEmphasis,
+		VIP_ENTITLEMENT_TONE,
 		vipProductLabel
 	} from '$lib/domain';
 
@@ -234,14 +236,33 @@
 							<!--
 								不显示「剩余 N 天」这类推算值：到期时刻是事实，剩余天数会随时间变旧，
 								而本页没有任何计时器会去刷新它（二维码那种短时交互才配一个）。
+
+								布局用 flex-wrap 而不是 `grid grid-cols-2`：条目数随账号变化（0..N，
+								见上文），固定两列的栅格在只有一条权益时就会留下一条装不满的死轨道——
+								这正是上面那个三段栅格把「轨道数 == 内容数」立成不变量的理由，同一个
+								理由在这里同样成立。flex 没有轨道、只有内容，才是这一段的正确形状。
+
+								两条权益因此在宽屏落到同一行（块高 2 行 → 1 行），但**右侧空白不会消失**：
+								这一行 1182px 里只有约 460px 是内容（权益名 + 到期时刻）。这条改动解决的是
+								「此前是裸文本、没有任何视觉锚点，两条权益也看不出高低」，**不是**「把宽度
+								填满」——把「右边还有空白」当成没做完，是误读了它的目的。
+
+								权益名用 StatusBadge（与列表卡片同一个组件、同一个色调、同一个强度判据）：
+								此前这里是裸 <span class="text-sm font-medium">，于是同一份数据在列表上是
+								琥珀胶囊、在详情页是一行纯文本——同一条权益在两页有两种形态，正是本仓禁止
+								的口径分叉。强调强度：最高一档实心、其余柔和底（VIP_ENTITLEMENT_TONE 只
+								决定色相，强度由 vipEntitlementEmphasis 决定，见 domain/tone.ts）。
 							-->
-							<ul class="space-y-2">
+							<ul class="flex flex-wrap items-center gap-x-6 gap-y-2">
 								{#each listedEntitlements as entitlement}
 									{@const expiringTone = entitlementExpiringTone(entitlement.end_at)}
 									<li class="flex flex-wrap items-center gap-x-3 gap-y-1">
-										<span class="text-sm font-medium">
+										<StatusBadge
+											tone={VIP_ENTITLEMENT_TONE}
+											emphasis={vipEntitlementEmphasis(entitlement.product_type)}
+										>
 											{labelOf(vipProductLabel, entitlement.product_type)}
-										</span>
+										</StatusBadge>
 										<!--
 											到期时刻复用同页「最后刷新时间」的 formatDateTime（不另造格式）；
 											定长数字同样要 tabular + nowrap，否则多行之间无法纵向对齐、窄屏还会折行。

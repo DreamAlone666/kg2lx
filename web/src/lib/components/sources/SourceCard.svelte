@@ -8,7 +8,7 @@
 	providerLabel,
 	vipProductLabel
 } from '$lib/domain';
-	import { accountStatusTone, VIP_ENTITLEMENT_TONE } from '$lib/domain/tone';
+	import { accountStatusTone, VIP_ENTITLEMENT_TONE, vipEntitlementEmphasis } from '$lib/domain/tone';
 	import type { SourceSummary } from '$lib/api/types';
 
 	/**
@@ -80,6 +80,10 @@
 						tone 用 success 与详情页开关的「已开启」同色：同一状态在本仓必须同一个颜色
 						（见 $lib/domain/tone），而「开关开着」不是一个待处理事项。代价由详情页写在
 						行内，这里只在 title 里补一句同样的提醒。
+
+						这个原生 title 本轮刻意不换成 Tooltip：整张卡是 <a>，而 Tooltip 的 trigger
+						默认渲染成 <button>——交互元素套交互元素会被浏览器拆开，也会在整卡点击区里
+						多出一个吞点击的死角。它承载的只是一句补充说明，原生 title 已经够用。
 					-->
 					{#if source.quality_fallback}
 						<StatusBadge
@@ -93,15 +97,27 @@
 						去掉 `dot`：这里的胶囊报的是「这一项权益在期」，不是一个需要点亮的账号状态，
 						而 `dot` 在本仓一直表示状态。颜色也不随状态变（见 VIP_ENTITLEMENT_TONE）。
 
+						强度必须与详情页用同一个判据（vipEntitlementEmphasis）：列表说「这个概念版VIP
+						更重」而详情页说不重，就是对同一份权益给出两个答案，正是本仓禁止的口径分叉。
+						两页都从 vipProductOrder 的次序派生，改档位时只会一起变。
+
 						用 product_type 做 key：同一条权益在一个账号里只出现一次。
 					-->
 					{#each listedEntitlements as entitlement (entitlement.product_type)}
-						<StatusBadge tone={VIP_ENTITLEMENT_TONE}>
+						<StatusBadge
+							tone={VIP_ENTITLEMENT_TONE}
+							emphasis={vipEntitlementEmphasis(entitlement.product_type)}
+						>
 							{labelOf(vipProductLabel, entitlement.product_type)}
 						</StatusBadge>
 					{/each}
 				</div>
 			</div>
+			<!--
+				title 保留原生、本轮不换 Tooltip：这里同样在整卡 <a> 内部，换 Tooltip 就要往
+				<a> 里塞一个 <button> trigger，既是无效的嵌套交互元素，也会让「点标题」变成
+				点提示而不是进详情。何况外层 <a> 的 aria-label 已经带了完整标题，再加提示是重复。
+			-->
 			<h2 class="mt-3 truncate text-lg font-semibold tracking-tight" title={source.name}>
 				{source.name}
 			</h2>

@@ -69,7 +69,12 @@ export const qualityLabel: Record<string, string> = {
 };
 
 /**
- * 会员权益类型码（account.entitlements[].product_type）→ 权益名称。
+ * 会员权益类型码（account.entitlements[].product_type）的**有序**白名单：最高一档在前。
+ *
+ * 它是这套映射的**唯一事实来源**——下面的 vipProductLabel（码 → 中文名）与
+ * isNamedVipProduct（这个码是否可命名）都从它派生，中文名也写在这里而不是和次序分家。
+ * 不要再另写一张表：两份白名单迟早会漂移成两套口径，而「同一个码在两页叫不同的名字、
+ * 或一处上榜一处不上榜」正是本仓明令禁止的分叉。
  *
  * 依据是**与 App 会员中心的到期日逐条对齐核对过**：同一个账号下这里的每条明细都能
  * 在 App 里找到到期日相同的那一项，所以 svip / tvip 各指哪一项权益是可以确信的。
@@ -80,14 +85,54 @@ export const qualityLabel: Record<string, string> = {
  * 这张表同时是权益段的白名单（见 isNamedVipProduct）：没有名字的权益位既不上榜，
  * 也不走 labelOf 的原值回退——把一个内部产品码摆给用户看，他既无法据此做任何操作，
  * 也无从判断它重不重要（同「详情页不再展示 source_id」那条取舍）。
+ *
+ * ---------- 次序的来源与性质（动这张表之前必读） ----------
+ * 上游 `busi_vip` 的每条只暴露 is_vip / product_type / vip_begin_time / vip_end_time
+ * 四个字段（见 server/src/services/kugou_lite_client.rs 的 VipBusinessEntry），**没有
+ * 任何等级、权重或排序字段**；服务端还刻意保持上游返回的顺序不做排序，那边有一条断言
+ * 把这件事写死了：「busi_vip 有几条就落几条，顺序与上游一致：它是并列列表，不是映射」。
+ * 也就是说，[svip, tvip] 这个先后**不是从数据里推出来的**——接口对这两个码是平权的，
+ * 谁前谁后都能自圆其说。
+ *
+ * 它成立完全是因为用户对酷狗 App「会员中心」呈现方式的观察：概念版VIP 那一档视觉更炫、
+ * 权益更多，暗示它是畅听VIP 的升级档。所以将来要核对这个次序，**拿 App 会员中心去对，
+ * 不要拿接口数据去「验证」它**——用一份平权的数据去证明一个排序，只会得到自己想看的答案。
+ *
+ * 次序目前只有一个去处：vipProductRank，也就是详情页与列表给最高一档更重的视觉强度
+ * （见 tone.ts 的 vipEntitlementEmphasis）。其余消费方（labelOf / isNamedVipProduct）
+ * 只看成员、不看位置。
  */
-export const vipProductLabel: Record<string, string> = {
-	svip: '概念版VIP',
-	tvip: '畅听VIP'
-};
+export const vipProductOrder = [
+	{ productType: 'svip', label: '概念版VIP' },
+	{ productType: 'tvip', label: '畅听VIP' },
+] as const;
+
+/**
+ * 上面那个有序数组摊平成查表用的字典（labelOf 接的是 Record 而不是数组）。
+ *
+ * 这里的 `as const` 只是为了让二元组保持只读元组形状（Object.fromEntries 只接受这种
+ * 形状）；**次序由 vipProductOrder 独家持有**，这里刻意不重复声明，免得两份先后各自漂移。
+ */
+export const vipProductLabel: Record<string, string> = Object.fromEntries(
+	vipProductOrder.map((product) => [product.productType, product.label] as const)
+);
+
+/**
+ * 权益码在 vipProductOrder 里的位置（0 = 最高一档）；不在白名单里的返回 **null**。
+ *
+ * 返回 null 而不是一个很大的数：下游要区分「不是我们认识的权益」与「只是一档较低」，
+ * 把两者折叠成同一个数字，等于允许未命名的权益悄悄参与排序，而它落在哪一档纯属偶然。
+ */
+export function vipProductRank(productType: string | null | undefined): number | null {
+	if (!productType) return null;
+	const index = vipProductOrder.findIndex((product) => product.productType === productType);
+	return index === -1 ? null : index;
+}
 
 /**
  * 该 product_type 是否是**我们能命名的**权益——也就是权益段该不该列它。
+ *
+ * 判据就是「在不在 vipProductOrder 里」，与中文名共用同一份名单（不再单独维护一张表）。
  *
  * Why 需要这条白名单：没有名字的权益位是 1 天窗口的日结条目，只要在期就永远落在
  * 「临近到期」阈值内，「即将到期」于是常亮；胶囊一旦常亮就不再是信号，而那两条真正
@@ -95,7 +140,7 @@ export const vipProductLabel: Record<string, string> = {
  * 将来有需求再说。
  */
 export function isNamedVipProduct(productType: string | null | undefined): boolean {
-	return !!productType && Object.hasOwn(vipProductLabel, productType);
+	return vipProductRank(productType) !== null;
 }
 
 /**

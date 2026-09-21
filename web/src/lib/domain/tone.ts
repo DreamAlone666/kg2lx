@@ -1,4 +1,5 @@
 import type { AccountStatus, LoginSessionStatus } from '$lib/api/types';
+import { vipProductRank } from './labels';
 
 /**
  * 语义色调 —— 业务状态到状态色的**唯一映射**。
@@ -60,6 +61,29 @@ export function requestOutcomeTone(ok: boolean): Tone {
  * 与上面几张表同一分工。
  */
 export const VIP_ENTITLEMENT_TONE: Tone = 'warning';
+
+/**
+ * 会员权益胶囊的**视觉强度**：最高一档用实心，其余（含未命名权益）用柔和底。
+ *
+ * 与 VIP_ENTITLEMENT_TONE 分工明确：那个决定**色相**（这是会员权益），这个决定同一色相
+ * 里**画多重**。因此它只加强度、不加颜色——若改成换颜色，同一枚胶囊就会同时声称两件事
+ * （这是哪一档权益 / 它在不在期），与上面那段「不携带状态的标签颜色不该随状态变」的论证
+ * 直接冲突。
+ *
+ * 「强度递进来代替新增色相」是本文件已有的做法：见 qualityTone 注释里「取值刻意限制在
+ * neutral → info → success 的强度递进，不使用 danger / warning」。这里只是把同一条判据
+ * 用在了同色系内部。
+ *
+ * 判据是 vipProductOrder 的次序（rank 0 = 最高一档 = 概念版VIP）。那个次序**不是从接口
+ * 数据推出来的**，而是对酷狗 App 会员中心呈现方式的观察——来源与边界写在 labels.ts 那张
+ * 表的注释里，别拿上游数据来「验证」它。
+ *
+ * 未命名权益（rank 为 null）落 soft：它们本来就不上榜（见 isNamedVipProduct），这里给
+ * soft 只是让取值域保持闭合，并不是在断言它们「档次更低」。
+ */
+export function vipEntitlementEmphasis(productType: string | null | undefined): 'soft' | 'solid' {
+	return vipProductRank(productType) === 0 ? 'solid' : 'soft';
+}
 
 /**
  * 权益「临近到期」的判定窗口（天）。
