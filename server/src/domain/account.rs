@@ -140,8 +140,8 @@ mod tests {
     ///
     /// 缺了 `#[serde(default)]`，既有记录会整条反序列化失败——不是丢一个字段，而是
     /// 账号在后台直接消失（`AccountRepo::find_by_id` 只能报错）。这条断言钉住升级兼容，
-    /// fixture 的键集照落盘形态构造，仅把 `last_error`
-    /// 填成一次失败留下的旧值。
+    /// fixture 的键集照落盘形态构造，`last_error` 填一次失败留下的
+    /// 旧值；**取值一律是合成占位**——fixture 只钉形态与派生性质，不携带实例数据。
     /// 落盘记录里**真的可能有** status 为 expired 的一行——这正是 Expired 变体被保留、
     /// 并用 #[deprecated] 标注而不是删除的全部理由。
     ///
@@ -150,7 +150,7 @@ mod tests {
     /// 只能报内部错误，账号在后台表现为「消失」，且与「账号不存在」无从区分。
     ///
     /// fixture 的键集照落盘形态构造（含当时还在写的 vip_type / vip_active
-    /// 两个键）；status 取 expired——它是落盘记录的合法取值之一。
+    /// 两个键）；status 取 expired——它是落盘记录的合法取值之一，旧记录里未必出现。
     #[allow(deprecated)]
     #[test]
     fn reads_rows_whose_status_is_the_deprecated_expired() {
@@ -245,7 +245,7 @@ mod tests {
     }
 
     /// **删字段的兼容性**：`vip_active` / `vip_type` 被删掉之后，上面两条 fixture
-    /// 里仍然带着这两个键——那正是落盘记录的键集。
+    /// 里仍然带着这两个键——那正是本次改动之前落盘记录的键集。
     ///
     /// 这里把两种形态都钉住：**不带**这两个键的（本次改动之后写出的）与**带着**它们
     /// 的（本次改动之前写出的）都必须读得出来。与 `AccountStatus::Expired` 那种

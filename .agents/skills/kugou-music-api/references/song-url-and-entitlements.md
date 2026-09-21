@@ -75,21 +75,19 @@ The signal is in the response body, not the HTTP status: a completely healthy-lo
 
 A `data.busi_vip[]` entry is ids plus window and quota fields — `product_type`, `is_vip`, `vip_begin_time`, `vip_end_time`, `vip_limit_quota` among them. There is no name, title, or description field anywhere in the response. The Chinese membership names the App displays are client-side strings that the upstream does not return, so no field can be read to obtain them.
 
-What has been matched with the App's own membership centre, by lining up an entry's `vip_end_time` against the date shown there:
+What has been matched with the App's own membership centre, by lining up an entry's `vip_end_time` against the date the App shows for that plan:
 
-| `product_type` | App name | `vip_end_time` (read 2026-09-21) | App shows |
-| --- | --- | --- | --- |
-| `svip` | 概念版VIP | `2030-02-01 00:00:00` | — |
-| `tvip` | 畅听VIP | `2030-07-01 12:34:56` | — |
-| `qvip`, `dvip` | not matched to a name | window `2030-01-01 00:00:00` → `2030-01-02 00:00:00` | — |
+- `svip` — 概念版VIP
+- `tvip` — 畅听VIP
+- `qvip`, `dvip` — never matched to a name
 
-Each row's upstream date was read on 2026-09-21 and agrees with the App. `qvip` and `dvip` were never compared against a name in the App.
+The dates read back are that account's own entitlement windows, so they are not recorded here; compare both sides again to re-derive them (see How To Re-verify).
 
 ### The Time Fields
 
 `vip_begin_time` and `vip_end_time` are formatted `YYYY-MM-DD HH:MM:SS`, carry **no timezone**, and can be an empty string. Each value is an instant, whereas the App displays a date.
 
-The end value is not a constant. Two reads on 2026-09-21, about 1.5 hours apart, returned `tvip`'s `vip_end_time` as `2030-07-01 12:34:56` and then `2030-07-01 12:34:56` — same clock time, date advanced by one day — while the `svip` entry read in the second call still carried `2030-02-01 00:00:00`. A window taken from one response is therefore a snapshot of that read, and a value carried over from an earlier read can be off by a day.
+The end value is not a constant. Two reads about 1.5 hours apart returned a different date for the same entry — the clock time unchanged, the date advanced by one day — while another entry read in the second call was unchanged. A window taken from one response is therefore a snapshot of that read, and a value carried over from an earlier read can be off by a day.
 
 ## How To Re-verify
 

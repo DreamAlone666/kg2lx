@@ -289,7 +289,7 @@ mod tests {
         );
     }
 
-    /// 最早那一代落盘行（`data/logs/runtime-2030-01-01.jsonl`）连歌曲元数据三个键都没有。
+    /// 最早那一代落盘行连歌曲元数据三个键都没有。
     ///
     /// 这是本文件里唯一能钉住「`Option` 字段缺键也不会整行失败」的 fixture：其余 fixture
     /// 都把 `track_title` / `artist_name` / `album_name` 显式写成 `null`，于是无论 serde
@@ -297,8 +297,7 @@ mod tests {
     ///
     /// **为什么值得单独钉**：`FsRuntimeLogRepo::list_by_source` 对反序列化失败是
     /// `Err(_) => continue`，一行失败就是**这一行从面板上消失**（不是少一个字段），而最先
-    /// 消失的恰恰是最老的历史行——它们是最需要保留的「以前是什么样」的记录。实测
-    /// 最早那一代的行全都缺这三个键。
+    /// 消失的恰恰是最老的历史行——它们是最需要保留的「以前是什么样」的记录。实测最早那一代的行全都缺这三个键。
     #[test]
     fn reads_rows_that_omit_the_song_metadata_keys_entirely() {
         // 形状照最早那一代落盘行构造；取值一律合成。

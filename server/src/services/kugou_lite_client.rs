@@ -1211,8 +1211,9 @@ mod tests {
             .collect()
     }
 
-    /// 四条并列权益。`busi_vip` 的**字段名与条目形状**取自实际响应，
-    /// 顶层包裹（`status` / `data`）只是形状示意——本仓没有存下整条 body。
+    /// 四条并列权益。`busi_vip` 的**字段名与条目形状**取自实际响应，**取值一律是
+    /// 合成占位**；顶层包裹
+    /// （`status` / `data`）只是形状示意——本仓没有存下整条 body。
     ///
     /// 断言的是「两个时间字段各自归位、且按**本地时区**解释」而不是某个固定的
     /// 时间戳数字：那个数字取决于运行机器的时区，写死它等于要求 CI 在特定时区里跑
@@ -1270,11 +1271,11 @@ mod tests {
         assert_eq!(local_time_to_epoch(Some("")), None, "空串是「上游没说」");
         assert_eq!(local_time_to_epoch(None), None);
         assert_eq!(
-            local_time_to_epoch(Some("2026-09-20")),
+            local_time_to_epoch(Some("2030-01-01")),
             None,
             "只有日期没有钟点的串不是这个格式"
         );
-        assert_eq!(local_time_to_epoch(Some("2026/09/20 00:00:00")), None);
+        assert_eq!(local_time_to_epoch(Some("2030/01/01 00:00:00")), None);
 
         let entitlements = parse_entitlements(
             r#"{"status":1,"data":{"busi_vip":[

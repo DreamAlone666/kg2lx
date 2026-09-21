@@ -354,7 +354,7 @@ impl RuntimeService {
             // 模糊子串启发式**没有**命中，等于把降级交给运气。实测证据支持去掉它——
             // 本地实测的那批真实拒绝行全部是
             // `retry_count: 0` 且 `status_code: 200`，而 auth 路径（刷新登录 + 同一档
-            // 重试）必然写出 `retry_count: 1` 的行；反推可知那些拒绝里 `auth_failed`
+            // 重试）必然写出 `retry_count: 1` 的行；反推可知那些行里 `auth_failed`
             // 恒为 false。因此去掉 `!auth_failed` 在真实数据上零行为差异，只是严格更稳。
             //
             // 为什么**只有** `status == 2` 才降级：`status:0` 是「资源不存在 / 参数错」

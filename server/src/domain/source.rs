@@ -248,8 +248,7 @@ mod tests {
     /// 缺了 `#[serde(default)]`，它会整份反序列化失败，而 `FsSourceRepo` 用
     /// `Err(_) => continue` 吞掉错误——后果是**现存音源全部消失**：runtime token
     /// 解析不到、脚本端点 404，且几乎没有日志。这条断言钉住向后兼容，
-    /// fixture 的键集照落盘形态构造
-    /// （取值一律是合成占位）。
+    /// fixture 的键集照落盘形态构造，取值一律是合成占位。
     #[test]
     fn reads_source_files_written_before_quality_fallback_existed() {
         let old_source = r#"{
