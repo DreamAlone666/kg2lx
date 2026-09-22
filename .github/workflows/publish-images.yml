@@ -6,16 +6,24 @@ on:
       - 'v*.*.*'
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 env:
   KG2LX_IMAGE: ghcr.io/dreamalone666/kg2lx
   KUGOU_IMAGE: ghcr.io/dreamalone666/kugou-music-api
 
+# 两次发版并发时会各自推一次 :latest，最终留下哪一份取决于谁后写完。串行化让 latest
+# 确定地停在较新的那个 tag 上；已经在跑的发布不取消——取消会留下推了一半的状态。
+concurrency:
+  group: publish-images
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # 默认 360 分钟：docker 构建卡住时不该白占一台 runner 六小时。
+    timeout-minutes: 90
     steps:
       - name: Check out source
         uses: actions/checkout@v7
@@ -39,41 +47,37 @@ jobs:
           set -euo pipefail
 
           sha="$(git -C KuGouMusicApi rev-parse HEAD)"
-          tag="${sha:0:12}"
-          echo "KuGouMusicApi: $sha"
+
+          # tag 必须同时覆盖「上游提交」与「我们对上游 Dockerfile 干的这件事」：
+          # 只看 SHA 的话，补丁改了而 SHA 没改时，下面的存在性检查会判定「镜像已存在」
+          # 而跳过构建，补丁于是永远进不了镜像——流水线全绿，产物是旧的。签名取自补丁
+          # 脚本自身的哈希，所以改补丁必然换 tag、必然重建。
+          # 代价是补丁脚本里改个注释也会触发一次无谓重建，这是刻意选的失败方向。
+          patch_sig="$(sha256sum .github/scripts/patch-kugou-dockerfile.py | cut -c1-8)"
+          tag="${sha:0:12}-p${patch_sig}"
+
+          echo "KuGouMusicApi: $sha（补丁签名 ${patch_sig}）"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
           if docker buildx imagetools inspect "$KUGOU_IMAGE:$tag" >/dev/null 2>&1; then
             echo "build=false" >> "$GITHUB_OUTPUT"
-            echo "Image already exists; skipping KuGouMusicApi build."
+            echo "镜像已存在（$tag），跳过 KuGouMusicApi 构建。"
           else
             echo "build=true" >> "$GITHUB_OUTPUT"
-            echo "Image does not exist; building KuGouMusicApi."
+            echo "镜像不存在（$tag），将构建 KuGouMusicApi。"
           fi
 
-      - name: Apply temporary KuGouMusicApi Dockerfile fix
+      - name: Apply temporary KuGouMusicApi Dockerfile patch
         if: steps.upstream.outputs.build == 'true'
         shell: bash
         run: |
           set -euo pipefail
 
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("KuGouMusicApi/Dockerfile")
-          old = "RUN pnpm install --prod --frozen-lockfile"
-          new = (
-              "RUN printf '%s\\n' 'allowBuilds:' '  esbuild: true' > pnpm-workspace.yaml \\\n"
-              "    && pnpm install --prod --frozen-lockfile \\\n"
-              "    && rm pnpm-workspace.yaml"
-          )
-
-          text = path.read_text()
-          if old not in text:
-              raise SystemExit(f"Expected patch target not found: {path}")
-
-          path.write_text(text.replace(old, new, 1))
-          PY
+          # 补丁本体在 .github/scripts/patch-kugou-dockerfile.py：它既要被执行，也要被
+          # 取哈希进上游镜像的 tag（见上一步）。上游 Dockerfile 一旦不再匹配补丁目标，
+          # 脚本会非零退出，而不是留下一个「构建成功但没打补丁」的镜像。
+          python3 .github/scripts/patch-kugou-dockerfile.py KuGouMusicApi/Dockerfile
 
       - name: Build and push KuGouMusicApi
         if: steps.upstream.outputs.build == 'true'
@@ -86,6 +90,8 @@ jobs:
           tags: ${{ env.KUGOU_IMAGE }}:${{ steps.upstream.outputs.tag }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.upstream.outputs.tag }}
+            org.opencontainers.image.revision=${{ steps.upstream.outputs.sha }}
           cache-from: type=gha,scope=kugou-music-api
           cache-to: type=gha,mode=max,scope=kugou-music-api
 
@@ -101,5 +107,81 @@ jobs:
             ${{ env.KG2LX_IMAGE }}:latest
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha,scope=kg2lx
           cache-to: type=gha,mode=max,scope=kg2lx
+
+      - name: Generate Release Notes
+        shell: bash
+        env:
+          KUGOU_TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os, re
+
+          full_tag = os.environ["GITHUB_REF_NAME"]
+          tag = full_tag.removeprefix("v")
+          repo = os.environ["GITHUB_REPOSITORY"]
+          server = os.environ["GITHUB_SERVER_URL"]
+          kg2lx = os.environ["KG2LX_IMAGE"]
+          kugou = os.environ["KUGOU_IMAGE"]
+          kugou_tag = os.environ["KUGOU_TAG"]
+
+          header = (
+              f"## 🐳 Docker 镜像\n\n"
+              f"- **kg2lx**: `{kg2lx}:{full_tag}`\n"
+              f"- **KuGouMusicApi**: `{kugou}:{kugou_tag}`"
+          )
+
+          # 读文件与提取分别容错：CHANGELOG 缺失 / 读不出来 / 没有本版小节，都不该让
+          # 已经推成功的镜像被标成一次失败的流水线。真正的脚本 bug 仍然照常炸出来。
+          content = ""
+          read_ok = False
+          try:
+              with open("CHANGELOG.md", encoding="utf-8") as f:
+                  content = f.read()
+              read_ok = True
+          except FileNotFoundError:
+              pass
+          except (OSError, UnicodeDecodeError) as err:
+              print(f"::warning::CHANGELOG.md 读不出来，本次 Release 不含更新说明：{err}")
+
+          notes = ""
+          if read_ok:
+              pattern = (
+                  rf"(?:^|\n)## \[(?:v)?{re.escape(tag)}\][^\n]*\n"
+                  rf"([\s\S]*?)(?=(?:\r?\n## |$))"
+              )
+              m = re.search(pattern, content)
+              if m:
+                  notes = re.sub(
+                      r"(?:\r?\n)+\[[^\]]+\]:\s+https?://\S+", "", m.group(1)
+                  ).strip()
+
+          if notes:
+              print(f"::notice::已从 CHANGELOG.md 提取 {full_tag} 的更新说明")
+              body = f"{header}\n\n---\n\n{notes}"
+          else:
+              if read_ok:
+                  print(
+                      f"::warning::CHANGELOG.md 里没有 `## [{tag}]` 一节，Release 只带镜像信息；"
+                      f"发版前应把 `## [Unreleased]` 改名成 `## [{tag}] - <日期>`。"
+                  )
+              body = (
+                  f"{header}\n\n"
+                  f"本版更新说明见 [CHANGELOG.md]({server}/{repo}/blob/{full_tag}/CHANGELOG.md)，"
+                  f"也可以看 [这一版包含的全部提交]({server}/{repo}/commits/{full_tag})。"
+              )
+
+          with open("RELEASE_BODY.md", "w", encoding="utf-8") as f:
+              f.write(body + "\n")
+          PY
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body_path: RELEASE_BODY.md

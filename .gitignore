@@ -3,3 +3,4 @@
 data/
 .playwright-cli/
 .codebuddy/
+__pycache__/
