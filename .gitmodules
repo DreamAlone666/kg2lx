@@ -1,3 +1,4 @@
 [submodule "KuGouMusicApi"]
 	path = KuGouMusicApi
 	url = https://github.com/MakcRe/KuGouMusicApi.git
+	ignore = untracked

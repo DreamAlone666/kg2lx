@@ -13,6 +13,7 @@
 	import SourceTitle from '$lib/components/sources/SourceTitle.svelte';
 	import QualityFallbackSetting from '$lib/components/sources/QualityFallbackSetting.svelte';
 	import LogsPanel from '$lib/components/source-logs/LogsPanel.svelte';
+	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { sourcesController } from '$lib/features/sources/controller.svelte';
 	import { toast } from '$lib/state/toast.svelte';
 	import {
@@ -157,6 +158,7 @@
 
 			<CardContent class="space-y-8 p-6">
 				<!--
+					【区段一：账号事实与权益】
 					三段信息栅格：轨道数必须与内容数一致。
 					此前是 4 列，第 4 格「音源 ID」是为了填满 5xl 宽度而加的内部主键——
 					用无效内容凑版式，且被 truncate 后连完整读取都做不到。移除后把轨道数
@@ -170,171 +172,204 @@
 					这条不变量对后续改动同样成立：新内容不够凑满一行时，**不要**往这里塞一格。
 					音质降级开关就是按这条办的——它是可配置项而不是只读事实，下一块独立成段。
 				-->
-				<div class="grid grid-cols-2 gap-6">
-					<div class="min-w-0 space-y-2">
-						<p class="text-xs font-medium tracking-wide text-muted-foreground uppercase">状态</p>
-						<StatusBadge tone={accountStatusTone(source.account.status)} dot>
-							{labelOf(accountStatusLabel, source.account.status)}
-						</StatusBadge>
+				<div class="space-y-6">
+					<div class="grid grid-cols-2 gap-6">
+						<div class="min-w-0 space-y-2">
+							<p class="text-xs font-medium tracking-wide text-muted-foreground uppercase">状态</p>
+							<div class="flex h-6 items-center">
+								<StatusBadge tone={accountStatusTone(source.account.status)} dot>
+									{labelOf(accountStatusLabel, source.account.status)}
+								</StatusBadge>
+							</div>
+						</div>
+
+						<div class="min-w-0 space-y-2">
+							<p class="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+								最后刷新时间
+							</p>
+							<!--
+								窄屏用 text-xs 而不是 text-sm：19 字符的定长时间戳在 390px 的两列栅格里
+								只有约 143px 可用，14px 下必然折行；12px 恰好单行放下，也让本格与同排的
+								两个 StatusBadge（固定 text-xs）在字号上一致。
+							-->
+							<div class="flex h-6 items-center">
+								<p class="tabular text-xs whitespace-nowrap sm:text-sm">
+									{formatDateTime(source.account.last_refresh_at)}
+								</p>
+							</div>
+						</div>
 					</div>
 
-					<div class="min-w-0 space-y-2">
-						<p class="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-							最后刷新时间
-						</p>
-						<!--
-							窄屏用 text-xs 而不是 text-sm：19 字符的定长时间戳在 390px 的两列栅格里
-							只有约 143px 可用，14px 下必然折行；12px 恰好单行放下，也让本格与同排的
-							两个 StatusBadge（固定 text-xs）在字号上一致。
-						-->
-						<p class="tabular text-xs whitespace-nowrap sm:text-sm">
-							{formatDateTime(source.account.last_refresh_at)}
-						</p>
-					</div>
-				</div>
+					<!--
+						会员权益明细。**刻意独立成段**，不挤进上面那个三段栅格：那里把「轨道数 ==
+						内容数」写成了不变量，而这里的条目数随账号变化（0..N），塞进去必然留下
+						装不满的轨道。
 
-				<!--
-					会员权益明细。**刻意独立成段**，不挤进上面那个三段栅格：那里把「轨道数 ==
-					内容数」写成了不变量，而这里的条目数随账号变化（0..N），塞进去必然留下
-					装不满的轨道。
+						这一段要解决的是「权益会静默过期」：到期后账号一切正常、只是部分歌取不到
+						高音质，而账号状态与登录态在此期间毫无变化，用户无从解释
+						「为什么某些歌突然不能听了」。所以这里给的是逐条的权益名称与到期时刻。只列**有名字的**权益（见 isNamedVipProduct 的白名单说明）：没有名字的权益位不上榜，否则「即将到期」会被 1 天的日结条目常亮撑着，把真正的预警淹掉。
 
-					这一段要解决的是「权益会静默过期」：到期后账号一切正常、只是部分歌取不到
-					高音质，而账号状态与登录态在此期间毫无变化，用户无从解释
-					「为什么某些歌突然不能听了」。所以这里给的是逐条的权益名称与到期时刻。只列**有名字的**权益（见 isNamedVipProduct 的白名单说明）：没有名字的权益位不上榜，否则「即将到期」会被 1 天的日结条目常亮撑着，把真正的预警淹掉。
-
-					整段以 entitlements 这个键**存在**为前提：键不存在时服务端什么都没说
-					（二进制与 web/build 可分别替换），此时一个字都不说，而不是渲染成空态——
-					空态是一句「没有在期权益」的断言，缺字段的场合我们无权做这个断言。
-				-->
-				{#if entitlements !== undefined}
+						整段以 entitlements 这个键**存在**为前提：键不存在时服务端什么都没说
+						（二进制与 web/build 可分别替换），此时一个字都不说，而不是渲染成空态——
+						空态是一句「没有在期权益」的断言，缺字段的场合我们无权做这个断言。
+					-->
+					{#if entitlements !== undefined}
 						{@const listedEntitlements = entitlements.filter(
 							(entitlement) =>
 								entitlement.active && isNamedVipProduct(entitlement.product_type)
 						)}
-					<div class="space-y-3">
-						<p class="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-							会员权益
-						</p>
-
-						{#if listedEntitlements.length === 0}
-							<!--
-								这里能说「没查到」是因为键存在（服务端确实给了一张明细表），而且声明的
-								范围只有白名单里那两条——所以空态说的是「没有它们」，不是「没有任何权益」。
-
-								也**不说「未激活」**：账号级是否会员这类聚合结论已经删掉了（它既冗余、
-								又回答不了「有哪几项」），本段没有任何可对照的东西，也就无从替它断言账号
-								状态；登录态是否正常记在上面那一格，与本段无关。
-
-								必须给出下一步动作：空态有两个成因（快照太旧 / 确实没有），两者该做的事
-								不同；只说事实的话，用户看完仍然不知道该做什么——这是端到端验收时实际
-								撞到的情形。
-							-->
-							<p class="text-xs leading-relaxed text-muted-foreground">
-								未检测到概念版VIP / 畅听VIP 的在期记录。这份明细只在重新读取上游时更新，点上方「刷新 Token」可重读。
+						<div class="space-y-3">
+							<p class="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+								会员权益
 							</p>
-						{:else}
-							<!--
-								不显示「剩余 N 天」这类推算值：到期时刻是事实，剩余天数会随时间变旧，
-								而本页没有任何计时器会去刷新它（二维码那种短时交互才配一个）。
 
-								布局用 flex-wrap 而不是 `grid grid-cols-2`：条目数随账号变化（0..N，
-								见上文），固定两列的栅格在只有一条权益时就会留下一条装不满的死轨道——
-								这正是上面那个三段栅格把「轨道数 == 内容数」立成不变量的理由，同一个
-								理由在这里同样成立。flex 没有轨道、只有内容，才是这一段的正确形状。
+							{#if listedEntitlements.length === 0}
+								<!--
+									这里能说「没查到」是因为键存在（服务端确实给了一张明细表），而且声明的
+									范围只有白名单里那两条——所以空态说的是「没有它们」，不是「没有任何权益」。
 
-								两条权益因此在宽屏落到同一行（块高 2 行 → 1 行），但**右侧空白不会消失**：
-								这一行 1182px 里只有约 460px 是内容（权益名 + 到期时刻）。这条改动解决的是
-								「此前是裸文本、没有任何视觉锚点，两条权益也看不出高低」，**不是**「把宽度
-								填满」——把「右边还有空白」当成没做完，是误读了它的目的。
+									也**不说「未激活」**：账号级是否会员这类聚合结论已经删掉了（它既冗余、
+									又回答不了「有哪几项」），本段没有任何可对照的东西，也就无从替它断言账号
+									状态；登录态是否正常记在上面那一格，与本段无关。
 
-								权益名用 StatusBadge（与列表卡片同一个组件、同一个色调、同一个强度判据）：
-								此前这里是裸 <span class="text-sm font-medium">，于是同一份数据在列表上是
-								琥珀胶囊、在详情页是一行纯文本——同一条权益在两页有两种形态，正是本仓禁止
-								的口径分叉。强调强度：最高一档实心、其余柔和底（VIP_ENTITLEMENT_TONE 只
-								决定色相，强度由 vipEntitlementEmphasis 决定，见 domain/tone.ts）。
-							-->
-							<ul class="flex flex-wrap items-center gap-x-6 gap-y-2">
-								{#each listedEntitlements as entitlement}
-									{@const expiringTone = entitlementExpiringTone(entitlement.end_at)}
-									<li class="flex flex-wrap items-center gap-x-3 gap-y-1">
-										<StatusBadge
-											tone={VIP_ENTITLEMENT_TONE}
-											emphasis={vipEntitlementEmphasis(entitlement.product_type)}
-										>
-											{labelOf(vipProductLabel, entitlement.product_type)}
-										</StatusBadge>
-										<!--
-											到期时刻复用同页「最后刷新时间」的 formatDateTime（不另造格式）；
-											定长数字同样要 tabular + nowrap，否则多行之间无法纵向对齐、窄屏还会折行。
-										-->
-										<span class="tabular text-xs whitespace-nowrap text-muted-foreground">
-											到期 {formatDateTime(entitlement.end_at, '未知')}
-										</span>
-										{#if expiringTone}
-											<StatusBadge tone={expiringTone}>即将到期</StatusBadge>
-										{/if}
-									</li>
-								{/each}
-							</ul>
-						{/if}
-					</div>
-				{/if}
+									必须给出下一步动作：空态有两个成因（快照太旧 / 确实没有），两者该做的事
+									不同；只说事实的话，用户看完仍然不知道该做什么——这是端到端验收时实际
+									撞到的情形。
+								-->
+								<p class="text-xs leading-relaxed text-muted-foreground">
+									未检测到概念版VIP / 畅听VIP 的在期记录。这份明细只在重新读取上游时更新，点上方「刷新 Token」可重读。
+								</p>
+							{:else}
+								<!--
+									不显示「剩余 N 天」这类推算值：到期时刻是事实，剩余天数会随时间变旧，
+									而本页没有任何计时器会去刷新它（二维码那种短时交互才配一个）。
+
+									布局用 flex-wrap 而不是 `grid grid-cols-2`：条目数随账号变化（0..N，
+									见上文），固定两列的栅格在只有一条权益时就会留下一条装不满的死轨道——
+									这正是上面那个三段栅格把「轨道数 == 内容数」立成不变量的理由，同一个
+									理由在这里同样成立。flex 没有轨道、只有内容，才是这一段的正确形状。
+
+									两条权益因此在宽屏落到同一行（块高 2 行 → 1 行），但**右侧空白不会消失**：
+									这一行 1182px 里只有约 460px 是内容（权益名 + 到期时刻）。这条改动解决的是
+									「此前是裸文本、没有任何视觉锚点，两条权益也看不出高低」，**不是**「把宽度
+									填满」——把「右边还有空白」当成没做完，是误读了它的目的。
+
+									权益名用 StatusBadge（与列表卡片同一个组件、同一个色调、同一个强度判据）：
+									此前这里是裸 <span class="text-sm font-medium">，于是同一份数据在列表上是
+									琥珀胶囊、在详情页是一行纯文本——同一条权益在两页有两种形态，正是本仓禁止
+									的口径分叉。强调强度：最高一档实心、其余柔和底（VIP_ENTITLEMENT_TONE 只
+									决定色相，强度由 vipEntitlementEmphasis 决定，见 domain/tone.ts）。
+								-->
+								<ul class="flex flex-wrap items-center gap-x-6 gap-y-2">
+									{#each listedEntitlements as entitlement}
+										{@const expiringTone = entitlementExpiringTone(entitlement.end_at)}
+										<li class="flex flex-wrap items-center gap-x-3 gap-y-1">
+											<StatusBadge
+												tone={VIP_ENTITLEMENT_TONE}
+												emphasis={vipEntitlementEmphasis(entitlement.product_type)}
+											>
+												{labelOf(vipProductLabel, entitlement.product_type)}
+											</StatusBadge>
+											<!--
+												到期时刻复用同页「最后刷新时间」的 formatDateTime（不另造格式）；
+												定长数字同样要 tabular + nowrap，否则多行之间无法纵向对齐、窄屏还会折行。
+											-->
+											<span class="tabular text-xs whitespace-nowrap text-muted-foreground">
+												到期 {formatDateTime(entitlement.end_at, '未知')}
+											</span>
+											{#if expiringTone}
+												<StatusBadge tone={expiringTone}>即将到期</StatusBadge>
+											{/if}
+										</li>
+									{/each}
+								</ul>
+							{/if}
+						</div>
+					{/if}
+
+					<!--
+						账号最后一次错误紧随账号事实呈现：将「状态异常」与「错误成因」在格式塔
+						视线动线上就近聚合，用户不必跳过中途的降级开关与脚本地址跑到页尾去翻错误。
+					-->
+					{#if describeAccountError(source.account.last_error_code, source.account.last_error)}
+						<div class="rounded-lg border border-danger/20 bg-danger-soft/60 p-4">
+							<h3 class="text-xs font-bold tracking-wider text-danger uppercase">最后一次错误</h3>
+							<p class="mt-1.5 text-sm leading-relaxed text-danger">
+								{describeAccountError(source.account.last_error_code, source.account.last_error)}
+							</p>
+						</div>
+					{/if}
+				</div>
 
 				<!--
+					【区段二：音质降级策略】
 					音质降级开关。刻意**不在**上面那个三段栅格内：那里的注释把「轨道数 ==
 					内容数」写成了不变量，多塞一格就会留下一条装不满的轨道；而这一项是可配置
-					的动作，与上面三个只读事实也不是同一类内容。
+					的动作，与上面三个只读事实也不是同一类内容。以分隔线独立成段，明确功能分区。
 
 					`disabled={refreshing}` 是刷新那条守卫的反方向（见上）：刷新过程中拨动开关，
 					随后回来的详情会把这次写入静默盖回旧值，用户看到开关「自己变回去了」。
 				-->
-				<QualityFallbackSetting
-					value={source.quality_fallback}
-					pending={sourcesController.savingQualityFallback}
-					disabled={refreshing}
-					onChange={handleQualityFallbackChange}
-				/>
-
-				<div class="space-y-3">
-					<div>
-						<h3 class="text-sm font-medium">脚本地址</h3>
-						<p class="mt-1 text-xs leading-relaxed text-muted-foreground">
-							将此 URL 导入洛雪音乐（LX Music）作为自定义音源。
-						</p>
-					</div>
-					<CopyField value={source.script_url} />
-
-					{#if renamedThisVisit}
-						<!--
-							warning 而非 danger：没有任何东西失败，只是用户要去别处做一个动作，
-							与 sessionStatusTone 把「二维码过期」判成 warning 是同一条理由。
-							用常驻 Alert 而非 toast：用户是在几分钟后、在另一个应用里执行这一步，
-							而 toast 四秒就消失。锚在「脚本地址」块内，因为下一步要复制的就是它。
-						-->
-						<Alert tone="warning" title="需要重新导入才会在洛雪中生效">
-							<p class="leading-relaxed">
-								洛雪音乐在导入音源时就把脚本头部信息固定下来了，之后不会自动同步。要让它显示新标题，请删除该音源后重新导入上面的地址；地址本身没有变化，已导入的音源仍可正常播放。
-							</p>
-						</Alert>
-					{/if}
+				<div class="border-t border-border/70 pt-8">
+					<QualityFallbackSetting
+						value={source.quality_fallback}
+						pending={sourcesController.savingQualityFallback}
+						disabled={refreshing}
+						onChange={handleQualityFallbackChange}
+					/>
 				</div>
 
-				{#if describeAccountError(source.account.last_error_code, source.account.last_error)}
-					<div class="rounded-lg border border-danger/20 bg-danger-soft/60 p-4">
-						<h3 class="text-xs font-bold tracking-wider text-danger uppercase">最后一次错误</h3>
-						<p class="mt-1.5 text-sm leading-relaxed text-danger">
-							{describeAccountError(source.account.last_error_code, source.account.last_error)}
-						</p>
-					</div>
-				{/if}
+				<!--
+					【区段三：洛雪接入与凭证】
+					将脚本地址与用于排查的运行时 Token 预览归纳在同一技术接入分区下，以分隔线与配置策略区隔。
+				-->
+				<div class="border-t border-border/70 pt-8 space-y-6">
+					<div class="space-y-3">
+						<div>
+							<h3 class="text-sm font-medium">脚本地址</h3>
+							<p class="mt-1 text-xs leading-relaxed text-muted-foreground">
+								将此 URL 导入洛雪音乐（LX Music）作为自定义音源。
+							</p>
+						</div>
+						<CopyField value={source.script_url} />
 
-				<div class="space-y-1">
-					<p class="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-						运行时 Token 预览
-					</p>
-					<p class="font-mono text-xs break-all text-muted-foreground/70">
-						{source.runtime_token_preview}
-					</p>
+						{#if renamedThisVisit}
+							<!--
+								warning 而非 danger：没有任何东西失败，只是用户要去别处做一个动作，
+								与 sessionStatusTone 把「二维码过期」判成 warning 是同一条理由。
+								用常驻 Alert 而非 toast：用户是在几分钟后、在另一个应用里执行这一步，
+								而 toast 四秒就消失。锚在「脚本地址」块内，因为下一步要复制的就是它。
+							-->
+							<Alert tone="warning" title="需要重新导入才会在洛雪中生效">
+								<p class="leading-relaxed">
+									洛雪音乐在导入音源时就把脚本头部信息固定下来了，之后不会自动同步。要让它显示新标题，请删除该音源后重新导入上面的地址；地址本身没有变化，已导入的音源仍可正常播放。
+								</p>
+							</Alert>
+						{/if}
+					</div>
+
+					<div class="space-y-1.5">
+						<p class="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+							运行时 Token 预览
+						</p>
+						<div class="flex items-center gap-2">
+							<Tooltip.Root>
+								<Tooltip.Trigger type={null}>
+									{#snippet child({ props })}
+										<code
+											class="inline-flex cursor-default items-center rounded-md border border-border bg-muted/60 px-2.5 py-1 font-mono text-xs text-muted-foreground transition-colors hover:border-foreground/20 hover:text-foreground"
+											{...props}
+										>
+											{source.runtime_token_preview}
+										</code>
+									{/snippet}
+								</Tooltip.Trigger>
+								<Tooltip.Content>
+									客户端取链鉴权凭据（出于安全仅展示前缀，完整 Token 已内置于上方脚本中）
+								</Tooltip.Content>
+							</Tooltip.Root>
+						</div>
+					</div>
 				</div>
 			</CardContent>
 		</Card>
