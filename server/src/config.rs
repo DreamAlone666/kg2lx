@@ -8,8 +8,44 @@ pub struct Config {
     pub kugou_api_base_url: String,
     pub data_dir: PathBuf,
     pub upstream_timeout_ms: u64,
-    pub refresh_interval_secs: u64,
+    /// 账号登录态的**惰性保鲜阈值**（秒）。仅在收到取链请求时按需判断，服务内没有定时
+    /// 任务；单位写在这里而不是写进名字——见 `refresh_ttl_from_env`。
+    pub account_refresh_ttl: u64,
     pub web_dist_dir: Option<PathBuf>,
+}
+
+/// 账号登录态的**惰性保鲜阈值**（秒），由环境变量 `ACCOUNT_REFRESH_TTL` 给出。
+///
+/// **它不是刷新周期，服务里也没有任何定时任务。** 这个值只在一次取链请求到达时被读一次：
+/// 距上次成功刷新超过它，就先刷新登录再取链；没超过就直接取链。没有取链流量时，服务不会
+/// 去打扰上游。「惰性」与「TTL」说的都是这件事——它回答的是「一份登录态最多被信多久」，
+/// 而不是「每多久去看一眼」。
+///
+/// 旧名 `REFRESH_INTERVAL_SECS` 仍然读，但只作回退、且会打一条 warn。`INTERVAL` 与
+/// 「自动刷新间隔」会让人脑补出一个定时轮询任务，而那个任务从来不存在——这正是改名的原因。
+fn refresh_ttl_from_env() -> u64 {
+    // 6 小时。只在这里出现一次。
+    const DEFAULT_TTL: u64 = 6 * 3600;
+
+    let new = env::var("ACCOUNT_REFRESH_TTL").ok();
+    let old = env::var("REFRESH_INTERVAL_SECS").ok();
+    if old.is_some() {
+        // 两个名字都在时也要报：一个躺在 .env 里的旧值被静默忽略，是这条改名最容易留下的
+        // 隐患——它会让人以为生效的仍是那个值。
+        if new.is_some() {
+            tracing::warn!(
+                "REFRESH_INTERVAL_SECS is set but ignored: ACCOUNT_REFRESH_TTL takes precedence. \
+                 Remove the old variable — it names a periodic refresh task that does not exist."
+            );
+        } else {
+            tracing::warn!(
+                "REFRESH_INTERVAL_SECS is deprecated; rename it to ACCOUNT_REFRESH_TTL. The old \
+                 name read as a periodic refresh interval, but the value is only consulted when a \
+                 client asks for a play URL — there is no scheduled task to configure."
+            );
+        }
+    }
+    new.or(old).and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_TTL)
 }
 
 impl Config {
@@ -27,10 +63,7 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(10000),
-            refresh_interval_secs: env::var("REFRESH_INTERVAL_SECS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(6 * 3600),
+            account_refresh_ttl: refresh_ttl_from_env(),
             web_dist_dir: env::var("WEB_DIST_DIR").ok().map(PathBuf::from),
         }
     }
