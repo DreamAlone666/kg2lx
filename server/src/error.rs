@@ -9,7 +9,6 @@ use std::fmt;
 pub enum ErrorCode {
     AdminUnauthorized,
     SourceNotFound,
-    SourceDisabled,
     AccountNotFound,
     AccountDisabled,
     LoginSessionNotFound,
@@ -50,7 +49,6 @@ impl ErrorCode {
         match self {
             Self::AdminUnauthorized => "ADMIN_UNAUTHORIZED",
             Self::SourceNotFound => "SOURCE_NOT_FOUND",
-            Self::SourceDisabled => "SOURCE_DISABLED",
             Self::AccountNotFound => "ACCOUNT_NOT_FOUND",
             Self::AccountDisabled => "ACCOUNT_DISABLED",
             Self::LoginSessionNotFound => "LOGIN_SESSION_NOT_FOUND",
@@ -78,10 +76,9 @@ impl ErrorCode {
     /// bin target 看不到它，于是会报「从未被使用」。不要因为这条警告把它删掉——
     /// 删了安全网就没了。
     #[allow(dead_code)]
-    pub const ALL: [ErrorCode; 17] = [
+    pub const ALL: [ErrorCode; 16] = [
         ErrorCode::AdminUnauthorized,
         ErrorCode::SourceNotFound,
-        ErrorCode::SourceDisabled,
         ErrorCode::AccountNotFound,
         ErrorCode::AccountDisabled,
         ErrorCode::LoginSessionNotFound,
@@ -135,15 +132,6 @@ impl AppError {
             code: ErrorCode::SourceNotFound,
             message: "source not found".into(),
             status: StatusCode::NOT_FOUND,
-            is_admin: false,
-        }
-    }
-
-    pub fn source_disabled() -> Self {
-        Self {
-            code: ErrorCode::SourceDisabled,
-            message: "source is disabled".into(),
-            status: StatusCode::FORBIDDEN,
             is_admin: false,
         }
     }

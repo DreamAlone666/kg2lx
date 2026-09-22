@@ -282,7 +282,6 @@ impl LoginService {
                     account_id: account.account_id.clone(),
                     provider: ProviderKind::KugouLite,
                     name,
-                    enabled: true,
                     script_token,
                     runtime_token,
                     created_at: now3,

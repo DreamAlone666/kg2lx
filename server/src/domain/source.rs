@@ -52,7 +52,6 @@ pub struct Source {
     pub account_id: String,
     pub provider: ProviderKind,
     pub name: String,
-    pub enabled: bool,
     pub script_token: String,
     pub runtime_token: String,
     pub created_at: i64,
@@ -245,6 +244,11 @@ mod tests {
 
     /// 本次改动**之前**落盘的音源 JSON 没有 `quality_fallback` 这个键。
     ///
+    /// fixture 里那句 `"enabled": true` 是**刻意留着的**：`Source.enabled` 已整体删除，
+    /// 而每一个历史音源文件里都写着这个键。它留在这里，是为了让「删掉的键不会让旧文件
+    /// 读不出来」这件事每次跑测试都被真实验证一遍，而不是靠「serde 默认忽略未知字段」
+    /// 这句话本身。
+    ///
     /// 缺了 `#[serde(default)]`，它会整份反序列化失败，而 `FsSourceRepo` 用
     /// `Err(_) => continue` 吞掉错误——后果是**现存音源全部消失**：runtime token
     /// 解析不到、脚本端点 404，且几乎没有日志。这条断言钉住向后兼容，
@@ -274,7 +278,6 @@ mod tests {
         assert_eq!(source.source_id, "src_00000000-0000-4000-8000-000000000001");
         assert_eq!(source.provider, ProviderKind::KugouLite, "其余字段不受影响");
         assert_eq!(source.name, "kg2lx demo");
-        assert!(source.enabled);
         assert_eq!(source.created_at, 1600000000);
         assert_eq!(source.updated_at, 1700100000);
     }
@@ -287,7 +290,6 @@ mod tests {
             account_id: "acc_x".into(),
             provider: ProviderKind::KugouLite,
             name: "测试音源".into(),
-            enabled: true,
             script_token: "st_x".into(),
             runtime_token: "rt_x".into(),
             created_at: 1_776_414_582,

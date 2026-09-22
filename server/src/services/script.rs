@@ -65,7 +65,6 @@ const SCRIPT_ERROR_PREFIX: &str = "kg2lx：";
 const SCRIPT_ERROR_MESSAGES: &[(ErrorCode, &str)] = &[
     (ErrorCode::AdminUnauthorized, "脚本令牌无效，请重新导入"),
     (ErrorCode::SourceNotFound, "音源不存在，请重新导入音源"),
-    (ErrorCode::SourceDisabled, "音源已停用，请在后台启用"),
     (ErrorCode::AccountNotFound, "账号不存在，请重新绑定"),
     (ErrorCode::AccountDisabled, "账号已停用，请在后台启用"),
     (ErrorCode::LoginSessionNotFound, "登录已过期，请重新扫码"),
@@ -465,10 +464,6 @@ impl ScriptService {
             .await?
             .ok_or_else(AppError::source_not_found)?;
 
-        if !source.enabled {
-            return Err(AppError::source_disabled());
-        }
-
         // 严禁从 `Source.name` 反推 userid：`name` 自本轮起可被用户自定义，
         // 该推导既循环又错误，因此这里显式查账号。
         //
@@ -521,14 +516,11 @@ impl ScriptService {
     ///
     /// 认证与归属同 `music-url`：`Authorization: Bearer <runtime_token>`，查不到
     /// 音源就是 `SOURCE_NOT_FOUND`（空 token 在路由层的 `verify_runtime` 就被挡成
-    /// `ADMIN_UNAUTHORIZED`，到不了这里）。除此之外它与取链**刻意有三处不同**：
+    /// `ADMIN_UNAUTHORIZED`，到不了这里）。除此之外它与取链**刻意有两处不同**：
     ///
-    /// 1. **不看 `source.enabled`。** 这条通知讲的是「你手上那份脚本旧了」，与音源
-    ///    启不启用无关；停用是暂时的，用户照样会在某天把它启回来，而那时他手上的
-    ///    仍然是旧脚本。顺手抄一份 enabled 预检等于让停用期的用户永远收不到通知。
-    /// 2. **不查账号。** 版本判定只用脚本版本，账号状态、登录态、权益都不参与——
+    /// 1. **不查账号。** 版本判定只用脚本版本，账号状态、登录态、权益都不参与——
     ///    它们各自有另外的失败面，掺进来只会让这条通知莫名其妙地消失。
-    /// 3. **不写运行时日志。** `RuntimeLog` 记的是取链事件，这条通知不是取链，
+    /// 2. **不写运行时日志。** `RuntimeLog` 记的是取链事件，这条通知不是取链，
     ///    强行落一行会让日志面板里混进一批既没有 hash 也没有音质的行。
     ///
     /// 客户端版本解析不出来时按「无更新」处理：脚本头部被手改属于自找，
@@ -1496,18 +1488,17 @@ mod tests {
             kugou_api_base_url: "http://127.0.0.1:1".into(),
             data_dir: "./data".into(),
             upstream_timeout_ms: 1_000,
-            refresh_interval_secs: 6 * 3600,
+            account_refresh_ttl: 6 * 3600,
             web_dist_dir,
         })
     }
 
-    fn update_source(runtime_token: &str, enabled: bool) -> Source {
+    fn update_source(runtime_token: &str) -> Source {
         Source {
             source_id: "src_update".into(),
             account_id: "acc_update".into(),
             provider: ProviderKind::KugouLite,
             name: "测试音源".into(),
-            enabled,
             script_token: "st_update".into(),
             runtime_token: runtime_token.into(),
             created_at: 0,
@@ -1864,7 +1855,7 @@ mod tests {
     /// 无更新时的信封是且仅是 `{"update": false}`。
     #[tokio::test]
     async fn up_to_date_script_gets_a_bare_no_update_envelope() {
-        let service = update_service(None, Some(update_source("tok_current", true)));
+        let service = update_service(None, Some(update_source("tok_current")));
 
         let resp = service
             .check_script_update("tok_current", SCRIPT_VERSION)
@@ -1890,7 +1881,7 @@ mod tests {
     /// 变成两条要解释的路径，而我们确实没有这个地址。
     #[tokio::test]
     async fn update_without_web_dist_omits_the_update_url_key() {
-        let service = update_service(None, Some(update_source("tok_old", true)));
+        let service = update_service(None, Some(update_source("tok_old")));
 
         let resp = service
             .check_script_update("tok_old", "0.1.1")
@@ -1916,7 +1907,7 @@ mod tests {
     async fn update_with_web_dist_includes_the_source_page() {
         let service = update_service(
             Some(PathBuf::from("./web/build")),
-            Some(update_source("tok_old", true)),
+            Some(update_source("tok_old")),
         );
 
         let resp = service
@@ -1931,23 +1922,6 @@ mod tests {
             response_json(&resp)["update_url"],
             "http://127.0.0.1:8787/sources/src_update"
         );
-    }
-
-    /// **被停用的音源照样收到通知。**
-    ///
-    /// 这条通知讲的是「你手上那份脚本旧了」，与音源启不启用无关：停用是暂时的，
-    /// 用户会在某天把它启回来，而那时他手上的仍然是旧脚本。顺手抄一份 `music-url`
-    /// 的 enabled 预检，会让停用期的用户永远收不到通知，而这恰恰是没有任何别的
-    /// 渠道能补救的（洛雪音乐从不自动更新已导入的脚本）。
-    #[tokio::test]
-    async fn disabled_source_still_gets_the_update_notice() {
-        let service = update_service(None, Some(update_source("tok_disabled", false)));
-
-        let resp = service
-            .check_script_update("tok_disabled", "0.1.1")
-            .await
-            .expect("停用不该成为这条通知的前置条件");
-        assert!(resp.update, "停用的音源也必须被告知脚本已经旧了");
     }
 
     /// 未知 runtime token：与 `music-url` 一致，`SOURCE_NOT_FOUND`。
@@ -1971,7 +1945,7 @@ mod tests {
     /// （而不是在某个分支上 panic 或返回一个半成品信封）。
     #[tokio::test]
     async fn malformed_client_version_yields_a_no_update_envelope() {
-        let service = update_service(None, Some(update_source("tok_bad", true)));
+        let service = update_service(None, Some(update_source("tok_bad")));
 
         let resp = service
             .check_script_update("tok_bad", "手改过的版本号")

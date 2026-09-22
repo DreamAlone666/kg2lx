@@ -17,7 +17,6 @@ pub struct SourceListItem {
     pub source_id: String,
     pub account_id: String,
     pub provider: String,
-    pub enabled: bool,
     pub script_url: String,
     /// 当前生效的标题（即 `Source.name`），原样返回以便后台显示计数与超长提示。
     pub name: String,
@@ -66,7 +65,6 @@ pub struct SourceDetail {
     pub source_id: String,
     pub account_id: String,
     pub provider: String,
-    pub enabled: bool,
     pub script_url: String,
     /// 当前生效的标题（即 `Source.name`）。
     pub name: String,
@@ -192,7 +190,6 @@ impl SourceService {
                 source_id: s.source_id,
                 account_id: s.account_id,
                 provider: s.provider.to_string(),
-                enabled: s.enabled,
                 script_url,
                 name: s.name,
                 default_name: source::default_name(&userid),
@@ -232,7 +229,6 @@ impl SourceService {
             source_id: s.source_id,
             account_id: s.account_id,
             provider: s.provider.to_string(),
-            enabled: s.enabled,
             script_url,
             name: s.name,
             default_name: source::default_name(&account.upstream_userid),
@@ -567,7 +563,7 @@ mod tests {
             kugou_api_base_url: "http://127.0.0.1:1".into(),
             data_dir: "./data".into(),
             upstream_timeout_ms: 1_000,
-            refresh_interval_secs: 6 * 3600,
+            account_refresh_ttl: 6 * 3600,
             web_dist_dir: None,
         })
     }
@@ -580,7 +576,6 @@ mod tests {
             account_id: "acc_test".into(),
             provider: ProviderKind::KugouLite,
             name: "我的自定义标题".into(),
-            enabled: true,
             script_token: "script_test".into(),
             runtime_token: "runtime_test".into(),
             // 取一个非 0 的小值：`updated_at` 必须能被断言「没被动过」，

@@ -66,12 +66,9 @@
 			<div class="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5">
 				<Badge variant="secondary">{labelOf(providerLabel, source.provider)}</Badge>
 
-				<!-- 标记放右侧：两个源级标记（已停用、自动降级）相邻，账号级的会员权益在后；它们都属于
+				<!-- 标记放右侧：源级的「自动降级」标记在前，账号级的会员权益在后；它们都属于
 				     「标记」而非「状态」，真正的账号状态交给下面的胶囊单独一行承担。 -->
 				<div class="flex shrink-0 items-center gap-1.5">
-					{#if !source.enabled}
-						<StatusBadge tone="neutral">已停用</StatusBadge>
-					{/if}
 					<!--
 						音质自动降级是**源级配置**，但它改变的是实际拿到的文件（上游拒绝所选音质时
 						自动改请求更低档位，下载同样生效），而这一点在卡片上完全看不出来。列表需要

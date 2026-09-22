@@ -153,18 +153,6 @@ impl RuntimeService {
         // 登录之后重试同一档」）。
         let client_request_id = format!("req_{}", uuid::Uuid::new_v4());
 
-        if !source.enabled {
-            return self
-                .log_and_err(
-                    &source,
-                    &source.account_id,
-                    &req,
-                    LogErrorContext::precheck(&client_request_id),
-                    AppError::source_disabled(),
-                )
-                .await;
-        }
-
         let Some(mut account) = self.account_repo.find_by_id(&source.account_id).await? else {
             // 此分支没有账号对象，只能用源上记着的 account_id。
             return self
@@ -231,7 +219,7 @@ impl RuntimeService {
         let now = account::now_ts();
         let needs_refresh = account
             .last_refresh_at
-            .is_none_or(|t| now - t > self.config.refresh_interval_secs as i64);
+            .is_none_or(|t| now - t > self.config.account_refresh_ttl as i64);
 
         if needs_refresh {
             refresh_attempted = true;
@@ -929,18 +917,17 @@ mod tests {
             kugou_api_base_url: "http://127.0.0.1:1".into(),
             data_dir: "./data".into(),
             upstream_timeout_ms: 1_000,
-            refresh_interval_secs: 6 * 3600,
+            account_refresh_ttl: 6 * 3600,
             web_dist_dir: None,
         })
     }
 
-    fn sample_source(runtime_token: &str, enabled: bool) -> Source {
+    fn sample_source(runtime_token: &str) -> Source {
         Source {
             source_id: "src_test".into(),
             account_id: "acc_test".into(),
             provider: ProviderKind::KugouLite,
             name: "测试音源".into(),
-            enabled,
             script_token: "script_test".into(),
             runtime_token: runtime_token.into(),
             created_at: 0,
@@ -1219,7 +1206,7 @@ mod tests {
 
     /// 开关打开的音源。
     fn fallback_source(runtime_token: &str) -> Source {
-        let mut source = sample_source(runtime_token, true);
+        let mut source = sample_source(runtime_token);
         source.quality_fallback = true;
         source
     }
@@ -1230,37 +1217,6 @@ mod tests {
             Ok(_) => panic!("预期取链失败，实际返回了播放地址"),
             Err(err) => err,
         }
-    }
-
-    /// 音源被停用是最常见、也最需要证据的准入失败：用户只会在客户端看到
-    /// 「换源失败…」，此刻后台的日志面板必须能说出「音源被停用了」。
-    ///
-    /// 同时钉住客户端可见行为**没有**变化——返回的仍是 `SourceDisabled`，
-    /// 只是多写了一行日志。
-    #[tokio::test]
-    async fn disabled_source_writes_a_precheck_row() {
-        let source = sample_source("tok_disabled", false);
-        let (service, log_repo) = build_service(Some(source.clone()), None);
-
-        let err = expect_err(service.fetch_music_url("tok_disabled", sample_req()).await);
-        assert_eq!(
-            err.code,
-            ErrorCode::SourceDisabled,
-            "客户端看到的 code 不能因为加日志而改变"
-        );
-
-        let rows = log_repo.rows();
-        assert_eq!(rows.len(), 1, "预检失败必须恰好写一行");
-        let row = &rows[0];
-        assert_eq!(row.stage, RuntimeLogStage::Precheck);
-        assert_eq!(row.error_code.as_deref(), Some("SOURCE_DISABLED"));
-        assert_eq!(
-            row.error_code.as_deref(),
-            Some(ErrorCode::SourceDisabled.as_str())
-        );
-        assert!(!row.ok);
-        assert_eq!(row.source_id, source.source_id);
-        assert_eq!(row.account_id, source.account_id);
     }
 
     /// 预检行也要带上 `client_request_id`，且**观测字段必须全是 `None`**。
@@ -1275,10 +1231,10 @@ mod tests {
     ///   一个并不存在的上游观测。
     #[tokio::test]
     async fn precheck_row_carries_request_id_and_no_observation() {
-        let source = sample_source("tok_disabled", false);
+        let source = sample_source("tok_no_account");
         let (service, log_repo) = build_service(Some(source), None);
 
-        let _ = expect_err(service.fetch_music_url("tok_disabled", sample_req()).await);
+        let _ = expect_err(service.fetch_music_url("tok_no_account", sample_req()).await);
 
         let rows = log_repo.rows();
         assert_eq!(rows.len(), 1);
@@ -1309,7 +1265,7 @@ mod tests {
     /// 在任何取链决定之前就已经被记下来了。
     #[tokio::test]
     async fn reported_types_are_recorded_verbatim() {
-        let source = sample_source("tok_disabled", false);
+        let source = sample_source("tok_no_account");
         let (service, log_repo) = build_service(Some(source), None);
 
         let reported = serde_json::json!({
@@ -1319,7 +1275,7 @@ mod tests {
         let mut req = sample_req();
         req.types = Some(reported.clone());
 
-        let _ = expect_err(service.fetch_music_url("tok_disabled", req).await);
+        let _ = expect_err(service.fetch_music_url("tok_no_account", req).await);
 
         let rows = log_repo.rows();
         assert_eq!(rows.len(), 1);
@@ -1333,10 +1289,10 @@ mod tests {
     /// 老脚本不发 `types`，请求体解析必须照常——落盘成 `None` 而不是报错。
     #[tokio::test]
     async fn missing_reported_types_is_recorded_as_none() {
-        let source = sample_source("tok_disabled", false);
+        let source = sample_source("tok_no_account");
         let (service, log_repo) = build_service(Some(source), None);
 
-        let _ = expect_err(service.fetch_music_url("tok_disabled", sample_req()).await);
+        let _ = expect_err(service.fetch_music_url("tok_no_account", sample_req()).await);
 
         let rows = log_repo.rows();
         assert_eq!(rows.len(), 1);
@@ -1367,7 +1323,7 @@ mod tests {
     /// 这也是 `append_log` / `log_and_err` 从收账号对象改为收 `account_id` 的原因。
     #[tokio::test]
     async fn account_not_found_precheck_row_uses_source_account_id() {
-        let source = sample_source("tok_no_account", true);
+        let source = sample_source("tok_no_account");
         let (service, log_repo) = build_service(Some(source.clone()), None);
 
         let err = expect_err(
@@ -1393,7 +1349,7 @@ mod tests {
     /// 换成账号被禁用（另一条带账号对象的预检早退），而不是删掉整条测试。
     #[tokio::test]
     async fn precheck_early_exit_carries_the_account_id_and_an_exact_code() {
-        let source = sample_source("tok_gate_removed", true);
+        let source = sample_source("tok_gate_removed");
         let mut account = sample_account();
         account.status = AccountStatus::Disabled;
         let (service, log_repo) = build_service(Some(source.clone()), Some(account.clone()));
@@ -1436,7 +1392,7 @@ mod tests {
         // 的默认值，测试的前提才不随 fixture 漂移。
         account.entitlements = Vec::new();
         let (service, log_repo) = build_loop_service_with_account(
-            sample_source("tok_no_vip", true),
+            sample_source("tok_no_vip"),
             account,
             fetcher.clone(),
         );
@@ -1463,7 +1419,7 @@ mod tests {
     /// 账号被禁用同样落在预检阶段，且用的是账号自身的 id。
     #[tokio::test]
     async fn disabled_account_writes_a_precheck_row() {
-        let source = sample_source("tok_acc_disabled", true);
+        let source = sample_source("tok_acc_disabled");
         let mut account = sample_account();
         account.status = AccountStatus::Disabled;
         let (service, log_repo) = build_service(Some(source.clone()), Some(account.clone()));
@@ -1556,7 +1512,7 @@ mod tests {
         // `fallback_source`：这条测的正是**开关关着**的回退面，用错替身会让它变成
         // 主路径测试，而且因为降级会继续请求而替身队列只有一项，表现为替身 panic。
         let (service, log_repo) =
-            build_loop_service(sample_source("tok_off", true), fetcher.clone());
+            build_loop_service(sample_source("tok_off"), fetcher.clone());
 
         let err = expect_err(service.fetch_music_url("tok_off", sample_req()).await);
         assert_eq!(err.code, ErrorCode::UpstreamQualityRefused);
@@ -1779,7 +1735,7 @@ mod tests {
 
         let fetcher = FakeFetcher::new(vec![Ok(refused_but_looks_like_auth)]);
         let (service, log_repo) =
-            build_loop_service(sample_source("tok_order_off", true), fetcher.clone());
+            build_loop_service(sample_source("tok_order_off"), fetcher.clone());
 
         let err = expect_err(service.fetch_music_url("tok_order_off", sample_req()).await);
         assert_eq!(err.code, ErrorCode::UpstreamQualityRefused);

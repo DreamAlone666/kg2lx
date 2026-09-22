@@ -158,7 +158,6 @@ export function isNamedVipProduct(productType: string | null | undefined): boole
 export const errorCodeLabel: Record<string, string> = {
 	ADMIN_UNAUTHORIZED: '未授权',
 	SOURCE_NOT_FOUND: '音源不存在',
-	SOURCE_DISABLED: '音源已停用',
 	SOURCE_NAME_EMPTY: '标题不能为空',
 	SOURCE_NAME_TOO_LONG: '标题过长',
 	ACCOUNT_NOT_FOUND: '账号不存在',

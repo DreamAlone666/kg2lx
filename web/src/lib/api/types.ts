@@ -28,7 +28,6 @@ export type SourceSummary = {
    * 列表当前不消费它，保留是因为本类型如实镜像接口返回。
    */
   default_name: string;
-  enabled: boolean;
   /** 该音源是否开启了「音质自动降级」；默认关闭。详见 QualityFallbackSetting 的说明。 */
   quality_fallback: boolean;
   script_url: string;
@@ -97,7 +96,6 @@ export type SourceDetail = {
    * 硬限制，用户会以为超长标题存不进去，而实际上存得进去。
    */
   name_advisory_chars: number;
-  enabled: boolean;
   /** 该音源是否开启了「音质自动降级」；默认关闭。详见 QualityFallbackSetting 的说明。 */
   quality_fallback: boolean;
   script_url: string;

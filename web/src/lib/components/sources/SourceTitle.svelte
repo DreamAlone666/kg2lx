@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { tick } from 'svelte';
-	import { Button, Input, StatusBadge } from '$lib/components/ui';
+	import { Button, Input } from '$lib/components/ui';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { sourcesController } from '$lib/features/sources/controller.svelte';
 	import { labelOf, providerLabel } from '$lib/domain';
@@ -214,8 +214,5 @@ function handleKeydown(e: KeyboardEvent) {
 
 	<div class="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
 		<span>账号 {source.account.userid} · 平台 {labelOf(providerLabel, source.provider)}</span>
-		{#if !source.enabled}
-			<StatusBadge tone="neutral">已停用</StatusBadge>
-		{/if}
 	</div>
 </div>

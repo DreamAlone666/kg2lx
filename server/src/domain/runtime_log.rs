@@ -462,7 +462,7 @@ mod tests {
             retry_count: 0,
             ok: false,
             status_code: None,
-            error_code: Some("SOURCE_DISABLED".into()),
+            error_code: Some("SOURCE_NOT_FOUND".into()),
             latency_ms: 0,
             error: None,
             created_at: 1_789_478_080,
