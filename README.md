@@ -4,6 +4,16 @@
 
 它包含一个基于 Rust 的后端（负责协议处理和链接解析）以及一个基于 SvelteKit 的管理后台（负责账号管理和二维码登录）。
 
+## 特性
+
+- **扫码绑定：** 每个酷狗概念版账号对应一个独立音源，互不影响。
+- **快捷导入：** 在后台复制脚本地址，粘贴到 LX Music 的自定义音源即可。
+- **名字自定义：** 音源标题可自定义，但改完需要重新导入。
+- **会员权益：** 后台展示概念版VIP / 畅听VIP有效期，方便诊断。
+- **音质自动降级：** 开启后，自动沿音质档位向下重试，尽量让你听到声音。
+- **运行时日志：** 取链结果、上游原始业务状态、上游**实际**返回格式与实测码率以及降级报告，都能在后台查询。
+- **一键部署：** 提供预构建的 `linux/amd64` Docker 镜像与 Docker Compose 示例（见下）。
+
 ## 灵感来源
 
 没别的，酷狗概念版是个很好的软件，但却没有一个好用的 PC 端（尤其是在 Linux 端）。
@@ -19,7 +29,7 @@ LX Music 的跨平台体验很好，我的歌单在上面同步，恰好我也�
 
 ## 界面预览
 
-![kg2lx 管理后台演示](./docs/images/demo.avif)
+![kg2lx 音源详情与运行时日志](./docs/images/demo.avif)
 
 ## Docker Compose 一键部署（推荐）
 
@@ -31,7 +41,7 @@ LX Music 的跨平台体验很好，我的歌单在上面同步，恰好我也�
 services:
   # 上游 API。如果有独立部署的 KuGouMusicApi，可以删除此服务，
   kugou-api:
-    image: ghcr.io/dreamalone666/kugou-music-api:45f31fefe97b
+    image: ghcr.io/dreamalone666/kugou-music-api:45f31fefe97b-p5a78e70e
     environment:
       # 必须为 lite 才能支持概念版接口
       platform: lite
@@ -43,7 +53,7 @@ services:
     restart: unless-stopped
 
   kg2lx:
-    image: ghcr.io/dreamalone666/kg2lx:v0.1.3
+    image: ghcr.io/dreamalone666/kg2lx:v0.2.0
     # 有独立部署的 KuGouMusicApi 时，才需要删除
     depends_on:
       - kugou-api
