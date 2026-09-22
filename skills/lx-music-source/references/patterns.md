@@ -80,17 +80,24 @@ Guidance:
 - Put signing logic in small helpers before attaching it to the main handlers.
 
 ## Pattern 4: Update Prompt
-Public scripts often include this, but it is optional.
+Public scripts often include this, but it is optional. See `contract.md` (`EVENT_NAMES.updateAlert`) for the host mechanics this section leans on.
 
 Common approach:
 
 - A constant flag such as `UPDATE_ENABLE`.
-- An update-check request during or right after initialization.
-- If the remote version is newer, call `send(EVENT_NAMES.updateAlert, { log, updateUrl })`.
+- An update check right **after** initialization, never before it.
+- If the answer is "there is a newer version", call `send(EVENT_NAMES.updateAlert, { log, updateUrl })`.
 
 Watch-outs:
 
-- `updateAlert` can only be sent once per run.
+- **Only versions imported after the check exists can ever be notified.** The check has to live inside the imported script, so the release that introduces it reaches nobody by itself — entries imported earlier stay unreachable through this channel forever. Ship it early rather than at the first change that genuinely needs announcing.
+- **Send it after `inited`, fire-and-forget.** Anything thrown before `inited` can fail the import, and the check needs the network; awaiting it inside initialization buys nothing.
+- **Let something outside the script decide whether there is an update.** A version baked into the script at render time always equals `currentScriptInfo.version`, and the host itself never compares versions. Ask the server that served the script, and let it own the comparison rule — including what to do when the version it serves is older than the one the user holds.
+- **Validate the payload shape before sending.** The host spends its single opportunity before it validates, so one malformed or empty `log` costs the whole run.
+- **Keep the check off the error path.** It must not share a helper that produces user-facing playback messages, must not borrow a retry signal, and must not touch any retry budget: an unreachable or failing update endpoint has to look exactly like "no update". Handle the `send()` rejection for the same reason.
+- **Serve the notes from wherever the version comes from.** A script cannot carry notes for a release it is not, and notes fetched at check time can cover every version the user skipped — which is what makes a breaking change legible to someone jumping several releases.
+- **Write the notice as short lines, not prose.** Newlines are the only formatting the update alert honours, and the dialog's width follows its longest line rather than a fixed frame, so one long sentence turns the popup into a full-window-wide wall while short itemized lines keep it a compact block. Put the thing the user must act on (an import URL, a command) on its own line, and keep each note short enough not to become the longest line.
+- **The notice has to carry the import URL.** There is no in-place update and the host's online-import dialog consumes a URL, so "please update" without an address is not actionable. `log` is selectable plain text and is the reliable place for it; a clickable `updateUrl` is a bonus, not a substitute.
 - Do not add update logic unless the task really needs it.
 
 ## Stable Cross-Script Observations

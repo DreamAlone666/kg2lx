@@ -20,13 +20,13 @@ Put the request into one of these buckets and only read the minimum needed files
 - Declare only the qualities you can actually resolve. `qualitys` directly controls what LX offers in the UI.
 - Every branch in `on(EVENT_NAMES.request, ...)` must return a `Promise`.
 - Any exception before `send(EVENT_NAMES.inited, ...)` can make script import fail, so keep initialization conservative.
-- Only call `updateAlert` when there is a real update flow, and only once per run.
+- Only call `updateAlert` when there is a real update flow, and only once per run — the host spends that one opportunity **before** it validates the payload, and silently drops the alert when the user's per-source `allowShowUpdateAlert` switch is off. Validate the payload, send after `inited`, and handle the rejection; see `references/contract.md` (`EVENT_NAMES.updateAlert`).
 - Treat the official docs as authoritative. If example scripts use extra qualities or fields, only reuse them when the current target version is known to support them.
 - Normalize `request()` callback payloads defensively. `resp.body` may already be an object, not always a JSON string.
 - Do not assume a backend `200` guarantees LX playback. Script-side parse mistakes and wrong return shapes can still make playback fail.
 - Pass `request()` `body` as an object, not a `JSON.stringify`'d string, and tolerate the JSON-string-wrapped body shape in backends; see `references/contract.md` (Mobile Differences) for why.
 - Header metadata is parsed and **frozen at import time**: the host keeps its own copy, so re-rendering a script server-side changes nothing until the user deletes the entry and re-imports. Keep `@name`/`@description`/`@version` single-line, and never let user-controlled text reach the header without stripping `*/`.
-- `@version` is header metadata like any other field, and the host uses it for **display only**: the source list renders it as `v{value}` when the value starts with a digit, and the script receives it back as `currentScriptInfo.version`. Nothing in the host compares versions or decides anything from one — the only update path is `EVENT_NAMES.updateAlert`, which the script must send itself and which the user can switch off through the per-source `allowShowUpdateAlert` flag.
+- `@version` is header metadata like any other field, and the host uses it for **display only**: the source list renders it as `v{value}` when the value starts with a digit, and the script receives it back as `currentScriptInfo.version`. Nothing in the host compares versions or decides anything from one — the only update path is `EVENT_NAMES.updateAlert`, which the script must send itself and which the user can switch off through the per-source `allowShowUpdateAlert` flag. Because the check has to exist inside the imported script, a release that adds one notifies no previously imported entry, ever.
 - `sources[key].name` is the **platform** display name (like `酷我音乐` / `本地音乐`), a different level from the header `@name`. Never drive it from a per-instance or user-editable title; see `references/contract.md` (`sources[key].name` Is Platform-Level).
 - `info.musicInfo` is the host's **flattened legacy shape** (`toOldMusicInfo`), not the nested internal `MusicInfo` — read `musicInfo.albumName`, never `musicInfo.meta.albumName`. It carries the song's display fields (`name` / `singer` / `albumName`) alongside the source-specific ids, and they are populated because lists and search come from the built-in implementation; see `references/contract.md` (`What The Script Actually Receives As musicInfo`).
 
@@ -59,6 +59,12 @@ Put the request into one of these buckets and only read the minimum needed files
 - If the play bar shows `服务器繁忙`, the host is in its own 2–6 s retry loop rather than reporting a failure. A script that answers `服务器繁忙` on every attempt keeps the player retrying forever.
 - Two identical requests in a row for the same song is usually the **host retrying itself**, not a backend retry: the URL-resolution flow re-runs once for any failure that is not a user cancellation, and its `isRetryed` guard is consulted only after that second attempt. Count the backend's own retry counter rather than rows in a log — see `references/contract.md` (One Failure Usually Costs Two Requests).
 
+## Debugging The Update Prompt
+- If nothing appears, check in this order: whether the entry was imported **before** the check existed (such an entry can never be notified); whether the alert is sent before `inited`; whether `log` is a non-empty string; whether the update endpoint answered at all, since a failed check is supposed to look like "no update"; and whether the user's per-source `allowShowUpdateAlert` switch is off — it is consulted after the send and drops the alert silently.
+- If the alert appears at every launch, that is the contract rather than a bug: the once-per-run limit is per script execution, the script has no storage with which to remember it already alerted, and it executes for the active source at every app start.
+- If the "打开更新地址" button does nothing, the `updateUrl` is missing an `http(s)://` scheme: the preload-side validation does not catch that, the renderer's browser opener does.
+- A second `send(EVENT_NAMES.updateAlert, ...)` in the same run rejects instead of showing anything, and a malformed first payload spends the run's only opportunity — so a payload that fails validation looks exactly like never calling it.
+
 ## Pattern Selection
 - If the task is just wrapping an existing backend endpoint, use the static proxy pattern from `references/patterns.md`.
 - If the available sources, qualities, or update metadata come from a remote config, use the dynamic config pattern.
@@ -88,6 +94,8 @@ Before finishing, verify at least these points:
 - `request()` calls carry an explicit `timeout` below the host's 20 s deadline, in milliseconds.
 - The value returned from `musicUrl` is validated locally (a string, at most 2048 characters, matching `/^https?:/`) before it resolves.
 - If the script uses `env`, `version`, `currentScriptInfo`, or `utils`, only read the fields that are actually needed.
+- `updateAlert`, if used, is sent after `inited` and only when there really is an update, with its payload shape validated first; a failed or unreachable check stays silent instead of surfacing as a playback error, and never goes through the helper that builds user-facing failure messages.
+- The update notice carries an `http(s)://` URL that the host's online import can consume, and any `updateUrl` starts with `http(s)://` too — the renderer's browser opener silently drops anything without that scheme.
 
 ## Output Expectations
 - When writing code: produce the smallest viable patch and keep the script structure obvious.

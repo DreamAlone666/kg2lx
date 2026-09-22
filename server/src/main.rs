@@ -78,7 +78,9 @@ async fn main() {
             get(routes::admin::list_source_logs),
         );
 
-    let runtime_routes = Router::new().route("/music-url", post(routes::runtime::music_url));
+    let runtime_routes = Router::new()
+        .route("/music-url", post(routes::runtime::music_url))
+        .route("/script-update", post(routes::runtime::script_update));
 
     let trace_layer = TraceLayer::new_for_http()
         .make_span_with(|req: &Request<Body>| {

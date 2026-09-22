@@ -47,6 +47,39 @@ pub async fn music_url(
     Ok(Json(serde_json::to_value(resp).unwrap()))
 }
 
+/// `POST /api/v1/runtime/script-update` 的请求体。
+#[derive(serde::Deserialize)]
+struct ScriptUpdateRequest {
+    /// 客户端上报的**自己头部里的** `@version`，即它被导入那一刻冻结的那个值。
+    ///
+    /// `#[serde(default)]` 而不是必填：这个端点回答的是一句「你的脚本旧了吗」，
+    /// 拿不到版本号时正确的回答是「不知道，算没有更新」，而不是把一次纯通知性的
+    /// 探测变成 400。真·畸形 JSON 仍然按 `music-url` 的老做法拒掉——那说明调用方
+    /// 根本不是我们渲染出来的脚本。
+    #[serde(default)]
+    version: String,
+}
+
+/// 告诉客户端它手上那份脚本是否已经过期。
+///
+/// 认证与 `/music-url` 完全一致（同一个 `verify_runtime`）。这个端点**不写运行时
+/// 日志**：`RuntimeLog` 记的是取链事件，而这个请求既没有 hash 也没有音质。
+pub async fn script_update(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let runtime_token = verify_runtime(&headers)?;
+
+    let req: ScriptUpdateRequest = serde_json::from_slice(&body)
+        .map_err(|_| AppError::invalid_request("invalid request body"))?;
+    let resp = state
+        .script
+        .check_script_update(&runtime_token, &req.version)
+        .await?;
+    Ok(Json(serde_json::to_value(resp).unwrap()))
+}
+
 fn parse_music_url_request(body: &[u8]) -> Result<RuntimeMusicUrlRequest, AppError> {
     let value: serde_json::Value =
         serde_json::from_slice(body).map_err(|_| AppError::invalid_request("invalid json"))?;

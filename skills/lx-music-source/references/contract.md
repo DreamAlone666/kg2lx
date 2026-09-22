@@ -28,8 +28,9 @@ What a script actually gets from its header is narrower than the list of fields 
 
 - The host parses the comment and exposes it as `currentScriptInfo`. Rely on `@name`, `@version`, and `@description` having a stable, user-visible meaning; `@author` and `@homepage` are informational and are not guaranteed to be surfaced anywhere.
 - `@name` is the title shown in the custom-source list; `@description` is the line under it. Both must stay **single-line** — a raw newline inside the comment breaks the metadata parse.
-- Metadata is read and frozen **at import time**. The host keeps its own copy of the script text, so editing the script on a server does not change what an already-imported source displays. A user only sees a new title, description, or version after deleting the entry and importing again.
-- There is **no auto-update** and **no de-duplication** for custom sources: importing the same URL twice yields two entries, and the host never compares versions, so an already-imported entry changes only when the user deletes it and imports again. `@version`, like `@name` and `@description`, is therefore a value only a human ever reads.
+- Metadata is read and frozen **at import time**. The host keeps its own copy of the script text, so editing the script on a server does not change what an already-imported source displays. A user only sees a new title, description, or version after importing the script again.
+- There is **no auto-update**: the host never compares versions, so an already-imported entry changes only when an import replaces it. `@version`, like `@name` and `@description`, is therefore a value only a human ever reads.
+- Import de-duplication keys on the **script's bytes, not its URL**: an import whose bytes are identical to an existing entry's is refused outright with the dialog `导入失败，脚本内容与已有的源「{name}」相同`. So re-importing the same URL is refused while the served script is byte-identical, and succeeds as soon as any change makes the bytes differ — a version bump, or even a rename that alters the rendered `@name` / `@description`. The import then adds a **second** entry beside the old one, which the user has to remove by hand. The comparison walks the already-loaded entry list, so it only applies once that list has been read.
 - The length limits are **advisory, not a rejection criterion**. The official documentation says 建议不要过长, 24 个字符以内 for `@name` and 36 个字符以内 for `@description`, and exceeding them does not fail the import. Nor is the parsed value left intact: for every field the host knows a limit for, an over-length value is truncated at that limit with `...` appended. So an over-length `@name` or `@description` still imports, but what the source list displays and what the script reads back through `currentScriptInfo` is the cut string, not the full header text; only `currentScriptInfo.rawScript` carries the unmodified script. Do not add hard validation that rejects an over-length name.
 - Because `@name` sits inside a block comment, a value containing `*/` closes the comment early and makes the whole script a syntax error on import. Strip `*/` (repeatedly — removing one occurrence can splice a new one together) before writing any user-controlled text into the header.
 
@@ -150,6 +151,34 @@ send(EVENT_NAMES.updateAlert, {
   updateUrl: 'https://example.com/update',
 })
 ```
+
+What the host accepts and rejects:
+
+- `data` must be an object, and `log` must be a **non-empty string**. A missing `log` is rejected with `log is required.`; a non-object payload with `parameter format error.`
+- `log` longer than 1024 characters is truncated host-side to 1024 plus `...`.
+- `updateUrl` is in practice **not** validated: the guard drops it only when the value fails its URL regex **and** exceeds 1024 characters, so a malformed value survives it. A real check happens later instead — the renderer's browser opener ignores anything that does not start with `http(s)://`, so an `updateUrl` without that scheme makes the button do nothing at all.
+- The dialog title is host-owned and localized (`自定义源「{name}」发现新版本：` in `zh-cn`), with the script's `@name` in the `{name}` slot. `log` is rendered under it as **selectable plain text** — not markdown.
+- That text block is rendered with `white-space: pre-line`, so `\n` in `log` is preserved and long lines wrap. **Line structure is therefore the only formatting a script controls**, and it decides the dialog's geometry: the dialog's content box sets a `min-width` but **no max-width**, so its width follows the longest line in the message, capped only by the window. One long single-line entry produces a dialog spanning the whole window with wrapped text; short lines produce a narrow, scannable dialog. Wrapping behaviour is comparable across machines because the width driver is the character count, not the font.
+- For the same reason there is **no max-height** either: the message area's `overflow: auto` only engages if something constrains the height, and nothing does. A very long `log` grows the dialog instead of scrolling inside it, so the host's 1024-character truncation caps the payload rather than the layout.
+- With a truthy `updateUrl` the confirm button is `打开更新地址` and opens the URL in the system default browser a few hundred ms after the dialog closes; without one the only button is `ok`.
+
+Three properties of the once-per-run limit are easy to get wrong:
+
+- The flag is set **before** the payload is validated, so a rejected `send` still spends the single opportunity for that run. Validate the payload shape first, and treat the returned Promise as fallible — a second attempt rejects with `The update alert can only be called once.`, so an unhandled rejection is possible in the sandbox.
+- The limit is **per script execution**, not per app launch: it is a module-scoped flag inside the sandbox, reset whenever the script is executed again. The script executes for the **active** source only — once per app start, and once per switch to that source — so an alert the user ignores returns the next time it runs. The sandbox exposes only the `lx` object, so a script has no storage with which to remember that it already alerted.
+- Whether the user sees anything is decided **after** the script sends: the per-source `allowShowUpdateAlert` switch is consulted at display time. When it is off, the send still resolves and the alert is silently dropped; a script cannot read this flag and does not need to. A newly imported script starts with it on, while an entry migrated from a config that predates the field starts with it off.
+
+Where an "is there a newer version" answer can come from:
+
+- `currentScriptInfo.version` is the frozen header value, and nothing in the host compares versions or decides anything from one. A version baked into the script at render time therefore always equals what the script reads back — the comparison has to involve something outside the script, typically the server that served it.
+- Because the check must already exist inside the imported script, the release that first carries it notifies **nobody**: every entry imported before it stays unreachable by this channel forever. Only versions imported afterwards become notifiable.
+
+### What Makes An Update Notice Actionable
+The host's own import affordances bound what a notice can usefully say:
+
+- The online-import dialog takes a **URL** — required to match `http(s)://`, followed through at most 3 redirects, with script size capped at 9 MB. There is a separate local-file import path.
+- There is no in-place update: the notified user imports the script again (refused while the bytes are identical), which leaves the previous entry behind for them to remove by hand.
+- A notice that only says "a new version is available" withholds the one string the user needs. `log` is selectable plain text, which makes it the natural carrier for the import URL and the steps; `updateUrl` is only a convenience pointing at a page that can explain more.
 
 ## How The Host Renders A Rejection
 
