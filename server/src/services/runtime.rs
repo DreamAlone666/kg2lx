@@ -581,7 +581,7 @@ impl RuntimeService {
 
             let vip = self.client.fetch_vip_status(&account.cookies).await?;
             account.cookies = vip.cookies;
-            account.entitlements = vip.entitlements;
+            account.entitlements = Some(vip.entitlements);
 
             let now = account::now_ts();
             account.last_refresh_at = Some(now);
@@ -947,7 +947,7 @@ mod tests {
             upstream_userid: "userid_test".into(),
             display_name: None,
             status: AccountStatus::Active,
-            entitlements: Vec::new(),
+            entitlements: Some(Vec::new()),
             cookies: CookieStore::new(),
             last_refresh_at: None,
             last_success_at: None,
@@ -1234,7 +1234,11 @@ mod tests {
         let source = sample_source("tok_no_account");
         let (service, log_repo) = build_service(Some(source), None);
 
-        let _ = expect_err(service.fetch_music_url("tok_no_account", sample_req()).await);
+        let _ = expect_err(
+            service
+                .fetch_music_url("tok_no_account", sample_req())
+                .await,
+        );
 
         let rows = log_repo.rows();
         assert_eq!(rows.len(), 1);
@@ -1292,7 +1296,11 @@ mod tests {
         let source = sample_source("tok_no_account");
         let (service, log_repo) = build_service(Some(source), None);
 
-        let _ = expect_err(service.fetch_music_url("tok_no_account", sample_req()).await);
+        let _ = expect_err(
+            service
+                .fetch_music_url("tok_no_account", sample_req())
+                .await,
+        );
 
         let rows = log_repo.rows();
         assert_eq!(rows.len(), 1);
@@ -1390,12 +1398,9 @@ mod tests {
         // 「这个账号没有任何权益」现在的表述就是空权益列表——账号级的聚合布尔值
         // （`vip_active`）已删除，权益是并列的增量信息。这里显式写出来而不靠 fixture
         // 的默认值，测试的前提才不随 fixture 漂移。
-        account.entitlements = Vec::new();
-        let (service, log_repo) = build_loop_service_with_account(
-            sample_source("tok_no_vip"),
-            account,
-            fetcher.clone(),
-        );
+        account.entitlements = Some(Vec::new());
+        let (service, log_repo) =
+            build_loop_service_with_account(sample_source("tok_no_vip"), account, fetcher.clone());
 
         let resp = service
             .fetch_music_url("tok_no_vip", sample_req())
@@ -1511,8 +1516,7 @@ mod tests {
         // 刻意用 `sample_source`（`quality_fallback` 默认 false）而不是
         // `fallback_source`：这条测的正是**开关关着**的回退面，用错替身会让它变成
         // 主路径测试，而且因为降级会继续请求而替身队列只有一项，表现为替身 panic。
-        let (service, log_repo) =
-            build_loop_service(sample_source("tok_off"), fetcher.clone());
+        let (service, log_repo) = build_loop_service(sample_source("tok_off"), fetcher.clone());
 
         let err = expect_err(service.fetch_music_url("tok_off", sample_req()).await);
         assert_eq!(err.code, ErrorCode::UpstreamQualityRefused);

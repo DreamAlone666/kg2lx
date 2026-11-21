@@ -231,7 +231,7 @@ impl LoginService {
                 acc.status = AccountStatus::Active;
                 // 重新扫码成功即整体覆盖权益明细，包括空的（「这个账号现在一条权益
                 // 都没有」是刚查到的事实，不该保留上一次的条目）。
-                acc.entitlements = vip.entitlements;
+                acc.entitlements = Some(vip.entitlements);
                 acc.last_refresh_at = Some(now2);
                 acc.last_success_at = Some(now2);
                 // 重新登录成功即视为错误已消失：code 与 message 一起清，避免界面
@@ -250,7 +250,7 @@ impl LoginService {
                     upstream_userid: userid.clone(),
                     display_name: None,
                     status: AccountStatus::Active,
-                    entitlements: vip.entitlements,
+                    entitlements: Some(vip.entitlements),
                     cookies: session.temp_cookies.clone(),
                     last_refresh_at: Some(now2),
                     last_success_at: Some(now2),

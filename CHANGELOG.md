@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **SQLite 存储**。首次启动会将旧账号、音源和已有权益快照一起导入，已导入洛雪的脚本继续使用原地址和凭据。旧文件留存供回退，历史日志及扫码会话留在原目录。
+
 ## [0.2.0] - 2026-09-22
 
 ### Added

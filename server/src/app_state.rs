@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::config::Config;
+use crate::error::AppError;
 use crate::repos::account::AccountRepo;
 use crate::repos::login_session::LoginSessionRepo;
 use crate::repos::runtime_log::RuntimeLogRepo;
@@ -21,20 +22,13 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(config: Config) -> Self {
+    pub fn new(config: Config) -> Result<Self, AppError> {
+        let storage = Arc::new(crate::repos::sqlite::Sqlite::open(&config.data_dir)?);
         let config = Arc::new(config);
-        let data_dir: &std::path::Path = &config.data_dir;
-
-        let account_repo: Arc<dyn AccountRepo> =
-            Arc::new(crate::repos::fs::account::FsAccountRepo::new(data_dir));
-        let source_repo: Arc<dyn SourceRepo> =
-            Arc::new(crate::repos::fs::source::FsSourceRepo::new(data_dir));
-        let session_repo: Arc<dyn LoginSessionRepo> = Arc::new(
-            crate::repos::fs::login_session::FsLoginSessionRepo::new(data_dir),
-        );
-        let log_repo: Arc<dyn RuntimeLogRepo> = Arc::new(
-            crate::repos::fs::runtime_log::FsRuntimeLogRepo::new(data_dir),
-        );
+        let account_repo: Arc<dyn AccountRepo> = storage.clone();
+        let source_repo: Arc<dyn SourceRepo> = storage.clone();
+        let session_repo: Arc<dyn LoginSessionRepo> = storage.clone();
+        let log_repo: Arc<dyn RuntimeLogRepo> = storage;
 
         let client = Arc::new(KugouLiteClient::new(&config));
 
@@ -71,12 +65,12 @@ impl AppState {
             account_repo,
         ));
 
-        Self {
+        Ok(Self {
             config,
             login: login_service,
             source: source_service,
             runtime: runtime_service,
             script: script_service,
-        }
+        })
     }
 }

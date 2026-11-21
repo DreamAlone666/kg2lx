@@ -53,7 +53,10 @@ async fn main() {
 
     let listen_addr = config.listen_addr.clone();
     let has_web_dist = config.web_dist_dir.is_some();
-    let state = AppState::new(config);
+    let state = AppState::new(config).unwrap_or_else(|error| {
+        tracing::error!(%error, "could not open DATA_DIR");
+        std::process::exit(1);
+    });
 
     let admin_routes = Router::new()
         .route(

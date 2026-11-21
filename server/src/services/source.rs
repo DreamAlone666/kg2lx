@@ -37,7 +37,8 @@ pub struct SourceListItem {
     /// 空数组是**正常状态**（这个账号一条权益都没有），不是「查不到上游」：这一列只
     /// 由**成功**的权益查询写入，因此空数组的成因只可能是「上一次查到的就是空的」；
     /// 问不到上游时账号会被标成 `login_failed`，权益保持上一次成功时的值不变。
-    pub entitlements: Vec<VipEntitlement>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entitlements: Option<Vec<VipEntitlement>>,
     /// 账号状态，与详情页 `account.status` 同源同格式。
     ///
     /// 列表要回答「账号还活着吗」这个最核心的问题，而列表本来就是用来扫一眼做判断的。
@@ -104,7 +105,8 @@ pub struct SourceAccountInfo {
     /// 空数组是**正常状态**（这个账号一条权益都没有），不是「查不到上游」；两者在
     /// 这里可区分，因为后者走的是 `UPSTREAM_VIP_CHECK_FAILED` 错误路径，根本不会有
     /// 这一次响应。
-    pub entitlements: Vec<VipEntitlement>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entitlements: Option<Vec<VipEntitlement>>,
     pub status: String,
     pub last_refresh_at: Option<i64>,
     pub last_error: Option<String>,
@@ -183,7 +185,7 @@ impl SourceService {
                     a.status.as_str().to_string(),
                     a.last_refresh_at,
                 ),
-                None => (String::new(), Vec::new(), String::new(), None),
+                None => (String::new(), None, String::new(), None),
             };
             let script_url = format!("{}/s/{}.js", self.config.public_base_url, s.script_token);
             items.push(SourceListItem {
@@ -373,7 +375,7 @@ impl SourceService {
             // 上面那行已经以 `UPSTREAM_VIP_CHECK_FAILED` 返回了，两条路径在这里就
             // 分开了——不要给空列表加「保留上一次的权益」之类的兜底，那会让界面
             // 继续显示一份已经不成立的权益。
-            account.entitlements = vip.entitlements;
+            account.entitlements = Some(vip.entitlements);
 
             let now = account::now_ts();
             account.last_refresh_at = Some(now);
@@ -597,7 +599,7 @@ mod tests {
             upstream_userid: TEST_USERID.into(),
             display_name: None,
             status: AccountStatus::Active,
-            entitlements: Vec::new(),
+            entitlements: Some(Vec::new()),
             cookies: CookieStore::new(),
             last_refresh_at: None,
             last_success_at: None,
@@ -801,7 +803,7 @@ mod tests {
     #[tokio::test]
     async fn entitlements_are_exposed_in_both_the_list_and_the_detail() {
         let account = ProviderAccount {
-            entitlements: vec![
+            entitlements: Some(vec![
                 VipEntitlement {
                     product_type: "svip".into(),
                     active: true,
@@ -814,7 +816,7 @@ mod tests {
                     begin_at: None,
                     end_at: None,
                 },
-            ],
+            ]),
             ..sample_account()
         };
         let (service, _repo) = build_service_with_account(sample_source(), account);

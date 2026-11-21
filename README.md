@@ -87,6 +87,10 @@ docker compose up -d
 
 `kg2lx` 与 `KuGouMusicApi` 使用兼容的版本组合。更新版本时，将 `kg2lx` 镜像替换为目标 release tag，并将 `KuGouMusicApi` 替换为该 release 兼容的短 commit tag。
 
+**从旧版升级**。停止旧容器并备份数据卷，使用原卷启动新版，账号、音源和已导入的洛雪脚本会沿用原有凭据。
+
+**回退**。旧文件留在原卷，切回旧版会恢复切换前的本地状态，切换后的新增与修改记录保存在 SQLite 库中。
+
 ## 使用方法
 
 1. **访问管理后台：** 浏览器打开管理后台（比如 `PUBLIC_BASE_URL`）。
