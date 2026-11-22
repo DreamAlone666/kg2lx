@@ -1,4 +1,6 @@
+mod events;
 mod legacy;
+mod migrations;
 
 use std::fs;
 use std::io::ErrorKind;
@@ -15,18 +17,15 @@ use tokio::sync::{mpsc, oneshot};
 use crate::domain::account::{AccountStatus, ProviderAccount};
 use crate::domain::cookie_store::CookieStore;
 use crate::domain::entitlement::{EntitlementSnapshot, VipEntitlement};
-use crate::domain::event_log::{EventLog, ListEvents, LogView};
 use crate::domain::login_session::LoginSession;
 use crate::domain::provider::ProviderKind;
 use crate::domain::source::Source;
 use crate::error::AppError;
 use crate::repos::account::AccountRepo;
 use crate::repos::entitlement::EntitlementRepo;
-use crate::repos::event_log::EventLogRepo;
 use crate::repos::login_session::LoginSessionRepo;
 use crate::repos::source::SourceRepo;
 
-const SCHEMA_VERSION: i64 = 1;
 const DATABASE_FILE: &str = "kg2lx.db";
 const DATABASE_QUEUE_CAPACITY: usize = 64;
 
@@ -41,12 +40,7 @@ impl Sqlite {
     pub fn open(data_dir: &Path, event_log_limit: u32) -> Result<Self, AppError> {
         let mut connection = open_database(data_dir)?;
         let event_log_limit = i64::from(event_log_limit);
-        connection
-            .execute(
-                "DELETE FROM event_logs WHERE seq <= (SELECT max(seq) - ?1 FROM event_logs)",
-                [event_log_limit],
-            )
-            .map_err(sqlite_error)?;
+        events::prune_all(&mut connection, event_log_limit).map_err(sqlite_error)?;
         let (jobs, mut worker) = mpsc::channel::<Job>(DATABASE_QUEUE_CAPACITY);
         std::thread::Builder::new()
             .name("kg2lx-sqlite".into())
@@ -85,25 +79,17 @@ fn open_database(data_dir: &Path) -> Result<Connection, AppError> {
     if !path.try_exists()? {
         initialize(data_dir, &path)?;
     }
-    let connection = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_WRITE)
+    let mut connection = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_WRITE)
         .map_err(sqlite_error)?;
-    let version: i64 = connection
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .map_err(sqlite_error)?;
-    if version != SCHEMA_VERSION {
-        return Err(AppError::internal(format!(
-            "unsupported SQLite schema version {version} in {}",
-            path.display()
-        )));
-    }
     connection
         .busy_timeout(Duration::from_secs(5))
         .map_err(sqlite_error)?;
     connection
-        .pragma_update(None, "journal_mode", "WAL")
-        .map_err(sqlite_error)?;
-    connection
         .pragma_update(None, "foreign_keys", true)
+        .map_err(sqlite_error)?;
+    migrations::migrate(&mut connection, &path, 1, migrations::MIGRATIONS)?;
+    connection
+        .pragma_update(None, "journal_mode", "WAL")
         .map_err(sqlite_error)?;
     Ok(connection)
 }
@@ -118,14 +104,11 @@ fn initialize(data_dir: &Path, target: &Path) -> Result<(), AppError> {
     connection
         .pragma_update(None, "foreign_keys", true)
         .map_err(sqlite_error)?;
+    migrations::migrate(&mut connection, target, 0, migrations::MIGRATIONS)?;
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(sqlite_error)?;
-    tx.execute_batch(include_str!("sqlite/schema.sql"))
-        .map_err(sqlite_error)?;
     legacy::import(&tx, data_dir)?;
-    tx.pragma_update(None, "user_version", SCHEMA_VERSION)
-        .map_err(sqlite_error)?;
     tx.commit().map_err(sqlite_error)?;
     connection
         .close()
@@ -549,55 +532,4 @@ fn write_session(conn: &Connection, session: &LoginSession) -> rusqlite::Result<
         params![session.session_id, encode(&session)?, session.expires_at],
     )?;
     Ok(())
-}
-
-#[async_trait]
-impl EventLogRepo for Sqlite {
-    async fn append(&self, log: &EventLog) -> Result<(), AppError> {
-        let log = log.clone();
-        let limit = self.event_log_limit;
-        self.run(move |conn| {
-            let tx = conn.transaction()?;
-            tx.execute(
-                "INSERT INTO event_logs (source_id, account_id, event_type, ok, payload_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
-                    log.context.source_id,
-                    log.context.account_id,
-                    log.event.event_type().as_str(),
-                    log.ok,
-                    encode(&log)?
-                ],
-            )?;
-            // seq has no gaps from appends and cleanup always removes the oldest prefix.
-            let cutoff = tx.last_insert_rowid() - limit;
-            if cutoff > 0 {
-                tx.execute("DELETE FROM event_logs WHERE seq <= ?1", [cutoff])?;
-            }
-            tx.commit()
-        })
-        .await
-    }
-
-    async fn list(&self, query: &ListEvents) -> Result<Vec<EventLog>, AppError> {
-        let source_id = query.source_id.clone();
-        let account_id = query.account_id.clone();
-        let event_type = query.event_type.map(|kind| kind.as_str());
-        let errors_only = query.view == LogView::Errors;
-        let limit = query.limit as i64;
-        self.run(move |conn| {
-            conn.prepare_cached(
-                "SELECT payload_json FROM event_logs
-                 WHERE (source_id = ?1 OR (source_id IS NULL AND account_id = ?2))
-                   AND (?3 IS NULL OR event_type = ?3) AND (NOT ?4 OR NOT ok)
-                 ORDER BY seq DESC LIMIT ?5",
-            )?
-            .query_map(
-                params![source_id, account_id, event_type, errors_only, limit],
-                |row| decode(row.get_ref(0)?.as_str()?, 0),
-            )?
-            .collect()
-        })
-        .await
-    }
 }
