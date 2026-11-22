@@ -2,8 +2,10 @@ use std::sync::Arc;
 
 use crate::config::Config;
 use crate::domain::entitlement::EntitlementSnapshot;
+use crate::domain::account::ProviderAccount;
 use crate::domain::event_log::{
-    EventContext, EventLog, EventTrigger, EventType, ListEvents, LogView,
+    EventContext, EventLog, EventTrigger, EventType, ListEvents, ListGlobalEvents, LogView,
+    StoredEventLog,
 };
 use crate::domain::renewal::{RenewalReason, RenewalStatus};
 use crate::domain::source::{
@@ -111,6 +113,60 @@ pub struct SourceLogsResponse {
     pub event_type: Option<EventType>,
     pub limit: usize,
     pub items: Vec<EventLog>,
+}
+
+#[derive(serde::Serialize)]
+pub struct AccountSourceItem {
+    pub source_id: String,
+    pub provider: String,
+    pub name: String,
+    pub default_name: String,
+    pub name_advisory_chars: usize,
+    pub script_url: String,
+    pub runtime_token_preview: String,
+    pub quality_fallback: bool,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(serde::Serialize)]
+pub struct AccountItem {
+    pub account_id: String,
+    pub provider: String,
+    pub userid: String,
+    pub display_name: Option<String>,
+    pub status: String,
+    pub last_refresh_at: Option<i64>,
+    pub last_error: Option<String>,
+    pub last_error_code: Option<String>,
+    #[serde(flatten)]
+    pub entitlement: EntitlementSnapshot,
+    pub renewal: RenewalStatus,
+    pub sources: Vec<AccountSourceItem>,
+}
+
+pub struct GlobalLogsQuery {
+    pub limit: usize,
+    pub view: LogView,
+    pub event_type: Option<EventType>,
+    pub account_id: Option<String>,
+    pub source_id: Option<String>,
+    pub correlation_id: Option<String>,
+    pub before_seq: Option<i64>,
+    pub include_renewal: bool,
+}
+
+#[derive(serde::Serialize)]
+pub struct GlobalLogsResponse {
+    pub view: LogView,
+    pub event_type: Option<EventType>,
+    pub account_id: Option<String>,
+    pub source_id: Option<String>,
+    pub correlation_id: Option<String>,
+    pub limit: usize,
+    pub has_more: bool,
+    pub next_before_seq: Option<i64>,
+    pub items: Vec<StoredEventLog>,
 }
 
 /// 音源 PATCH 的输入。
@@ -416,12 +472,123 @@ impl SourceService {
             items,
         })
     }
+
+    async fn build_account_item(
+        &self,
+        account: ProviderAccount,
+        renewals: &EntitlementService,
+    ) -> Result<AccountItem, AppError> {
+        let sources = self
+            .source_repo
+            .list_by_account_id(&account.account_id)
+            .await?;
+        let entitlement = self
+            .snapshots
+            .entitlement_snapshot(&account.account_id)
+            .await?;
+        let renewal = renewals.renewal_status(&account.account_id).await?;
+        let default_name = source::default_name(&account.upstream_userid);
+        let sources = sources
+            .into_iter()
+            .map(|s| {
+                let prefix: String = s.runtime_token.chars().take(8).collect();
+                AccountSourceItem {
+                    source_id: s.source_id,
+                    provider: s.provider.to_string(),
+                    name: s.name,
+                    default_name: default_name.clone(),
+                    name_advisory_chars: SCRIPT_NAME_ADVISORY_CHARS,
+                    script_url: format!("{}/s/{}.js", self.config.public_base_url, s.script_token),
+                    runtime_token_preview: format!("{prefix}..."),
+                    quality_fallback: s.quality_fallback,
+                    created_at: s.created_at,
+                    updated_at: s.updated_at,
+                }
+            })
+            .collect();
+
+        Ok(AccountItem {
+            account_id: account.account_id,
+            provider: account.provider.to_string(),
+            userid: account.upstream_userid,
+            display_name: account.display_name,
+            status: account.status.as_str().to_string(),
+            last_refresh_at: account.last_refresh_at,
+            last_error: account.last_error,
+            last_error_code: account.last_error_code,
+            entitlement,
+            renewal,
+            sources,
+        })
+    }
+
+    pub async fn list_accounts(
+        &self,
+        renewals: &EntitlementService,
+    ) -> Result<Vec<AccountItem>, AppError> {
+        let accounts = self.account_repo.list_all().await?;
+        let mut items = Vec::with_capacity(accounts.len());
+        for account in accounts {
+            items.push(self.build_account_item(account, renewals).await?);
+        }
+        Ok(items)
+    }
+
+    pub async fn get_account(
+        &self,
+        account_id: &str,
+        renewals: &EntitlementService,
+    ) -> Result<AccountItem, AppError> {
+        let account = self
+            .account_repo
+            .find_by_id(account_id)
+            .await?
+            .ok_or_else(AppError::account_not_found)?;
+        self.build_account_item(account, renewals).await
+    }
+
+    pub async fn list_global_logs(
+        &self,
+        input: GlobalLogsQuery,
+    ) -> Result<GlobalLogsResponse, AppError> {
+        let repo_query = ListGlobalEvents {
+            account_id: input.account_id.clone(),
+            source_id: input.source_id.clone(),
+            correlation_id: input.correlation_id.clone(),
+            event_type: input.event_type,
+            view: input.view,
+            before_seq: input.before_seq,
+            limit: input.limit + 1,
+            include_renewal: input.include_renewal,
+        };
+        let mut items = self.log_repo.list_global(&repo_query).await?;
+        let has_more = items.len() > input.limit;
+        if has_more {
+            items.truncate(input.limit);
+        }
+        let next_before_seq = if input.correlation_id.is_none() && has_more {
+            items.last().map(|item| item.seq)
+        } else {
+            None
+        };
+        Ok(GlobalLogsResponse {
+            view: input.view,
+            event_type: input.event_type,
+            account_id: input.account_id,
+            source_id: input.source_id,
+            correlation_id: input.correlation_id,
+            limit: input.limit,
+            has_more,
+            next_before_seq,
+            items,
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::account::{AccountStatus, ProviderAccount};
+    use crate::domain::account::AccountStatus;
     use crate::domain::entitlement::VipEntitlement;
 
     use std::sync::Mutex;
@@ -497,6 +664,15 @@ mod tests {
             Ok(None)
         }
 
+        async fn list_by_account_id(&self, account_id: &str) -> Result<Vec<Source>, AppError> {
+            Ok(self
+                .source
+                .clone()
+                .into_iter()
+                .filter(|s| s.account_id == account_id)
+                .collect())
+        }
+
         async fn update_settings(
             &self,
             _source_id: &str,
@@ -528,6 +704,10 @@ mod tests {
 
     #[async_trait]
     impl AccountRepo for FakeAccountRepo {
+        async fn list_all(&self) -> Result<Vec<ProviderAccount>, AppError> {
+            Ok(self.account.clone().into_iter().collect())
+        }
+
         async fn find_by_id(&self, _account_id: &str) -> Result<Option<ProviderAccount>, AppError> {
             Ok(self.account.clone())
         }
@@ -588,6 +768,13 @@ mod tests {
         }
 
         async fn list(&self, _query: &ListEvents) -> Result<Vec<EventLog>, AppError> {
+            Ok(Vec::new())
+        }
+
+        async fn list_global(
+            &self,
+            _query: &ListGlobalEvents,
+        ) -> Result<Vec<StoredEventLog>, AppError> {
             Ok(Vec::new())
         }
     }

@@ -87,12 +87,13 @@ curl \
   http://127.0.0.1:8787/api/v1/admin/sources/<source_id>
 ```
 
-**5. 刷新登录与同步权益**
+**5. 账号查询、刷新登录与同步权益**
 
+- **查询账号**。`GET /api/v1/admin/accounts` 与 `GET /api/v1/admin/accounts/{account_id}` 返回账号会话、权益快照、领升调度状态及关联音源列表（`sources` 数组）。
 - **刷新 Token**。发送 `POST /api/v1/admin/accounts/{account_id}/refresh-token` 更新登录凭据。
 - **同步权益**。发送 `POST /api/v1/admin/accounts/{account_id}/entitlements/sync` 读取上游快照，失败时保留上次成功记录。
 - **旧刷新地址**。`POST /api/v1/admin/sources/{source_id}/refresh` 保留原回执，刷新 Token 成功后在后台同步权益。
-- **事件日志**。`GET /api/v1/admin/sources/{source_id}/logs` 支持 `event_type`（`music_url`、`token_refresh`、`account_login`、`entitlement`）和 `view`（`all`、`errors`）。
+- **全站事件日志**。`GET /api/v1/admin/logs` 默认包含每日领升事件，支持 `event_type`、`view`、`account_id`、`source_id`、`correlation_id`（按时间正序返回因果链路）及 `before_seq` 游标分页；旧 `GET /api/v1/admin/sources/{source_id}/logs` 仍保留。
 
 ### 每日权益领升
 

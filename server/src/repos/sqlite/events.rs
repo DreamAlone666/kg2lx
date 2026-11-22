@@ -2,7 +2,9 @@ use async_trait::async_trait;
 use rusqlite::{Connection, ToSql, params};
 
 use super::{Sqlite, decode, encode};
-use crate::domain::event_log::{EventLog, EventType, ListEvents, LogView};
+use crate::domain::event_log::{
+    EventLog, EventType, ListEvents, ListGlobalEvents, LogView, StoredEventLog,
+};
 use crate::error::AppError;
 use crate::repos::event_log::EventLogRepo;
 
@@ -40,10 +42,66 @@ fn prune(conn: &Connection, kind: EventType, configured: i64) -> rusqlite::Resul
     Ok(())
 }
 
+fn list_global_sql_and_params(query: &ListGlobalEvents) -> (String, Vec<Box<dyn ToSql>>) {
+    let mut clauses: Vec<&'static str> = Vec::new();
+    let mut params: Vec<Box<dyn ToSql>> = Vec::new();
+
+    if let Some(ref correlation_id) = query.correlation_id {
+        clauses.push("json_extract(payload_json, '$.correlation_id') = ?");
+        params.push(Box::new(correlation_id.clone()));
+    }
+    if let Some(ref source_id) = query.source_id {
+        clauses.push("source_id = ?");
+        params.push(Box::new(source_id.clone()));
+    }
+    if let Some(ref account_id) = query.account_id {
+        clauses.push("account_id = ?");
+        params.push(Box::new(account_id.clone()));
+    }
+    if let Some(event_type) = query.event_type {
+        clauses.push("event_type = ?");
+        params.push(Box::new(event_type.as_str().to_owned()));
+    }
+    if query.view == LogView::Errors {
+        clauses.push("NOT ok");
+    }
+    if !query.include_renewal {
+        clauses.push(
+            "(event_type <> 'entitlement' OR json_extract(payload_json, '$.detail.action') = 'sync')",
+        );
+    }
+    if let Some(before_seq) = query.before_seq {
+        clauses.push("seq < ?");
+        params.push(Box::new(before_seq));
+    }
+
+    let where_clause = if clauses.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", clauses.join(" AND "))
+    };
+    let order_dir = if query.correlation_id.is_some() {
+        "ASC"
+    } else {
+        "DESC"
+    };
+    params.push(Box::new(query.limit as i64));
+
+    let sql = format!(
+        "SELECT seq, payload_json FROM event_logs {where_clause} ORDER BY seq {order_dir} LIMIT ?"
+    );
+    (sql, params)
+}
+
 fn list_sql(filtered: bool, include_renewal: bool) -> String {
     // The two branches are disjoint. A concrete type predicate lets each index seek to the
     // selected category and supply seq order directly to UNION ALL's merge.
     let type_filter = if filtered { "AND event_type = ?5" } else { "" };
+    let account_index = if filtered {
+        "INDEXED BY event_logs_by_account_type"
+    } else {
+        "INDEXED BY event_logs_by_account"
+    };
     let renewal_filter = if include_renewal {
         ""
     } else {
@@ -55,7 +113,7 @@ fn list_sql(filtered: bool, include_renewal: bool) -> String {
             SELECT seq, payload_json FROM event_logs WHERE source_id = ?1 AND (NOT ?3 OR NOT ok)
                 {type_filter} {renewal_filter}
             UNION ALL
-            SELECT seq, payload_json FROM event_logs WHERE source_id IS NULL AND account_id = ?2
+            SELECT seq, payload_json FROM event_logs {account_index} WHERE source_id IS NULL AND account_id = ?2
                 AND (NOT ?3 OR NOT ok) {type_filter} {renewal_filter}
             ORDER BY seq DESC LIMIT ?4
         )"
@@ -101,6 +159,21 @@ impl EventLogRepo for Sqlite {
             let count = if event_type.is_some() { 5 } else { 4 };
             stmt.query_map(&params[..count], |row| decode(row.get_ref(0)?.as_str()?, 0))?
                 .collect()
+        })
+        .await
+    }
+
+    async fn list_global(&self, query: &ListGlobalEvents) -> Result<Vec<StoredEventLog>, AppError> {
+        let query = query.clone();
+        self.run(move |conn| {
+            let (sql, params) = list_global_sql_and_params(&query);
+            let mut stmt = conn.prepare_cached(&sql)?;
+            stmt.query_map(rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())), |row| {
+                let seq: i64 = row.get(0)?;
+                let log: EventLog = decode(row.get_ref(1)?.as_str()?, 1)?;
+                Ok(StoredEventLog { seq, log })
+            })?
+            .collect()
         })
         .await
     }
@@ -250,5 +323,244 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn list_global_uses_indexes_and_filters_accurately() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Sqlite::open(dir.path(), 10_000).unwrap();
+
+        let make_log = |account: Option<&str>,
+                        source: Option<&str>,
+                        corr: &str,
+                        event: Event,
+                        err: Option<crate::error::ErrorCode>| {
+            let mut ctx = EventContext::new(
+                EventTrigger::Admin,
+                account.map(str::to_owned),
+                source.map(str::to_owned),
+            );
+            ctx.correlation_id = corr.into();
+            EventLog::new(ctx, event, None, err)
+        };
+
+        let claim_ev = || Event::Entitlement {
+            action: EntitlementAction::Claim,
+            observation: None,
+        };
+        let sync_ev = || Event::Entitlement {
+            action: EntitlementAction::Sync,
+            observation: None,
+        };
+        let login_err = Event::AccountLogin {
+            outcome: LoginOutcome::Expired,
+        };
+        let refresh_ev = Event::TokenRefresh {
+            reason: RefreshReason::Manual,
+            upstream_endpoint: "login/token".into(),
+            human_verification: false,
+        };
+
+        let fixtures = vec![
+            make_log(
+                None,
+                None,
+                "corr_unowned",
+                login_err,
+                Some(crate::error::ErrorCode::UpstreamLoginFailed),
+            ),
+            make_log(Some("acc_1"), None, "corr_chain", refresh_ev.clone(), None),
+            make_log(
+                Some("acc_1"),
+                Some("src_1"),
+                "corr_chain",
+                sync_ev(),
+                None,
+            ),
+            make_log(
+                Some("acc_1"),
+                Some("src_1"),
+                "corr_chain",
+                claim_ev(),
+                Some(crate::error::ErrorCode::UpstreamRequestFailed),
+            ),
+            make_log(Some("acc_2"), Some("src_2"), "corr_other", refresh_ev, None),
+        ];
+        for item in &fixtures {
+            db.append(item).await.unwrap();
+        }
+
+        // Verify EXPLAIN QUERY PLAN for every index path and ensure no temp B-tree sort.
+        db.run(|conn| {
+            let cases: Vec<(ListGlobalEvents, &str)> = vec![
+                (
+                    ListGlobalEvents {
+                        account_id: Some("acc_1".into()),
+                        source_id: None,
+                        correlation_id: None,
+                        event_type: None,
+                        view: LogView::All,
+                        before_seq: None,
+                        limit: 10,
+                        include_renewal: true,
+                    },
+                    "event_logs_by_account_all (account_id=?)",
+                ),
+                (
+                    ListGlobalEvents {
+                        account_id: Some("acc_1".into()),
+                        source_id: None,
+                        correlation_id: None,
+                        event_type: Some(EventType::Entitlement),
+                        view: LogView::All,
+                        before_seq: Some(100),
+                        limit: 10,
+                        include_renewal: false,
+                    },
+                    "event_logs_by_account_all_type (account_id=? AND event_type=? AND seq<?)",
+                ),
+                (
+                    ListGlobalEvents {
+                        account_id: None,
+                        source_id: None,
+                        correlation_id: None,
+                        event_type: Some(EventType::AccountLogin),
+                        view: LogView::Errors,
+                        before_seq: None,
+                        limit: 10,
+                        include_renewal: true,
+                    },
+                    "event_logs_by_type (event_type=?)",
+                ),
+                (
+                    ListGlobalEvents {
+                        account_id: None,
+                        source_id: Some("src_1".into()),
+                        correlation_id: None,
+                        event_type: Some(EventType::Entitlement),
+                        view: LogView::All,
+                        before_seq: None,
+                        limit: 10,
+                        include_renewal: true,
+                    },
+                    "event_logs_by_source_type (source_id=? AND event_type=?)",
+                ),
+                (
+                    ListGlobalEvents {
+                        account_id: None,
+                        source_id: Some("src_1".into()),
+                        correlation_id: None,
+                        event_type: None,
+                        view: LogView::All,
+                        before_seq: None,
+                        limit: 10,
+                        include_renewal: true,
+                    },
+                    "event_logs_by_source (source_id=?)",
+                ),
+                (
+                    ListGlobalEvents {
+                        account_id: None,
+                        source_id: None,
+                        correlation_id: Some("corr_chain".into()),
+                        event_type: None,
+                        view: LogView::All,
+                        before_seq: None,
+                        limit: 10,
+                        include_renewal: true,
+                    },
+                    "event_logs_by_correlation (<expr>=?)",
+                ),
+                (
+                    ListGlobalEvents {
+                        account_id: None,
+                        source_id: None,
+                        correlation_id: Some("corr_chain".into()),
+                        event_type: Some(EventType::Entitlement),
+                        view: LogView::Errors,
+                        before_seq: None,
+                        limit: 10,
+                        include_renewal: false,
+                    },
+                    "event_logs_by_correlation (<expr>=?)",
+                ),
+                (
+                    ListGlobalEvents {
+                        account_id: None,
+                        source_id: None,
+                        correlation_id: None,
+                        event_type: None,
+                        view: LogView::All,
+                        before_seq: Some(10),
+                        limit: 10,
+                        include_renewal: true,
+                    },
+                    "INTEGER PRIMARY KEY (rowid<?)",
+                ),
+            ];
+
+            for (q, expected_plan) in cases {
+                let (sql, params) = list_global_sql_and_params(&q);
+                let mut plan = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
+                let details = plan
+                    .query_map(
+                        rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+                        |row| row.get::<_, String>(3),
+                    )?
+                    .collect::<rusqlite::Result<Vec<_>>>()?
+                    .join("
+");
+                assert!(
+                    details.contains(expected_plan),
+                    "expected `{expected_plan}` in plan for {q:?}, got:
+{details}"
+                );
+                assert!(
+                    !details.contains("TEMP B-TREE"),
+                    "unexpected TEMP B-TREE sort in plan for {q:?}:
+{details}"
+                );
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        // All events including account_id=NULL in seq DESC
+        let all = db
+            .list_global(&ListGlobalEvents {
+                account_id: None,
+                source_id: None,
+                correlation_id: None,
+                event_type: None,
+                view: LogView::All,
+                before_seq: None,
+                limit: 10,
+                include_renewal: true,
+            })
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 5);
+        assert!(all.windows(2).all(|w| w[0].seq > w[1].seq));
+        assert!(all.iter().any(|item| item.log.context.account_id.is_none()));
+
+        // Correlation chain returned in seq ASC
+        let chain = db
+            .list_global(&ListGlobalEvents {
+                account_id: None,
+                source_id: None,
+                correlation_id: Some("corr_chain".into()),
+                event_type: None,
+                view: LogView::All,
+                before_seq: None,
+                limit: 10,
+                include_renewal: true,
+            })
+            .await
+            .unwrap();
+        assert_eq!(chain.len(), 3);
+        assert!(chain.windows(2).all(|w| w[0].seq < w[1].seq));
+        assert_eq!(chain[0].log.event.event_type(), EventType::TokenRefresh);
+        assert_eq!(chain[2].log.event.event_type(), EventType::Entitlement);
     }
 }

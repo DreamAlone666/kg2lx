@@ -331,6 +331,10 @@ mod tests {
             Ok(None)
         }
 
+        async fn list_by_account_id(&self, _account_id: &str) -> Result<Vec<Source>, AppError> {
+            Ok(Vec::new())
+        }
+
         async fn update_settings(
             &self,
             _source_id: &str,
@@ -352,6 +356,10 @@ mod tests {
 
     #[async_trait]
     impl AccountRepo for FakeAccountRepo {
+        async fn list_all(&self) -> Result<Vec<ProviderAccount>, AppError> {
+            Ok(self.account.clone().into_iter().collect())
+        }
+
         async fn find_by_id(&self, _account_id: &str) -> Result<Option<ProviderAccount>, AppError> {
             Ok(self.account.clone())
         }
@@ -408,6 +416,13 @@ mod tests {
         }
 
         async fn list(&self, _query: &ListEvents) -> Result<Vec<EventLog>, AppError> {
+            Ok(Vec::new())
+        }
+
+        async fn list_global(
+            &self,
+            _query: &crate::domain::event_log::ListGlobalEvents,
+        ) -> Result<Vec<crate::domain::event_log::StoredEventLog>, AppError> {
             Ok(Vec::new())
         }
     }

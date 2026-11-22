@@ -197,6 +197,17 @@ fn write_account(conn: &Connection, account: &ProviderAccount) -> rusqlite::Resu
 
 #[async_trait]
 impl AccountRepo for Sqlite {
+    async fn list_all(&self) -> Result<Vec<ProviderAccount>, AppError> {
+        self.run(|conn| {
+            conn.prepare(&format!(
+                "{ACCOUNT_SELECT} ORDER BY created_at ASC, account_id ASC"
+            ))?
+            .query_map([], read_account)?
+            .collect()
+        })
+        .await
+    }
+
     async fn find_by_id(&self, account_id: &str) -> Result<Option<ProviderAccount>, AppError> {
         let account_id = account_id.to_owned();
         self.run(move |conn| account_by_id(conn, &account_id).optional())
@@ -431,6 +442,18 @@ impl SourceRepo for Sqlite {
             "account_id = ?1 ORDER BY created_at, source_id LIMIT 1",
             account_id,
         )
+        .await
+    }
+
+    async fn list_by_account_id(&self, account_id: &str) -> Result<Vec<Source>, AppError> {
+        let account_id = account_id.to_owned();
+        self.run(move |conn| {
+            conn.prepare(&format!(
+                "{SOURCE_SELECT} WHERE account_id = ?1 ORDER BY created_at ASC, source_id ASC"
+            ))?
+            .query_map([account_id], read_source)?
+            .collect()
+        })
         .await
     }
 

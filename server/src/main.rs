@@ -79,6 +79,9 @@ fn build_app(state: AppState) -> Router {
             "/providers/kugou-lite/login/qr/{session_id}",
             get(routes::admin::poll_qr_login),
         )
+        .route("/accounts", get(routes::admin::list_accounts))
+        .route("/accounts/{account_id}", get(routes::admin::get_account))
+        .route("/logs", get(routes::admin::list_global_logs))
         .route(
             "/accounts/{account_id}/refresh-token",
             post(routes::admin::refresh_account_token),

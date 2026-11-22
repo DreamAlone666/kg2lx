@@ -878,3 +878,416 @@ async fn entitlement_adapter_uses_a_dedicated_write_deadline_and_does_not_follow
     let record = client.daily_record(&cookies).await.result.unwrap();
     assert_eq!(record.entry(day), RecordEntry::Found(GrantStep::Upgrade));
 }
+
+#[tokio::test]
+async fn accounts_api_aggregates_zero_one_and_multiple_sources_and_handles_missing_account() {
+    let data = tempfile::tempdir().unwrap();
+    let write = |relative: &str, json: Value| {
+        let path = data.path().join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, json.to_string()).unwrap();
+    };
+    for (id, userid, created_at, display_name) in [
+        ("acc_zero", "100", 10_i64, Value::Null),
+        ("acc_one", "200", 20_i64, json!("Single Source User")),
+        ("acc_two", "300", 30_i64, json!("Multi Source User")),
+    ] {
+        write(
+            &format!("accounts/{id}.json"),
+            json!({
+                "account_id": id,
+                "provider": "kugou_lite",
+                "upstream_userid": userid,
+                "display_name": display_name,
+                "status": "active",
+                "last_refresh_at": 1000,
+                "created_at": created_at,
+                "updated_at": created_at,
+                "cookies": {"items": {"userid": userid, "token": "t"}},
+                "entitlements": [{"product_type": "svip", "active": true, "begin_at": 100, "end_at": 900}]
+            }),
+        );
+    }
+    for (source_id, account_id, name, script_token, runtime_token, created_at, fallback) in [
+        ("src_one", "acc_one", "One", "st_one", "rt_one_123456", 40_i64, false),
+        ("src_two_a", "acc_two", "Two A", "st_two_a", "rt_two_a_1234", 50_i64, false),
+        ("src_two_b", "acc_two", "Two B", "st_two_b", "rt_two_b_5678", 60_i64, true),
+    ] {
+        write(
+            &format!("sources/{source_id}.json"),
+            json!({
+                "source_id": source_id,
+                "account_id": account_id,
+                "provider": "kugou_lite",
+                "name": name,
+                "script_token": script_token,
+                "runtime_token": runtime_token,
+                "created_at": created_at,
+                "updated_at": created_at + 1,
+                "quality_fallback": fallback,
+            }),
+        );
+    }
+
+    let state = AppState::with_entitlement_clock(
+        Config {
+            listen_addr: "127.0.0.1:0".into(),
+            public_base_url: "http://example.test".into(),
+            admin_token: ADMIN_TOKEN.into(),
+            kugou_api_base_url: "http://127.0.0.1:1".into(),
+            data_dir: data.path().to_owned(),
+            upstream_timeout_ms: 1_000,
+            account_refresh_ttl: 100,
+            event_log_limit: crate::config::DEFAULT_EVENT_LOG_LIMIT,
+            web_dist_dir: None,
+        },
+        entitlement_time,
+    )
+    .unwrap();
+    let server = HttpServer::start(crate::build_app(state)).await;
+    let http = Client::builder().timeout(Duration::from_secs(5)).build().unwrap();
+
+    // Auth guard
+    assert_eq!(
+        http.get(format!("{}/api/v1/admin/accounts", server.base))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        http.get(format!("{}/api/v1/admin/accounts/acc_zero", server.base))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    // 404 ACCOUNT_NOT_FOUND
+    let missing = http
+        .get(format!("{}/api/v1/admin/accounts/acc_missing", server.base))
+        .bearer_auth(ADMIN_TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        missing.json::<Value>().await.unwrap()["code"],
+        "ACCOUNT_NOT_FOUND"
+    );
+
+    // List accounts: ordered by created_at ASC, account_id ASC with 0, 1, 2 sources
+    let list: Value = http
+        .get(format!("{}/api/v1/admin/accounts", server.base))
+        .bearer_auth(ADMIN_TOKEN)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let items = list["items"].as_array().unwrap();
+    assert_eq!(items.len(), 3);
+    assert_eq!(items[0]["account_id"], "acc_zero");
+    assert_eq!(items[0]["sources"].as_array().unwrap().len(), 0);
+    assert_eq!(items[1]["account_id"], "acc_one");
+    assert_eq!(items[1]["sources"].as_array().unwrap().len(), 1);
+    assert_eq!(items[2]["account_id"], "acc_two");
+    assert_eq!(items[2]["sources"].as_array().unwrap().len(), 2);
+
+    // Single account detail matches exact wire contract
+    let detail: Value = http
+        .get(format!("{}/api/v1/admin/accounts/acc_two", server.base))
+        .bearer_auth(ADMIN_TOKEN)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(detail["account_id"], "acc_two");
+    assert_eq!(detail["provider"], "kugou_lite");
+    assert_eq!(detail["userid"], "300");
+    assert_eq!(detail["display_name"], "Multi Source User");
+    assert_eq!(detail["status"], "active");
+    assert_eq!(detail["last_refresh_at"], 1000);
+    assert!(detail["last_error"].is_null());
+    assert!(detail["last_error_code"].is_null());
+    assert_eq!(detail["entitlements"][0]["product_type"], "svip");
+    assert_eq!(detail["entitlements_sync_failed"], false);
+    assert_eq!(detail["renewal"]["enabled"], false);
+    let sources = detail["sources"].as_array().unwrap();
+    assert_eq!(sources[0]["source_id"], "src_two_a");
+    assert_eq!(sources[0]["default_name"], "酷狗概念版 300");
+    assert_eq!(sources[0]["name_advisory_chars"], 24);
+    assert_eq!(sources[0]["script_url"], "http://example.test/s/st_two_a.js");
+    assert_eq!(sources[0]["runtime_token_preview"], "rt_two_a...");
+    assert_eq!(sources[0]["quality_fallback"], false);
+    assert_eq!(sources[0]["created_at"], 50);
+    assert_eq!(sources[0]["updated_at"], 51);
+    assert_eq!(sources[1]["source_id"], "src_two_b");
+    assert_eq!(sources[1]["quality_fallback"], true);
+}
+
+#[tokio::test]
+async fn global_logs_api_supports_unowned_events_filters_pagination_and_correlation_chain() {
+    use crate::domain::event_log::{
+        EntitlementAction, Event, EventContext, EventLog, EventTrigger, LoginOutcome,
+        MusicUrlEvent, MusicUrlStage, RefreshReason,
+    };
+    use crate::error::ErrorCode;
+    use crate::repos::event_log::EventLogRepo;
+
+    let app = Fixture::start(Some(now_ts())).await;
+
+    // Auth guard
+    assert_eq!(
+        app.http
+            .get(format!("{}/api/v1/admin/logs", app.server.base))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    // Parameter validation -> 400 INVALID_REQUEST
+    for bad_query in [
+        "limit=0",
+        "limit=101",
+        "limit=abc",
+        "view=unknown",
+        "before_seq=0",
+        "before_seq=-3",
+        "before_seq=xyz",
+        "event_type=invalid_kind",
+        "include_renewal=maybe",
+    ] {
+        let (status, err) = app
+            .admin(Method::GET, &format!("/api/v1/admin/logs?{bad_query}"))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "query {bad_query}");
+        assert_eq!(err["code"], "INVALID_REQUEST", "query {bad_query}");
+    }
+
+    let db = Sqlite::open(&app.state.config.data_dir, app.state.config.event_log_limit).unwrap();
+    let mk = |account: Option<&str>,
+              source: Option<&str>,
+              corr: &str,
+              trigger: EventTrigger,
+              event: Event,
+              err: Option<ErrorCode>| {
+        let mut ctx = EventContext::new(
+            trigger,
+            account.map(str::to_owned),
+            source.map(str::to_owned),
+        );
+        ctx.correlation_id = corr.into();
+        EventLog::new(ctx, event, Some(12), err)
+    };
+
+    let logs_to_insert = [
+        mk(
+            None,
+            None,
+            "corr_qr_expired",
+            EventTrigger::Qr,
+            Event::AccountLogin {
+                outcome: LoginOutcome::Expired,
+            },
+            Some(ErrorCode::UpstreamLoginFailed),
+        ),
+        mk(
+            None,
+            None,
+            "corr_qr_failed",
+            EventTrigger::Qr,
+            Event::AccountLogin {
+                outcome: LoginOutcome::Failed,
+            },
+            Some(ErrorCode::UpstreamLoginFailed),
+        ),
+        mk(
+            Some(ACCOUNT),
+            None,
+            "corr_chain",
+            EventTrigger::Admin,
+            Event::TokenRefresh {
+                reason: RefreshReason::Manual,
+                upstream_endpoint: "login/token".into(),
+                human_verification: false,
+            },
+            None,
+        ),
+        mk(
+            Some(ACCOUNT),
+            Some(SOURCE),
+            "corr_chain",
+            EventTrigger::Runtime,
+            Event::MusicUrl(Box::new(MusicUrlEvent {
+                stage: MusicUrlStage::FetchMusicUrl,
+                track_title: Some("Track".into()),
+                artist_name: None,
+                album_name: None,
+                request_hash: "hash-1".into(),
+                album_audio_id: None,
+                requested_quality: "flac".into(),
+                attempted_quality: Some("flac".into()),
+                quality_fallback_index: 0,
+                retry_count: 0,
+                reported_types: None,
+                upstream_endpoint: Some("song/url".into()),
+                status_code: Some(200),
+                human_verification: false,
+                upstream_quality: Some("flac".into()),
+                upstream_status: Some(1),
+                upstream_priv_status: Some(0),
+                upstream_fail_process: Some(vec![]),
+                upstream_ext_name: Some("flac".into()),
+                upstream_file_size: Some(1234),
+                upstream_bit_rate: Some(0),
+                upstream_time_length: Some(10),
+            })),
+            None,
+        ),
+        mk(
+            Some(ACCOUNT),
+            None,
+            "corr_chain",
+            EventTrigger::Admin,
+            Event::Entitlement {
+                action: EntitlementAction::Claim,
+                observation: None,
+            },
+            Some(ErrorCode::UpstreamRequestFailed),
+        ),
+        mk(
+            Some("acc_other"),
+            None,
+            "corr_sync",
+            EventTrigger::Admin,
+            Event::Entitlement {
+                action: EntitlementAction::Sync,
+                observation: None,
+            },
+            None,
+        ),
+    ];
+    for entry in &logs_to_insert {
+        db.append(entry).await.unwrap();
+    }
+
+    // Default /logs includes renewal + unowned events + empty strings treated as None + default limit=30
+    let (status, all) = app
+        .admin(
+            Method::GET,
+            "/api/v1/admin/logs?account_id=&source_id=&correlation_id=",
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(all["limit"], 30);
+    assert_eq!(all["view"], "all");
+    assert!(all["account_id"].is_null());
+    assert!(all["source_id"].is_null());
+    assert!(all["correlation_id"].is_null());
+    assert_eq!(all["has_more"], false);
+    assert!(all["next_before_seq"].is_null());
+    let items = all["items"].as_array().unwrap();
+    assert_eq!(items.len(), 6);
+    assert!(items.iter().any(|i| i["account_id"].is_null() && i["source_id"].is_null() && i["detail"]["outcome"] == "expired"));
+    assert!(items.iter().any(|i| i["detail"]["action"] == "claim"));
+
+    // include_renewal=false excludes claim but keeps sync
+    let (_, without_renewal) = app
+        .admin(Method::GET, "/api/v1/admin/logs?include_renewal=false")
+        .await;
+    let without_renewal_items = without_renewal["items"].as_array().unwrap();
+    assert_eq!(without_renewal_items.len(), 5);
+    assert!(without_renewal_items.iter().all(|i| i["detail"]["action"] != "claim"));
+    assert!(without_renewal_items.iter().any(|i| i["detail"]["action"] == "sync"));
+
+    // Filter by account_id includes both source-bound and account-level events
+    let (_, by_acc) = app
+        .admin(Method::GET, &format!("/api/v1/admin/logs?account_id={ACCOUNT}"))
+        .await;
+    assert_eq!(by_acc["items"].as_array().unwrap().len(), 3);
+
+    // Filter by source_id
+    let (_, by_src) = app
+        .admin(Method::GET, &format!("/api/v1/admin/logs?source_id={SOURCE}"))
+        .await;
+    assert_eq!(by_src["items"].as_array().unwrap().len(), 1);
+    assert_eq!(by_src["items"][0]["event_type"], "music_url");
+
+    // Filter by event_type
+    let (_, by_type) = app
+        .admin(Method::GET, "/api/v1/admin/logs?event_type=account_login")
+        .await;
+    assert_eq!(by_type["items"].as_array().unwrap().len(), 2);
+
+    // Filter by view=errors
+    let (_, errors) = app.admin(Method::GET, "/api/v1/admin/logs?view=errors").await;
+    let error_items = errors["items"].as_array().unwrap();
+    assert_eq!(error_items.len(), 3);
+    assert!(error_items.iter().all(|i| i["ok"] == false));
+
+    // Cursor pagination with limit=2 walks all 6 rows without duplicates or gaps
+    let mut collected_seqs: Vec<i64> = Vec::new();
+    let mut before_seq: Option<i64> = None;
+    for page_idx in 0..3 {
+        let url = match before_seq {
+            Some(seq) => format!("/api/v1/admin/logs?limit=2&before_seq={seq}"),
+            None => "/api/v1/admin/logs?limit=2".into(),
+        };
+        let (_, page) = app.admin(Method::GET, &url).await;
+        let page_items = page["items"].as_array().unwrap();
+        assert_eq!(page_items.len(), 2);
+        for item in page_items {
+            collected_seqs.push(item["seq"].as_i64().unwrap());
+        }
+        if page_idx < 2 {
+            assert_eq!(page["has_more"], true);
+            let cursor = page["next_before_seq"].as_i64().unwrap();
+            assert_eq!(cursor, page_items[1]["seq"].as_i64().unwrap());
+            before_seq = Some(cursor);
+        } else {
+            assert_eq!(page["has_more"], false);
+            assert!(page["next_before_seq"].is_null());
+        }
+    }
+    let expected_seqs: Vec<i64> = items.iter().map(|i| i["seq"].as_i64().unwrap()).collect();
+    assert_eq!(collected_seqs, expected_seqs);
+
+    // Correlation chain returns events in seq ASC order and next_before_seq is always null
+    let (_, chain) = app
+        .admin(Method::GET, "/api/v1/admin/logs?correlation_id=corr_chain")
+        .await;
+    let chain_items = chain["items"].as_array().unwrap();
+    assert_eq!(chain_items.len(), 3);
+    assert_eq!(chain["has_more"], false);
+    assert!(chain["next_before_seq"].is_null());
+    assert_eq!(chain_items[0]["event_type"], "token_refresh");
+    assert_eq!(chain_items[1]["event_type"], "music_url");
+    assert_eq!(chain_items[2]["event_type"], "entitlement");
+    assert!(
+        chain_items
+            .windows(2)
+            .all(|w| w[0]["seq"].as_i64().unwrap() < w[1]["seq"].as_i64().unwrap())
+    );
+
+    let (_, chain_truncated) = app
+        .admin(
+            Method::GET,
+            "/api/v1/admin/logs?correlation_id=corr_chain&limit=2",
+        )
+        .await;
+    assert_eq!(chain_truncated["items"].as_array().unwrap().len(), 2);
+    assert_eq!(chain_truncated["has_more"], true);
+    assert!(chain_truncated["next_before_seq"].is_null());
+}

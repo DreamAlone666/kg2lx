@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Added
 
 - **独立账号操作与事件日志**。音源详情可分别刷新 Token 和同步权益。事件日志记录取链、Token 刷新、账号登录和权益同步，支持按类别和结果筛选。
+- **账号聚合与全站日志管理接口**。新增 `GET /api/v1/admin/accounts`、`GET /api/v1/admin/accounts/{account_id}`（按数组返回关联音源，不写死 1:1）及 `GET /api/v1/admin/logs`（支持按账号、音源、事件类别、仅错误、`before_seq` 游标与 `correlation_id` 因果链路查询，默认包含领升事件）。
 - **事件保留上限**。使用 `EVENT_LOG_LIMIT` 设置取链保留数量，默认 10,000 条。
 - **每日权益领升**。账号可通过管理 API 开启按需领升，或手动领取和继续升级。领取与升级分步落盘，结果不明时按日记录恢复。管理 API 独立回显调度和传播状态，日志支持查询领升和对账事件。
 

@@ -6,7 +6,7 @@ use crate::app_state::AppState;
 use crate::domain::event_log::{EventType, LogView};
 use crate::domain::renewal::RenewalStatus;
 use crate::error::AppError;
-use crate::services::source::UpdateSourceInput;
+use crate::services::source::{GlobalLogsQuery, UpdateSourceInput};
 
 fn verify_admin(headers: &HeaderMap, token: &str) -> Result<(), AppError> {
     let auth = headers
@@ -38,6 +38,28 @@ pub async fn poll_qr_login(
     verify_admin(&headers, &state.config.admin_token)?;
     let resp = state.login.poll_kugou_lite_qr_login(&session_id).await?;
     Ok(Json(serde_json::to_value(resp).unwrap()))
+}
+
+pub async fn list_accounts(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, AppError> {
+    verify_admin(&headers, &state.config.admin_token)?;
+    let items = state.source.list_accounts(&state.entitlement).await?;
+    Ok(Json(serde_json::json!({ "items": items })))
+}
+
+pub async fn get_account(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(account_id): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    verify_admin(&headers, &state.config.admin_token)?;
+    let item = state
+        .source
+        .get_account(&account_id, &state.entitlement)
+        .await?;
+    Ok(Json(serde_json::to_value(item).unwrap()))
 }
 
 pub async fn list_sources(
@@ -228,6 +250,85 @@ pub async fn list_source_logs(
             params.event_type,
             params.include_renewal,
         )
+        .await?;
+    Ok(Json(serde_json::to_value(resp).unwrap()))
+}
+
+#[derive(serde::Deserialize)]
+pub struct ListGlobalLogsParams {
+    pub limit: Option<String>,
+    pub view: Option<String>,
+    pub event_type: Option<String>,
+    pub account_id: Option<String>,
+    pub source_id: Option<String>,
+    pub correlation_id: Option<String>,
+    pub before_seq: Option<String>,
+    pub include_renewal: Option<String>,
+}
+
+fn non_empty(value: Option<String>) -> Option<String> {
+    value.filter(|s| !s.is_empty())
+}
+
+pub async fn list_global_logs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ListGlobalLogsParams>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    verify_admin(&headers, &state.config.admin_token)?;
+
+    let limit = match params.limit.as_deref() {
+        None => 30,
+        Some(s) => s
+            .parse::<usize>()
+            .ok()
+            .filter(|&n| (1..=100).contains(&n))
+            .ok_or_else(|| AppError::invalid_request("invalid limit"))?,
+    };
+
+    let view = match params.view.as_deref() {
+        None | Some("all") => LogView::All,
+        Some("errors") => LogView::Errors,
+        _ => return Err(AppError::invalid_request("invalid view")),
+    };
+
+    let event_type = match params.event_type.as_deref().filter(|s| !s.is_empty()) {
+        None => None,
+        Some("music_url") => Some(EventType::MusicUrl),
+        Some("token_refresh") => Some(EventType::TokenRefresh),
+        Some("account_login") => Some(EventType::AccountLogin),
+        Some("entitlement") => Some(EventType::Entitlement),
+        Some(_) => return Err(AppError::invalid_request("invalid event_type")),
+    };
+
+    let before_seq = match params.before_seq.as_deref() {
+        None => None,
+        Some(s) => Some(
+            s.parse::<i64>()
+                .ok()
+                .filter(|&n| n > 0)
+                .ok_or_else(|| AppError::invalid_request("invalid before_seq"))?,
+        ),
+    };
+
+    let include_renewal = match params.include_renewal.as_deref() {
+        None | Some("true") => true,
+        Some("false") => false,
+        Some(_) => return Err(AppError::invalid_request("invalid include_renewal")),
+    };
+
+    let resp = state
+        .source
+        .list_global_logs(GlobalLogsQuery {
+            limit,
+            view,
+            event_type,
+            account_id: non_empty(params.account_id),
+            source_id: non_empty(params.source_id),
+            correlation_id: non_empty(params.correlation_id),
+            before_seq,
+            include_renewal,
+        })
         .await?;
     Ok(Json(serde_json::to_value(resp).unwrap()))
 }

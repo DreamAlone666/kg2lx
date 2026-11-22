@@ -1448,6 +1448,10 @@ mod tests {
             Ok(None)
         }
 
+        async fn list_by_account_id(&self, _account_id: &str) -> Result<Vec<Source>, AppError> {
+            Ok(Vec::new())
+        }
+
         async fn update_settings(
             &self,
             _source_id: &str,
@@ -1469,6 +1473,10 @@ mod tests {
 
     #[async_trait]
     impl AccountRepo for FakeAccountRepo {
+        async fn list_all(&self) -> Result<Vec<ProviderAccount>, AppError> {
+            Ok(Vec::new())
+        }
+
         async fn find_by_id(&self, _account_id: &str) -> Result<Option<ProviderAccount>, AppError> {
             Ok(None)
         }

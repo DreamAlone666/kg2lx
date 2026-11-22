@@ -206,3 +206,22 @@ pub struct ListEvents {
     pub event_type: Option<EventType>,
     pub include_renewal: bool,
 }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StoredEventLog {
+    pub seq: i64,
+    #[serde(flatten)]
+    pub log: EventLog,
+}
+
+#[derive(Debug, Clone)]
+pub struct ListGlobalEvents {
+    pub account_id: Option<String>,
+    pub source_id: Option<String>,
+    pub correlation_id: Option<String>,
+    pub event_type: Option<EventType>,
+    pub view: LogView,
+    pub before_seq: Option<i64>,
+    pub limit: usize,
+    pub include_renewal: bool,
+}

@@ -10,6 +10,7 @@ pub(super) const MIGRATIONS: &[&str] = &[
     include_str!("migrations/001_init.sql"),
     include_str!("migrations/002_event_pools.sql"),
     include_str!("migrations/003_entitlement_renewal.sql"),
+    include_str!("migrations/004_event_log_queries.sql"),
 ];
 
 pub(super) fn migrate(
@@ -181,5 +182,33 @@ mod tests {
             .query_row("SELECT count(*) FROM event_logs", [], |row| row.get(0))
             .unwrap();
         assert_eq!(rows, 1);
+    }
+
+    #[test]
+    fn upgrades_v3_to_v4_and_creates_event_log_query_indexes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DATABASE_FILE);
+        let mut v1 = old_disk_database(&path);
+        migrate(&mut v1, &path, 1, &MIGRATIONS[..3]).unwrap();
+        assert_eq!(version(&v1), 3);
+        drop(v1);
+
+        let migrated = open_database(dir.path()).unwrap();
+        assert_eq!(version(&migrated), 4);
+
+        for index_name in [
+            "event_logs_by_account_all",
+            "event_logs_by_account_all_type",
+            "event_logs_by_correlation",
+        ] {
+            let exists: i64 = migrated
+                .query_row(
+                    "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?1)",
+                    [index_name],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(exists, 1, "missing index {index_name}");
+        }
     }
 }
