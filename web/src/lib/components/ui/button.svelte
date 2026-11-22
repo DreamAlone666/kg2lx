@@ -2,19 +2,12 @@
 	import { type VariantProps, tv } from 'tailwind-variants';
 
 	/**
-	 * 尺寸采用 4px 数阶，并按断点区分「触屏」与「指针」两种输入方式：
+	 * 尺寸采用 4px 数阶，并通过 layout.css 的 @utility touch-target 区分触屏与指针输入：
 	 *   - 移动端（默认）保持 >= 44px 的可点区域，满足触控工效下限
 	 *   - md 及以上回落为紧凑高度，避免桌面端按钮显得笨重
 	 *
 	 * 焦点样式不在此处定义：layout.css 的 :focus-visible 统一兜底，
 	 * 保证所有可交互元素（含卡片、链接）的焦点环完全一致。
-	 *
-	 * [TODO] 「触屏 >= 44px、md 以上回落紧凑」这条规则目前是手写复制的：除本文件四个
-	 * 尺寸档外，(app)/+layout.svelte 的导航链接与品牌、LogsPanel 的日志视图切换、
-	 * Toaster 的关闭按钮都各自手写了一遍 md:min-h-* / md:size-*，合计 8 处。
-	 * 规则一旦调整需要逐处查找，漏改不会有任何提示——这与当初 5 处重复的中文映射
-	 * 是同一类问题，只是对象从文案换成了尺寸。
-	 * 方向：下沉为令牌层的 @utility（如 touch-target）或统一高度档位，只留一处定义。
 	 */
 	export const buttonVariants = tv({
 		base: 'inline-flex cursor-pointer select-none items-center justify-center gap-2 whitespace-nowrap rounded-lg text-sm font-medium transition-[color,background-color,border-color,box-shadow,transform] duration-150 ease-out-soft disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0',
@@ -32,10 +25,10 @@
 				link: 'text-primary underline-offset-4 hover:underline',
 			},
 			size: {
-				default: 'h-11 px-4 md:h-10',
-				sm: 'h-11 px-3.5 text-xs md:h-9',
-				lg: 'h-12 px-6 md:h-11',
-				icon: 'size-11 md:size-10',
+				default: 'touch-target px-4 md:h-10',
+				sm: 'touch-target px-3.5 text-xs md:h-9',
+				lg: 'min-h-12 px-6 md:min-h-0 md:h-11',
+				icon: 'touch-target min-w-11 md:min-w-0 md:size-10',
 			},
 		},
 		defaultVariants: {

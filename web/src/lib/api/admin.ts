@@ -1,5 +1,7 @@
 import { HttpClient } from './http';
 import type {
+  AccountItem,
+  RenewalStatus,
   SourceSummary,
   SourceDetail,
   QrLoginStartResponse,
@@ -7,6 +9,7 @@ import type {
   RefreshTokenResponse,
   SyncEntitlementsResponse,
   SourceLogsResponse,
+  GlobalLogsResponse,
   EventType,
   LogView,
   UpdateSourceResponse,
@@ -82,5 +85,63 @@ export class AdminApi {
 
   async syncEntitlements(accountId: string): Promise<SyncEntitlementsResponse> {
     return this.http.post(`/api/v1/admin/accounts/${accountId}/entitlements/sync`, null);
+  }
+
+  async listAccounts(signal?: AbortSignal): Promise<{ items: AccountItem[] }> {
+    return this.http.get('/api/v1/admin/accounts', { signal });
+  }
+
+  async getAccount(accountId: string, signal?: AbortSignal): Promise<AccountItem> {
+    return this.http.get(`/api/v1/admin/accounts/${accountId}`, { signal });
+  }
+
+  async updateRenewal(
+    accountId: string,
+    enabled: boolean,
+    signal?: AbortSignal,
+  ): Promise<RenewalStatus> {
+    return this.http.patch(
+      `/api/v1/admin/accounts/${accountId}/entitlements/renewal`,
+      { enabled },
+      { signal },
+    );
+  }
+
+  async claimRenewal(accountId: string, signal?: AbortSignal): Promise<RenewalStatus> {
+    return this.http.post(
+      `/api/v1/admin/accounts/${accountId}/entitlements/renewal/claim`,
+      null,
+      { signal },
+    );
+  }
+
+  async listLogs(
+    query?: {
+      limit?: number;
+      view?: LogView;
+      eventType?: EventType;
+      accountId?: string;
+      sourceId?: string;
+      correlationId?: string;
+      beforeSeq?: number;
+      includeRenewal?: boolean;
+    },
+    signal?: AbortSignal,
+  ): Promise<GlobalLogsResponse> {
+    const params = new URLSearchParams();
+    if (query?.limit !== undefined) params.set('limit', query.limit.toString());
+    if (query?.view) params.set('view', query.view);
+    if (query?.eventType) params.set('event_type', query.eventType);
+    if (query?.accountId) params.set('account_id', query.accountId);
+    if (query?.sourceId) params.set('source_id', query.sourceId);
+    if (query?.correlationId) params.set('correlation_id', query.correlationId);
+    if (query?.beforeSeq !== undefined) params.set('before_seq', query.beforeSeq.toString());
+    if (query?.includeRenewal !== undefined) {
+      params.set('include_renewal', query.includeRenewal ? 'true' : 'false');
+    }
+    const queryString = params.toString();
+    return this.http.get(`/api/v1/admin/logs${queryString ? `?${queryString}` : ''}`, {
+      signal,
+    });
   }
 }

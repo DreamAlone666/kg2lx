@@ -15,8 +15,8 @@
 	let { children } = $props();
 
 	const navItems = [
-		{ href: '/sources', label: '音源' },
-		{ href: '/bind', label: '绑定' }
+		{ href: '/accounts', label: '账号' },
+		{ href: '/logs', label: '日志' }
 	];
 
 	function isActive(href: string) {
@@ -43,8 +43,8 @@
 >
 	<div class="mx-auto flex h-14 max-w-7xl items-center gap-3 px-4 sm:gap-4 sm:px-6">
 		<a
-			href="/sources"
-			class="flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-2 md:min-h-0 md:min-w-0 md:justify-start"
+			href="/accounts"
+			class="touch-target flex min-w-11 shrink-0 items-center justify-center gap-2 md:min-w-0 md:justify-start"
 			aria-label="kg2lx 首页"
 		>
 			<span
@@ -62,7 +62,7 @@
 					href={item.href}
 					aria-current={active ? 'page' : undefined}
 					class={cn(
-						'relative inline-flex min-h-11 items-center rounded-md px-3 text-sm font-medium transition-colors duration-150 ease-out-soft md:min-h-0 md:py-2',
+						'touch-target relative inline-flex items-center rounded-md px-3 text-sm font-medium transition-colors duration-150 ease-out-soft md:py-2',
 						active ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
 					)}
 				>
@@ -106,6 +106,9 @@
 				</Tooltip.Trigger>
 				<Tooltip.Content>{adminSession.serverBaseUrl || '当前域名'}</Tooltip.Content>
 			</Tooltip.Root>
+			<Button href="/bind" size="sm" variant={isActive('/bind') ? 'outline' : 'default'}>
+				绑定账号
+			</Button>
 			<Button variant="ghost" size="sm" onclick={() => adminSession.logout()}>断开连接</Button>
 		</div>
 	</div>

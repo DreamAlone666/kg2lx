@@ -111,62 +111,54 @@
 				</div>
 			</div>
 
-			<!--
-				[TODO] 这里的徽章与时间轴的「当前步」在说同一件事：徽章显示「等待扫码」时，
-				时间轴的活动步也写着「等待扫码」，两行相隔不到 40px 却重复一遍。
-				两者只在终态（expired / failed）上真正互补。
-				方向：让时间轴承担过程进度，徽章收缩为终态与剩余时间专用，消除同义重复。
-			-->
-			<div class="flex items-center justify-center gap-3">
-				<StatusBadge
-					tone={sessionStatusTone(qrLoginController.status)}
-					dot
-					pulse={!qrLoginController.isTerminal}
-				>
-					{labelOf(sessionStatusLabel, qrLoginController.status)}
-				</StatusBadge>
-
-				{#if remaining !== null && !qrLoginController.isTerminal}
-					<span
-						class={cn(
-							'tabular inline-flex items-center gap-1.5 text-xs',
-							expiringSoon ? 'text-warning' : 'text-muted-foreground'
-						)}
-					>
-						<svg viewBox="0 0 16 16" class="size-4 -rotate-90" aria-hidden="true">
-							<circle
-								cx="8"
-								cy="8"
-								r={RING_RADIUS}
-								fill="none"
-								stroke="currentColor"
-								stroke-width="2"
-								class="opacity-20"
-							/>
-							<circle
-								cx="8"
-								cy="8"
-								r={RING_RADIUS}
-								fill="none"
-								stroke="currentColor"
-								stroke-width="2"
-								stroke-linecap="round"
-								stroke-dasharray={RING_CIRCUMFERENCE}
-								stroke-dashoffset={ringOffset}
-								class="transition-[stroke-dashoffset] duration-1000 ease-linear"
-							/>
-						</svg>
-						剩余 {formatCountdown(remaining)}
-					</span>
-				{/if}
-			</div>
+			{#if qrLoginController.isTerminal || remaining !== null}
+				<div class="flex items-center justify-center gap-3">
+					{#if qrLoginController.isTerminal}
+						<StatusBadge tone={sessionStatusTone(qrLoginController.status)} dot>
+							{labelOf(sessionStatusLabel, qrLoginController.status)}
+						</StatusBadge>
+					{:else if remaining !== null}
+						<span
+							class={cn(
+								'tabular inline-flex items-center gap-1.5 text-xs',
+								expiringSoon ? 'text-warning' : 'text-muted-foreground'
+							)}
+						>
+							<svg viewBox="0 0 16 16" class="size-4 -rotate-90" aria-hidden="true">
+								<circle
+									cx="8"
+									cy="8"
+									r={RING_RADIUS}
+									fill="none"
+									stroke="currentColor"
+									stroke-width="2"
+									class="opacity-20"
+								/>
+								<circle
+									cx="8"
+									cy="8"
+									r={RING_RADIUS}
+									fill="none"
+									stroke="currentColor"
+									stroke-width="2"
+									stroke-linecap="round"
+									stroke-dasharray={RING_CIRCUMFERENCE}
+									stroke-dashoffset={ringOffset}
+									class="transition-[stroke-dashoffset] duration-1000 ease-linear"
+								/>
+							</svg>
+							剩余 {formatCountdown(remaining)}
+						</span>
+					{/if}
+				</div>
+			{/if}
 
 			<LoginStepTimeline {steps} />
 
 			{#if qrLoginController.status === 'bound' && qrLoginController.boundSource}
 				<Alert tone="success" title="绑定成功" role="status">
 					<p class="leading-relaxed">
-						已绑定账号 {qrLoginController.boundSource.account.userid}，正在跳转到音源详情…
+						已绑定账号 {qrLoginController.boundSource.account.userid}，正在跳转到账号详情…
 					</p>
 				</Alert>
 			{:else if qrLoginController.message}

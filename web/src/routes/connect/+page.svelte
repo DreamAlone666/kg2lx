@@ -29,7 +29,7 @@
 			</span>
 			<h1 class="text-heading tracking-tight">连接至后端</h1>
 			<p class="mt-2 text-sm text-muted-foreground">
-				输入服务器地址与管理员 Token，开始管理你的音源。
+				输入服务器地址与管理员 Token，开始管理你的酷狗账号与音源。
 			</p>
 		</div>
 

@@ -117,7 +117,7 @@
 			disabled={pending || disabled}
 			aria-labelledby={titleId}
 			aria-describedby="{descId} {costId}"
-			class="min-h-11 text-xs font-medium md:min-h-0"
+			class="touch-target text-xs font-medium"
 		>
 			<!--
 				pending 文案是静态可辨识形态，不依赖动画：prefers-reduced-motion 会把

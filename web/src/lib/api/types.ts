@@ -40,6 +40,71 @@ export type AccountEntitlement = {
   end_at: number | null;
 };
 
+export type AccountSourceItem = {
+  source_id: string;
+  provider: ProviderKind;
+  name: string;
+  default_name: string;
+  name_advisory_chars: number;
+  script_url: string;
+  runtime_token_preview: string;
+  quality_fallback: boolean;
+  created_at: number;
+  updated_at: number;
+};
+
+export type StepState = 'ready' | 'uncertain' | 'done';
+
+export type RenewalOutcome = 'succeeded' | 'already_done' | 'failed' | 'uncertain' | 'deferred';
+
+export type RenewalReason =
+  | 'manual'
+  | 't1_low_battery'
+  | 't2_expired_refusal'
+  | 'confirm_snapshot'
+  | 'reconcile_mismatch'
+  | 'recover_write'
+  | 'post_refresh';
+
+export type RenewalState =
+  | 'ready'
+  | 'waiting_for_reconciliation'
+  | 'verification_paused'
+  | 'upstream_unavailable'
+  | 'rate_limited'
+  | 'propagating'
+  | 'awaiting_upgrade'
+  | 'completed'
+  | 'attempts_exhausted';
+
+export type RenewalStatus = {
+  enabled: boolean;
+  upstream_day: string;
+  state: RenewalState;
+  claim: StepState;
+  upgrade: StepState;
+  svip_confirmation_required: boolean;
+  paused_until: number | null;
+  retry_at: number | null;
+  rate_limit_until: number | null;
+  propagating_until: number | null;
+  estimated_end_at: number | null;
+  last_outcome: RenewalOutcome | null;
+};
+
+export type AccountItem = EntitlementSnapshot & {
+  account_id: string;
+  provider: ProviderKind;
+  userid: string;
+  display_name: string | null;
+  status: AccountStatus;
+  last_refresh_at: number | null;
+  last_error: string | null;
+  last_error_code: string | null;
+  renewal: RenewalStatus;
+  sources: AccountSourceItem[];
+};
+
 export type SourceDetail = {
   source_id: string;
   account_id: string;
@@ -166,10 +231,39 @@ export type SourceEvent = {
   | { event_type: 'music_url'; detail: MusicUrlEvent }
   | { event_type: 'token_refresh'; detail: TokenRefreshEvent }
   | { event_type: 'account_login'; detail: AccountLoginEvent }
-  | { event_type: 'entitlement'; detail: { action: 'sync' } }
+  | { event_type: 'entitlement'; detail: EntitlementEventDetail }
 );
 
+export type EntitlementAction = 'sync' | 'claim' | 'upgrade' | 'reconcile_record';
+
+export type EntitlementEventDetail = {
+  action: EntitlementAction;
+  reason?: RenewalReason;
+  upstream_day?: string;
+  outcome?: RenewalOutcome;
+  upstream_code?: number | null;
+  http_status?: number | null;
+  human_verification?: boolean;
+  retry_at?: number | null;
+  propagating_until?: number | null;
+  estimated_end_at?: number | null;
+};
+
 export type EventType = SourceEvent['event_type'];
+
+export type StoredEvent = SourceEvent & { seq: number };
+
+export type GlobalLogsResponse = {
+  view: LogView;
+  event_type: EventType | null;
+  account_id: string | null;
+  source_id: string | null;
+  correlation_id: string | null;
+  limit: number;
+  has_more: boolean;
+  next_before_seq: number | null;
+  items: StoredEvent[];
+};
 
 export type SourceLogsResponse = {
   source_id: string;

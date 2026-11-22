@@ -1,9 +1,13 @@
 import { isAdminApiError } from '$lib/api/errors';
 import type {
+	AccountLoginEvent,
 	AccountStatus,
+	EventType,
 	LoginSessionStatus,
-	ProviderKind,
 	MusicUrlEvent,
+	ProviderKind,
+	SourceEvent,
+	TokenRefreshEvent,
 } from '$lib/api/types';
 
 /**
@@ -40,6 +44,34 @@ export const sessionStatusLabel: Record<LoginSessionStatus, string> = {
 export const runtimeStageLabel: Record<MusicUrlEvent['stage'], string> = {
 	precheck: '预检',
 	fetch_music_url: '取链',
+};
+
+export const eventTypeLabel: Record<EventType, string> = {
+	music_url: '取链',
+	token_refresh: 'Token',
+	account_login: '登录',
+	entitlement: '权益',
+};
+
+export const eventTriggerLabel: Record<SourceEvent['trigger'], string> = {
+	runtime: '运行时',
+	admin: '后台管理',
+	qr: '扫码会话',
+};
+
+export const tokenRefreshReasonLabel: Record<TokenRefreshEvent['reason'], string> = {
+	ttl: '登录态需要刷新',
+	rejected: '上游鉴权拒绝',
+	device: '设备注册',
+	manual: '手动刷新',
+	qr_login: '扫码授权',
+};
+
+export const accountLoginOutcomeLabel: Record<AccountLoginEvent['outcome'], string> = {
+	bound: '绑定成功',
+	rebound: '重新绑定',
+	expired: '二维码过期',
+	failed: '登录失败',
 };
 
 /**
@@ -149,7 +181,7 @@ export function isNamedVipProduct(productType: string | null | undefined): boole
  * 码有几个、各叫什么，本注释一概不列举：它们会增长，而上面的论证不依赖具体成员
  * （成员越多，共用前缀越浪费列宽）。要看当前全集，读下面这张表。
  *
- * 与 runtimeStageLabel 同一套做法：界面给中文，原始码通过 title 保留（见 LogsPanel），
+ * 与 runtimeStageLabel 同一套做法：界面给中文，原始码通过 title 与详情检查器保留，
  * 需要拿它去 grep 服务端日志时不会丢失。
  */
 export const errorCodeLabel: Record<string, string> = {
@@ -162,7 +194,7 @@ export const errorCodeLabel: Record<string, string> = {
 	/**
 	 * 服务端**已不再产生**这个码（准入闸已移除），但必须保留。
 	 *
-	 * 这张表读的不是「服务端现在会抛什么」，而是**已经落盘的字符串**：运行时日志行的
+	 * 这张表读的不是「服务端现在会抛什么」，而是**已经落盘的字符串**：事件日志行的
 	 * error_code、账号记录的 last_error_code 都可能是历史行，历史行不会因为服务端
 	 * 改了行为而消失。删掉这一条，那些行会经 labelOf 回退成英文码，用户看到的是内部
 	 * 标识而不是中文——排查时最需要读懂的恰恰是这些老记录。

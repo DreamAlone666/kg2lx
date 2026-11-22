@@ -81,6 +81,16 @@ export function formatCountdown(seconds: number): string {
 	return `${minutes}:${rest.toString().padStart(2, '0')}`;
 }
 
+/** 剩余秒数 → 适合短/长两种窗口的倒计时文本（1 小时内 `m:ss`，超过 1 小时 `H 小时 M 分`）。 */
+export function formatDuration(seconds: number): string {
+	const total = Math.max(0, Math.ceil(seconds));
+	if (total < 3600) return formatCountdown(total);
+	const hours = Math.floor(total / 3600);
+	const minutes = Math.ceil((total % 3600) / 60);
+	if (minutes === 60) return `${hours + 1} 小时`;
+	return minutes > 0 ? `${hours} 小时 ${minutes} 分` : `${hours} 小时`;
+}
+
 /**
  * 实测码率（bps）：优先上游自报的 `bitRate`，为 0 时按 `fileSize × 8 ÷ timeLength` 回退。
  *

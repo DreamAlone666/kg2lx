@@ -1,4 +1,10 @@
-import type { AccountStatus, LoginSessionStatus } from '$lib/api/types';
+import type {
+	AccountStatus,
+	LoginSessionStatus,
+	RenewalOutcome,
+	RenewalState,
+	StepState
+} from '$lib/api/types';
 import { vipProductRank } from './labels';
 
 /**
@@ -21,7 +27,7 @@ const accountStatusTones: Record<AccountStatus, Tone> = {
 	login_failed: 'danger',
 };
 
-/** 账号状态：过期与登录失败都是需要用户介入的故障，故同为 danger。 */
+/** 账号状态：登录失败是需要用户介入的故障，故为 danger。 */
 export function accountStatusTone(status: AccountStatus | string | null | undefined): Tone {
 	return accountStatusTones[status as AccountStatus] ?? 'neutral';
 }
@@ -127,4 +133,45 @@ export function qualityTone(quality: string | null | undefined): Tone {
 	if (q.includes('flac') || q.includes('lossless') || q.includes('hires')) return 'success';
 	if (q.includes('320')) return 'info';
 	return 'neutral';
+}
+
+const renewalStateTones: Record<RenewalState, Tone> = {
+	ready: 'neutral',
+	waiting_for_reconciliation: 'warning',
+	verification_paused: 'danger',
+	upstream_unavailable: 'warning',
+	rate_limited: 'warning',
+	propagating: 'info',
+	awaiting_upgrade: 'warning',
+	completed: 'success',
+	attempts_exhausted: 'danger',
+};
+
+/** 每日领升 9 态语义色调。 */
+export function renewalStateTone(state: RenewalState | string | null | undefined): Tone {
+	return renewalStateTones[state as RenewalState] ?? 'neutral';
+}
+
+const renewalStepTones: Record<StepState, Tone> = {
+	ready: 'neutral',
+	uncertain: 'warning',
+	done: 'success',
+};
+
+/** 每日领升单步状态（领取 / 升级）语义色调。 */
+export function renewalStepTone(step: StepState | string | null | undefined): Tone {
+	return renewalStepTones[step as StepState] ?? 'neutral';
+}
+
+const renewalOutcomeTones: Record<RenewalOutcome, Tone> = {
+	succeeded: 'success',
+	already_done: 'success',
+	failed: 'danger',
+	uncertain: 'warning',
+	deferred: 'info',
+};
+
+/** 每日领升单次执行回执色调（already_done 视为已完成，不按错误着红）。 */
+export function renewalOutcomeTone(outcome: RenewalOutcome | string | null | undefined): Tone {
+	return renewalOutcomeTones[outcome as RenewalOutcome] ?? 'neutral';
 }

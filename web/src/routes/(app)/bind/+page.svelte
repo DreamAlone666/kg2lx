@@ -47,7 +47,7 @@
 
 	/**
 	 * 会话进入终态时收尾：清掉 URL 里的 session_id（避免刷新后去轮询一个已结束的会话），
-	 * 绑定成功则稍后跳转到音源详情。
+	 * 绑定成功则稍后跳转到账号详情。
 	 */
 	$effect(() => {
 		if (!qrLoginController.isTerminal) return;
@@ -62,8 +62,8 @@
 
 		const bound = qrLoginController.boundSource;
 		if (bound) {
-			const sourceId = bound.source.source_id;
-			redirectTimer = setTimeout(() => goto(`/sources/${sourceId}`), REDIRECT_DELAY_MS);
+			const accountId = bound.account.account_id;
+			redirectTimer = setTimeout(() => goto(`/accounts/${accountId}`), REDIRECT_DELAY_MS);
 		}
 
 		return clearRedirectTimer;

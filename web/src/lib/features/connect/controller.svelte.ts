@@ -40,13 +40,13 @@ class ConnectController {
 			const api = new AdminApi(new HttpClient({ baseUrl: serverBaseUrl, adminToken }));
 			const signal = AbortSignal.timeout(CONNECT_TIMEOUT_MS);
 
-			// 先用 healthz 探连通性，再用 listSources 验证 Token 确实有效，
+			// 先用 healthz 探连通性，再用 listAccounts 验证 Token 确实有效，
 			// 避免把「地址可达但凭证错误」误判为连接成功。
 			await api.healthz(signal);
-			await api.listSources(signal);
+			await api.listAccounts(signal);
 
 			adminSession.setSession(serverBaseUrl, adminToken);
-			await goto('/sources');
+			await goto('/accounts');
 		} catch (e) {
 			this.error = describeConnectError(e);
 		} finally {

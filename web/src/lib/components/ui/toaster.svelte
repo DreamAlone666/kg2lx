@@ -40,7 +40,7 @@
 			<!-- 触屏保证 44px 可点区域，桌面回落为紧凑尺寸 -->
 			<button
 				type="button"
-				class="grid size-11 shrink-0 cursor-pointer place-items-center rounded-md text-base leading-none opacity-60 transition-opacity hover:opacity-100 md:size-7"
+				class="touch-target grid min-w-11 shrink-0 cursor-pointer place-items-center rounded-md text-base leading-none opacity-60 transition-opacity hover:opacity-100 md:min-w-0 md:size-7"
 				aria-label="关闭提示"
 				onclick={() => toast.dismiss(item.id)}
 			>
