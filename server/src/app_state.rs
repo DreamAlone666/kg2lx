@@ -3,9 +3,11 @@ use std::sync::Arc;
 use crate::config::Config;
 use crate::error::AppError;
 use crate::repos::account::AccountRepo;
-use crate::repos::login_session::LoginSessionRepo;
-use crate::repos::runtime_log::RuntimeLogRepo;
+use crate::repos::event_log::EventLogRepo;
 use crate::repos::source::SourceRepo;
+use crate::repos::sqlite::Sqlite;
+use crate::services::auth::AccountAuth;
+use crate::services::entitlement::EntitlementService;
 use crate::services::kugou_lite_client::KugouLiteClient;
 use crate::services::login::LoginService;
 use crate::services::runtime::RuntimeService;
@@ -15,6 +17,8 @@ use crate::services::source::SourceService;
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Config>,
+    pub auth: Arc<AccountAuth>,
+    pub entitlement: Arc<EntitlementService>,
     pub login: Arc<LoginService>,
     pub source: Arc<SourceService>,
     pub runtime: Arc<RuntimeService>,
@@ -23,54 +27,57 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(config: Config) -> Result<Self, AppError> {
-        let storage = Arc::new(crate::repos::sqlite::Sqlite::open(&config.data_dir)?);
+        let storage = Arc::new(Sqlite::open(&config.data_dir, config.event_log_limit)?);
         let config = Arc::new(config);
-        let account_repo: Arc<dyn AccountRepo> = storage.clone();
-        let source_repo: Arc<dyn SourceRepo> = storage.clone();
-        let session_repo: Arc<dyn LoginSessionRepo> = storage.clone();
-        let log_repo: Arc<dyn RuntimeLogRepo> = storage;
-
+        let accounts: Arc<dyn AccountRepo> = storage.clone();
+        let sources: Arc<dyn SourceRepo> = storage.clone();
+        let logs: Arc<dyn EventLogRepo> = storage.clone();
         let client = Arc::new(KugouLiteClient::new(&config));
-
-        let login_service = Arc::new(LoginService::new(
+        let auth = Arc::new(AccountAuth::new(
+            &config,
+            client.clone(),
+            accounts.clone(),
+            logs.clone(),
+        ));
+        let entitlement = Arc::new(EntitlementService::new(
+            client.clone(),
+            accounts.clone(),
+            storage.clone(),
+            logs.clone(),
+            auth.admin_actions.clone(),
+        ));
+        let login = Arc::new(LoginService::new(
             config.clone(),
             client.clone(),
-            session_repo,
-            account_repo.clone(),
-            source_repo.clone(),
+            auth.clone(),
+            logs.clone(),
+            storage.clone(),
+            accounts.clone(),
+            sources.clone(),
         ));
-
-        let source_service = Arc::new(SourceService::new(
+        let source = Arc::new(SourceService::new(
             config.clone(),
-            client.clone(),
-            account_repo.clone(),
-            source_repo.clone(),
-            log_repo.clone(),
+            storage,
+            accounts.clone(),
+            sources.clone(),
+            logs.clone(),
         ));
-
-        // 同一个客户端传两次：第一次是具体的 `KugouLiteClient`（登录/DFID/VIP），
-        // 第二次在参数位置上强制转换成 `Arc<dyn MusicUrlFetcher>`（取链，可替换）。
-        let runtime_service = Arc::new(RuntimeService::new(
-            config.clone(),
-            client.clone(),
-            client.clone(),
-            source_repo.clone(),
-            account_repo.clone(),
-            log_repo,
+        let runtime = Arc::new(RuntimeService::new(
+            auth.clone(),
+            client,
+            sources.clone(),
+            accounts.clone(),
+            logs,
         ));
-
-        let script_service = Arc::new(ScriptService::new(
-            config.clone(),
-            source_repo,
-            account_repo,
-        ));
-
+        let script = Arc::new(ScriptService::new(config.clone(), sources, accounts));
         Ok(Self {
             config,
-            login: login_service,
-            source: source_service,
-            runtime: runtime_service,
-            script: script_service,
+            auth,
+            entitlement,
+            login,
+            source,
+            runtime,
+            script,
         })
     }
 }

@@ -3,7 +3,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 
 use crate::app_state::AppState;
-use crate::domain::runtime_log::RuntimeLogView;
+use crate::domain::event_log::{EventType, LogView};
 use crate::error::AppError;
 use crate::services::source::UpdateSourceInput;
 
@@ -64,8 +64,39 @@ pub async fn refresh_source(
     Path(source_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     verify_admin(&headers, &state.config.admin_token)?;
-    let resp = state.source.refresh_source(&source_id).await?;
+    let resp = state
+        .source
+        .refresh_source(&source_id, &state.auth, &state.entitlement)
+        .await?;
     Ok(Json(serde_json::to_value(resp).unwrap()))
+}
+
+pub async fn refresh_account_token(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(account_id): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    verify_admin(&headers, &state.config.admin_token)?;
+    let resp = state
+        .source
+        .refresh_account_by_id(&state.auth, &account_id)
+        .await?;
+    Ok(Json(serde_json::to_value(resp).unwrap()))
+}
+
+pub async fn sync_account_entitlements(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(account_id): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    verify_admin(&headers, &state.config.admin_token)?;
+    let synced_at = state
+        .source
+        .sync_entitlements(&state.entitlement, account_id)
+        .await?;
+    Ok(Json(
+        serde_json::json!({ "ok": true, "synced_at": synced_at }),
+    ))
 }
 
 /// 音源配置 PATCH 的请求体。
@@ -127,6 +158,7 @@ pub async fn update_source(
 pub struct ListLogsParams {
     pub limit: Option<String>,
     pub view: Option<String>,
+    pub event_type: Option<EventType>,
 }
 
 pub async fn list_source_logs(
@@ -147,14 +179,14 @@ pub async fn list_source_logs(
     };
 
     let view = match params.view.as_deref() {
-        None | Some("all") => RuntimeLogView::All,
-        Some("errors") => RuntimeLogView::Errors,
+        None | Some("all") => LogView::All,
+        Some("errors") => LogView::Errors,
         _ => return Err(AppError::invalid_request("invalid view")),
     };
 
     let resp = state
         .source
-        .list_source_logs(&source_id, limit, view)
+        .list_source_logs(&source_id, limit, view, params.event_type)
         .await?;
     Ok(Json(serde_json::to_value(resp).unwrap()))
 }

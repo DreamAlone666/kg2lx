@@ -6,7 +6,7 @@ CREATE TABLE accounts (
     status           TEXT NOT NULL,
     cookies_json     TEXT NOT NULL,
     last_refresh_at  INTEGER,
-    last_success_at  INTEGER,
+    credential_version INTEGER NOT NULL DEFAULT 0,
     last_error       TEXT,
     last_error_code  TEXT,
     created_at       INTEGER NOT NULL,
@@ -16,7 +16,9 @@ CREATE TABLE accounts (
 
 CREATE TABLE account_entitlements (
     account_id TEXT PRIMARY KEY NOT NULL REFERENCES accounts(account_id),
-    items_json TEXT NOT NULL
+    items_json TEXT,
+    synced_at INTEGER,
+    sync_failed INTEGER NOT NULL CHECK (sync_failed IN (0, 1))
 );
 
 CREATE TABLE sources (
@@ -34,13 +36,18 @@ CREATE INDEX sources_by_account ON sources (account_id, created_at, source_id);
 
 CREATE TABLE login_sessions (
     session_id   TEXT PRIMARY KEY NOT NULL,
-    session_json TEXT NOT NULL
+    session_json TEXT NOT NULL,
+    expires_at   INTEGER NOT NULL
 );
 
 CREATE TABLE event_logs (
     seq          INTEGER PRIMARY KEY,
-    source_id    TEXT NOT NULL,
-    ok           INTEGER NOT NULL,
+    source_id    TEXT,
+    account_id   TEXT,
+    event_type   TEXT NOT NULL,
+    ok           INTEGER NOT NULL CHECK (ok IN (0, 1)),
     payload_json TEXT NOT NULL
 );
 CREATE INDEX event_logs_by_source ON event_logs (source_id, seq DESC);
+CREATE INDEX event_logs_by_account ON event_logs (account_id, seq DESC) WHERE source_id IS NULL;
+CREATE INDEX login_sessions_by_expiry ON login_sessions (expires_at);

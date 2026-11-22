@@ -5,10 +5,10 @@ use chrono::{Local, NaiveDateTime, TimeZone};
 use serde_json::Value;
 
 use crate::config::Config;
-use crate::domain::account::VipEntitlement;
 use crate::domain::cookie_store::{
     CookieStore, merge_cookies_from_body_if_present, merge_cookies_from_headers,
 };
+use crate::domain::entitlement::VipEntitlement;
 use crate::error::AppError;
 
 #[derive(Debug, serde::Deserialize)]
@@ -82,6 +82,7 @@ struct QrCheckData {
 
 #[derive(Debug, serde::Deserialize)]
 struct VipDetailResponse {
+    status: Option<i64>,
     #[serde(default)]
     data: Option<VipDetailData>,
 }
@@ -92,7 +93,6 @@ struct VipDetailResponse {
 /// 连同推导一起删除，因此这里不再声明它们——那些键留在响应里也不会让解析失败。
 #[derive(Debug, serde::Deserialize)]
 struct VipDetailData {
-    #[serde(default)]
     busi_vip: Vec<VipBusinessEntry>,
 }
 
@@ -124,6 +124,24 @@ struct VipBusinessEntry {
     vip_begin_time: Option<Value>,
     #[serde(default)]
     vip_end_time: Option<Value>,
+}
+
+fn parse_vip_snapshot(body: &str) -> Result<Vec<VipEntitlement>, AppError> {
+    let parsed: VipDetailResponse = serde_json::from_str(body)
+        .map_err(|_| AppError::upstream_vip_check_failed("invalid vip response"))?;
+    if parsed.status.is_some_and(|status| status != 1) {
+        return Err(AppError::upstream_vip_check_failed(
+            "upstream rejected vip query",
+        ));
+    }
+    let data = parsed
+        .data
+        .ok_or_else(|| AppError::upstream_vip_check_failed("missing vip snapshot"))?;
+    Ok(data
+        .busi_vip
+        .iter()
+        .map(VipBusinessEntry::to_entitlement)
+        .collect())
 }
 
 impl VipBusinessEntry {
@@ -222,7 +240,7 @@ pub struct UpstreamObservation {
 /// 全部取值（最长 2 项），超出的部分对我们没有任何信息量。
 const FAIL_PROCESS_MAX_ENTRIES: usize = 20;
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Default, serde::Deserialize)]
 struct SongUrlResponse {
     #[serde(default)]
     data: Option<SongUrlData>,
@@ -395,8 +413,20 @@ pub struct QrPollResult {
     pub message: Option<String>,
 }
 
-pub struct RefreshResult {
-    pub cookies: CookieStore,
+pub struct AuthFailure {
+    pub error: AppError,
+    pub invalid_credentials: bool,
+    pub human_verification: bool,
+}
+
+impl AuthFailure {
+    fn new(error: AppError) -> Self {
+        Self {
+            error,
+            invalid_credentials: false,
+            human_verification: false,
+        }
+    }
 }
 
 pub struct VipStatusResult {
@@ -418,6 +448,7 @@ pub struct MusicUrlResult {
     pub cookies: CookieStore,
     pub status_code: u16,
     pub auth_failed: bool,
+    pub human_verification: bool,
     /// 本次上游响应里可观测到的业务字段。**即使 `url` 为空也一定有值**——
     /// "没有 url"的两种原因（上游明确拒绝 / 上游没这首歌）正是靠它区分的。
     pub observation: UpstreamObservation,
@@ -459,20 +490,23 @@ impl MusicUrlFetcher for KugouLiteClient {
 pub struct KugouLiteClient {
     base_url: String,
     client: reqwest::Client,
+    default_timeout: Duration,
 }
 
 impl KugouLiteClient {
     pub fn new(config: &Config) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_millis(config.upstream_timeout_ms))
-            .build()
-            .expect("build reqwest client");
+        let client = reqwest::Client::new();
         Self {
             // `Config::from_env` 已保证该值是不带尾随 `/` 的规范化 http(s) 地址，
             // 这里不再重复归一化。
             base_url: config.kugou_api_base_url.clone(),
             client,
+            default_timeout: Duration::from_millis(config.upstream_timeout_ms),
         }
+    }
+
+    pub fn default_timeout(&self) -> Duration {
+        self.default_timeout
     }
 
     pub async fn request_qr_key(&self, cookies: &CookieStore) -> Result<QrKeyResult, AppError> {
@@ -485,6 +519,7 @@ impl KugouLiteClient {
         let resp = self
             .client
             .get(&url)
+            .timeout(self.default_timeout)
             .header("Cookie", cookies.to_cookie_header())
             .send()
             .await
@@ -524,6 +559,7 @@ impl KugouLiteClient {
         let resp2 = self
             .client
             .get(&url)
+            .timeout(self.default_timeout)
             .header("Cookie", cookies.to_cookie_header())
             .send()
             .await
@@ -563,6 +599,7 @@ impl KugouLiteClient {
         let resp = self
             .client
             .get(&url)
+            .timeout(self.default_timeout)
             .header("Cookie", cookies.to_cookie_header())
             .send()
             .await
@@ -605,108 +642,132 @@ impl KugouLiteClient {
         })
     }
 
-    pub async fn refresh_login(&self, cookies: &CookieStore) -> Result<RefreshResult, AppError> {
-        let mut merged = cookies.clone();
+    pub async fn refresh_login(
+        &self,
+        cookies: &CookieStore,
+        timeout: Duration,
+    ) -> Result<CookieStore, AuthFailure> {
         let url = format!("{}/login/token", self.base_url);
         let resp = self
             .client
-            .get(&url)
+            .get(url)
+            .timeout(timeout)
             .header("Cookie", cookies.to_cookie_header())
             .send()
             .await
-            .map_err(|e| AppError::upstream_login_failed(format!("token refresh: {}", e)))?;
+            .map_err(|e| {
+                AuthFailure::new(AppError::upstream_login_failed(format!(
+                    "token refresh: {e}"
+                )))
+            })?;
         let status = resp.status().as_u16();
+        let mut merged = cookies.clone();
         merge_cookies_from_headers(&mut merged, resp.headers());
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| AppError::upstream_login_failed(format!("token body: {}", e)))?;
+        let body = resp.text().await.map_err(|e| {
+            AuthFailure::new(AppError::upstream_login_failed(format!("token body: {e}")))
+        })?;
+        let json = serde_json::from_str::<serde_json::Value>(&body).ok();
         merge_cookies_from_body_if_present(&mut merged, &body);
+        let human_verification = requires_human_verification(json.as_ref(), &body);
+        let business_status = json
+            .as_ref()
+            .and_then(|value| value.get("status"))
+            .and_then(Value::as_i64);
 
-        if !(200..300).contains(&status) {
-            return Err(AppError::upstream_login_failed(format!(
-                "token refresh status {}: {}",
-                status,
-                summarize_upstream_body(&body)
-            )));
+        if human_verification
+            || !(200..300).contains(&status)
+            || business_status != Some(1)
+            || merged.is_empty("token")
+        {
+            let error = if human_verification {
+                AppError::upstream_login_failed("upstream requires human verification")
+            } else {
+                AppError::upstream_login_failed(format!(
+                    "token refresh rejected (HTTP {status}, status {business_status:?})"
+                ))
+            };
+            return Err(AuthFailure {
+                error,
+                invalid_credentials: !human_verification && is_auth_failure(status, json.as_ref()),
+                human_verification,
+            });
         }
-
-        let _parsed: serde_json::Value = serde_json::from_str(&body)
-            .map_err(|e| AppError::upstream_login_failed(format!("parse token: {}", e)))?;
-
-        Ok(RefreshResult { cookies: merged })
+        Ok(merged)
     }
 
-    pub async fn ensure_dfid(&self, cookies: &CookieStore) -> Result<CookieStore, AppError> {
-        let mut merged = cookies.clone();
+    pub async fn ensure_dfid(
+        &self,
+        cookies: &CookieStore,
+        timeout: Duration,
+    ) -> Result<CookieStore, AuthFailure> {
         let url = format!("{}/register/dev", self.base_url);
         let resp = self
             .client
-            .get(&url)
+            .get(url)
+            .timeout(timeout)
             .header("Cookie", cookies.to_cookie_header())
             .send()
             .await
-            .map_err(|e| AppError::upstream_request_failed(format!("register dev: {}", e)))?;
+            .map_err(|e| {
+                AuthFailure::new(AppError::upstream_request_failed(format!(
+                    "register dev: {e}"
+                )))
+            })?;
+        let status = resp.status().as_u16();
+        let mut merged = cookies.clone();
         merge_cookies_from_headers(&mut merged, resp.headers());
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| AppError::upstream_request_failed(format!("register dev body: {}", e)))?;
+        let body = resp.text().await.map_err(|e| {
+            AuthFailure::new(AppError::upstream_request_failed(format!(
+                "register dev body: {e}"
+            )))
+        })?;
+        let json = serde_json::from_str::<Value>(&body).ok();
+        if requires_human_verification(json.as_ref(), &body) {
+            return Err(AuthFailure {
+                error: AppError::upstream_request_failed("upstream requires human verification"),
+                human_verification: true,
+                invalid_credentials: false,
+            });
+        }
         merge_cookies_from_body_if_present(&mut merged, &body);
-
+        if !(200..300).contains(&status) || merged.is_empty("dfid") {
+            return Err(AuthFailure::new(AppError::upstream_request_failed(
+                format!("device registration did not return a DFID (HTTP {status})"),
+            )));
+        }
         Ok(merged)
     }
 
     pub async fn fetch_vip_status(
         &self,
         cookies: &CookieStore,
+        timeout: Duration,
     ) -> Result<VipStatusResult, AppError> {
-        let mut merged = cookies.clone();
-        // 走 `/youth/union/vip` 而不是 `/user/vip/detail`：两者打的是同一个上游 URL
-        // （`kugouvip.kugou.com/v1/get_union_vip`），差别只在**参数**——`/user/vip/detail`
-        // 只带 `busi_type=concept`，返回 2 条权益；这一条额外带
-        // `opt_product_types=dvip,qvip`，返回 4 条。换路由的**唯一**原因就是拿到完整
-        // 的权益明细，其余语义不变。
+        // The union endpoint includes dvip and qvip alongside the Concept Edition entries.
         let url = format!("{}/youth/union/vip", self.base_url);
         let resp = self
             .client
-            .get(&url)
+            .get(url)
+            .timeout(timeout)
             .header("Cookie", cookies.to_cookie_header())
             .send()
             .await
-            .map_err(|e| AppError::upstream_vip_check_failed(format!("vip detail: {}", e)))?;
+            .map_err(|e| AppError::upstream_vip_check_failed(format!("vip detail: {e}")))?;
         let status = resp.status().as_u16();
+        let mut merged = cookies.clone();
         merge_cookies_from_headers(&mut merged, resp.headers());
         let body = resp
             .text()
             .await
-            .map_err(|e| AppError::upstream_vip_check_failed(format!("vip body: {}", e)))?;
-        merge_cookies_from_body_if_present(&mut merged, &body);
+            .map_err(|e| AppError::upstream_vip_check_failed(format!("vip body: {e}")))?;
 
         if !(200..300).contains(&status) {
             return Err(AppError::upstream_vip_check_failed(format!(
-                "vip detail status {}: {}",
-                status,
-                summarize_upstream_body(&body)
+                "vip detail HTTP {status}"
             )));
         }
-
-        let parsed: VipDetailResponse = serde_json::from_str(&body)
-            .map_err(|e| AppError::upstream_vip_check_failed(format!("parse vip: {}", e)))?;
-
-        let data = parsed.data.unwrap_or(VipDetailData {
-            busi_vip: Vec::new(),
-        });
-
-        // `busi_vip` 为空是**正常状态**（这个账号一条权益都没有），不是错误：上面的
-        // 解析已经成功，此时得到一个空的 entitlements 并照常返回，绝不在这里报
-        // 「VIP 校验失败」——那会把「没有权益」和「问不到上游」混成同一件事。
-        let entitlements = data
-            .busi_vip
-            .iter()
-            .map(VipBusinessEntry::to_entitlement)
-            .collect();
-
+        let entitlements = parse_vip_snapshot(&body)?;
+        merge_cookies_from_body_if_present(&mut merged, &body);
         Ok(VipStatusResult {
             entitlements,
             cookies: merged,
@@ -731,6 +792,7 @@ impl KugouLiteClient {
         let resp = self
             .client
             .get(&url)
+            .timeout(self.default_timeout)
             .header("Cookie", cookies.to_cookie_header())
             .send()
             .await
@@ -750,9 +812,20 @@ impl KugouLiteClient {
             .map_err(|e| AppError::upstream_request_failed(format!("song url body: {}", e)))?;
         merge_cookies_from_body_if_present(&mut merged, &body);
 
-        let parsed: SongUrlResponse = serde_json::from_str(&body)
-            .map_err(|e| AppError::upstream_request_failed(format!("parse song url: {}", e)))?;
-        let auth_failed = is_auth_failure(status, &body);
+        let json = serde_json::from_str::<Value>(&body).ok();
+        let human_verification = requires_human_verification(json.as_ref(), &body);
+        let auth_failed = !human_verification && is_auth_failure(status, json.as_ref());
+        let parsed: SongUrlResponse = match json {
+            Some(Value::String(_)) if human_verification => SongUrlResponse::default(),
+            Some(value) => serde_json::from_value(value)
+                .map_err(|e| AppError::upstream_request_failed(format!("parse song url: {e}")))?,
+            None if auth_failed || human_verification => SongUrlResponse::default(),
+            None => {
+                return Err(AppError::upstream_request_failed(
+                    "invalid song url response",
+                ));
+            }
+        };
 
         let observation = parsed.observation();
         let play_url = parsed.play_url();
@@ -763,6 +836,7 @@ impl KugouLiteClient {
                 cookies: merged,
                 status_code: status,
                 auth_failed,
+                human_verification,
                 observation,
             }),
             None => Ok(MusicUrlResult {
@@ -770,6 +844,7 @@ impl KugouLiteClient {
                 cookies: merged,
                 status_code: status,
                 auth_failed,
+                human_verification,
                 observation,
             }),
         }
@@ -819,43 +894,51 @@ pub(crate) fn next_lower_quality(quality: &str) -> Option<&'static str> {
 
 /// 上游是否**明确拒绝**了这一次要的音质。
 ///
-/// 只认 `status == 2`。实测该形态带 `priv_status: 0` 与 `fail_process`、且没有
-/// url，含义是"这首歌存在，但这一档你这次拿不到"——这是唯一值得换更低档重试的情形。
-///
-/// `status == 0`（资源不存在 / 参数非法，带 `error_code` 如 35104、20010）、429
-/// 限流、超时、传输错误一律**不算**：换档重试对它们无效，只会把一次失败放大成
-/// 四次请求（限流场景下更糟）。`None`（响应体里根本没有 status）同样不算。
-///
-/// 另见 `is_auth_failure`：它是若干子串启发式（`token` / `dfid` / `需要验证` /
-/// `"code":301`），一个 `status:2` 的响应体完全可能命中它。因此调用方必须先问
-/// 这里、再问 `auth_failed`，否则会去刷新登录而不是降级。
+/// Only an explicit quality refusal advances the fallback ladder.
 pub(crate) fn upstream_refused_quality(business_status: Option<i64>) -> bool {
     business_status == Some(2)
 }
 
-pub fn is_auth_failure(status_code: u16, body: &str) -> bool {
-    if status_code == 401 || status_code == 403 {
-        return true;
-    }
-
-    let body_lower = body.to_ascii_lowercase();
-    body.contains("\"code\":301")
-        || body.contains("\"code\":302")
-        || body_lower.contains("token")
-        || body_lower.contains("dfid")
-        || body.contains("本次请求需要验证")
-        || body.contains("需要验证")
+fn upstream_code(body: &Value, key: &str) -> Option<i64> {
+    let value = body.get(key)?;
+    value.as_i64().or_else(|| value.as_str()?.parse().ok())
 }
 
-fn summarize_upstream_body(body: &str) -> String {
-    const MAX_LEN: usize = 200;
-
-    let trimmed = body.trim();
-    if trimmed.len() <= MAX_LEN {
-        trimmed.to_string()
-    } else {
-        format!("{}...", &trimmed[..MAX_LEN])
+fn requires_human_verification(body: Option<&Value>, raw: &str) -> bool {
+    fn challenge_message(message: &str) -> bool {
+        message.contains("需要验证")
+            || message.contains("人机验证")
+            || message.to_ascii_lowercase().contains("captcha")
     }
+    let Some(body) = body else {
+        return challenge_message(raw);
+    };
+    if let Some(message) = body.as_str() {
+        return challenge_message(message);
+    }
+    ["errcode", "error_code", "code"]
+        .iter()
+        .any(|key| upstream_code(body, key) == Some(20028))
+        || ["error", "err_msg", "error_msg", "message", "msg"]
+            .iter()
+            .filter_map(|key| body.get(key).and_then(Value::as_str))
+            .any(challenge_message)
+}
+
+fn is_auth_failure(status: u16, body: Option<&Value>) -> bool {
+    matches!(status, 401 | 403)
+        || body.is_some_and(|body| {
+            ["code", "errcode", "error_code"]
+                .iter()
+                .any(|key| matches!(upstream_code(body, key), Some(301 | 302)))
+                || ["error", "err_msg", "error_msg", "message"]
+                    .iter()
+                    .filter_map(|key| body.get(key).and_then(Value::as_str))
+                    .any(|message| {
+                        let lowercase = message.to_ascii_lowercase();
+                        lowercase.contains("token") || lowercase.contains("dfid")
+                    })
+        })
 }
 
 #[cfg(test)]
@@ -863,6 +946,26 @@ mod tests {
     use super::*;
 
     use async_trait::async_trait;
+
+    #[test]
+    fn identifies_verification_codes_and_messages_without_matching_cookie_keys() {
+        for raw in [
+            r#"{"errcode":"20028","status":0}"#,
+            r#"{"msg":"本次请求需要验证"}"#,
+            r#""本次请求需要验证""#,
+            "upstream requires captcha",
+        ] {
+            assert!(requires_human_verification(
+                serde_json::from_str(raw).ok().as_ref(),
+                raw
+            ));
+        }
+        let raw = r#"{"status":1,"data":{"captcha":false,"token":"fixture"}}"#;
+        assert!(!requires_human_verification(
+            serde_json::from_str(raw).ok().as_ref(),
+            raw
+        ));
+    }
 
     fn parse(body: &str) -> SongUrlResponse {
         serde_json::from_str(body).expect("抓包 fixture 必须能解析")
@@ -1199,16 +1302,7 @@ mod tests {
     /// 复刻 `fetch_vip_status` 里取 `busi_vip` 的两行，好把 fixture 走完生产代码
     /// 的映射（`VipBusinessEntry::to_entitlement`），而不是在测试里另写一份。
     fn parse_entitlements(body: &str) -> Vec<VipEntitlement> {
-        let parsed: VipDetailResponse = serde_json::from_str(body).expect("vip fixture 必须能解析");
-        parsed
-            .data
-            .unwrap_or(VipDetailData {
-                busi_vip: Vec::new(),
-            })
-            .busi_vip
-            .iter()
-            .map(VipBusinessEntry::to_entitlement)
-            .collect()
+        parse_vip_snapshot(body).expect("valid VIP snapshot fixture")
     }
 
     /// 四条并列权益。`busi_vip` 的**字段名与条目形状**取自实际响应，**取值一律是
@@ -1297,22 +1391,23 @@ mod tests {
         assert_eq!(entitlements[1].end_at, None);
     }
 
-    /// `busi_vip: []`（乃至整个 `data` 缺失）是**正常状态**：这个账号一条权益都没有。
-    /// 它不是「VIP 校验失败」——解析照常成功，给出一个空的权益列表。
     #[test]
-    fn empty_busi_vip_is_a_normal_state_not_a_failure() {
+    fn only_a_confirmed_empty_snapshot_clears_the_entitlements() {
         assert!(
-            parse_entitlements(r#"{"status":1,"data":{"is_vip":0,"vip_type":0,"busi_vip":[]}}"#)
+            parse_vip_snapshot(r#"{"status":1,"data":{"busi_vip":[]}}"#)
+                .unwrap()
                 .is_empty()
         );
-        assert!(
-            parse_entitlements(r#"{"status":1,"data":{"is_vip":0,"vip_type":0}}"#).is_empty(),
-            "没有 busi_vip 键与空数组是同一件事"
-        );
-        assert!(
-            parse_entitlements(r#"{"status":1}"#).is_empty(),
-            "连 data 都没有也只是「没有权益」"
-        );
+        for body in [
+            r#"{"status":1,"data":{"is_vip":0,"vip_type":0}}"#,
+            r#"{"status":1}"#,
+            r#"{"status":0,"errcode":20028,"data":{"busi_vip":[]}}"#,
+        ] {
+            assert_eq!(
+                parse_vip_snapshot(body).unwrap_err().code,
+                crate::error::ErrorCode::UpstreamVipCheckFailed
+            );
+        }
     }
 
     /// 认不出的 `product_type` 必须**原样透传**。这个取值域不在本仓手里（实测至少
@@ -1375,6 +1470,7 @@ mod tests {
                 cookies: CookieStore::new(),
                 status_code: 200,
                 auth_failed: false,
+                human_verification: false,
                 observation: UpstreamObservation {
                     status: Some(2),
                     ..Default::default()

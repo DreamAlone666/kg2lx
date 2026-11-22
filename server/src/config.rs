@@ -1,6 +1,8 @@
 use std::env;
 use std::path::PathBuf;
 
+pub const DEFAULT_EVENT_LOG_LIMIT: u32 = 10_000;
+
 pub struct Config {
     pub listen_addr: String,
     pub public_base_url: String,
@@ -12,6 +14,7 @@ pub struct Config {
     /// 任务；单位写在这里而不是写进名字——见 `refresh_ttl_from_env`。
     pub account_refresh_ttl: u64,
     pub web_dist_dir: Option<PathBuf>,
+    pub event_log_limit: u32,
 }
 
 /// 账号登录态的**惰性保鲜阈值**（秒），由环境变量 `ACCOUNT_REFRESH_TTL` 给出。
@@ -45,7 +48,9 @@ fn refresh_ttl_from_env() -> u64 {
             );
         }
     }
-    new.or(old).and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_TTL)
+    new.or(old)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_TTL)
 }
 
 impl Config {
@@ -65,6 +70,16 @@ impl Config {
                 .unwrap_or(10000),
             account_refresh_ttl: refresh_ttl_from_env(),
             web_dist_dir: env::var("WEB_DIST_DIR").ok().map(PathBuf::from),
+            event_log_limit: env::var("EVENT_LOG_LIMIT")
+                .ok()
+                .and_then(|value| match value.parse::<u32>() {
+                    Ok(n @ 1..=100_000) => Some(n),
+                    _ => {
+                        tracing::warn!("EVENT_LOG_LIMIT must be in 1..=100000, using the default");
+                        None
+                    }
+                })
+                .unwrap_or(DEFAULT_EVENT_LOG_LIMIT),
         }
     }
 

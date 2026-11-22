@@ -17,7 +17,6 @@ export type Tone = 'success' | 'warning' | 'danger' | 'info' | 'neutral';
 const accountStatusTones: Record<AccountStatus, Tone> = {
 	active: 'success',
 	pending: 'warning',
-	expired: 'danger',
 	disabled: 'neutral',
 	login_failed: 'danger',
 };
@@ -34,7 +33,6 @@ const sessionStatusTones: Record<LoginSessionStatus, Tone> = {
 	authorized: 'info',
 	bound: 'success',
 	// 二维码过期是一次可重试的超时，不是故障，故用 warning 而非 danger；
-	// 这样与账号状态里的 expired(danger) 区分开，避免用户误以为账号出了问题。
 	expired: 'warning',
 	failed: 'danger',
 };
@@ -104,20 +102,8 @@ export const ENTITLEMENT_EXPIRING_DAYS = 7;
  * 只有一种情况给出 warning：**有到期时间、且剩余时间落在窗口内**。没有到期时间就
  * 无从谈「临近」；到期时间已过也不贴胶囊——理由见下。
  *
- * 为什么会同时看到「`active` 为真」与「`end_at` 已过」：这对字段来自**落盘快照**，
- * 不是每次请求现算的——凡是一次「拿到上游新快照」的写入都会整体重写它（取链时的懒刷新、
- * 后台点「刷新」、重新扫码绑定都属于这一类），而这里**没有后台定时循环**，闲置账号的快照
- * 可以无限期停在很久以前那一份。所以它如实表达的是「上次刷新时上游说的样子」，两个字段
- * 对不上不表示数据坏了。而「即将到期」是对**未来**的断言，对已经过去的时刻说这句话就是
- * 假的，故返回 null——本段的诚实边界是「不呈现推算结果，只呈现快照」。
- *
- * 反过来说，「有 end_at」也不等于在期（快照变旧会给出 `active=false` 而 `end_at` 仍在
- * 未来的组合）。因此本函数只负责时间维度，在期与否由调用方按 `active` 过滤，两者不可互换。
- *
- * 色调取 warning（「警告 / 待处理」）：权益到期后账号一切正常、仅部分歌取不到高音质，
- * 是**提前处理**的提醒而不是已发生的故障，故不用 danger（与 sessionStatusTone 里
- * 「二维码过期」判成 warning 同一条理由）。
- *
+ * `active` 表示上游生成快照时的状态。快照由「同步权益」更新，时间可另作到期提醒；
+ * 已过的到期时间不显示「即将到期」。 *
  * `now` 可注入只为便于离线核算边界，调用方按默认取当前时刻即可（同 formatLogTime）。
  */
 export function entitlementExpiringTone(

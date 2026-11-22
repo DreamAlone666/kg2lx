@@ -2,6 +2,8 @@ mod app_state;
 mod config;
 mod domain;
 mod error;
+#[cfg(test)]
+mod integration_tests;
 mod repos;
 mod routes;
 mod services;
@@ -52,12 +54,22 @@ async fn main() {
     }
 
     let listen_addr = config.listen_addr.clone();
-    let has_web_dist = config.web_dist_dir.is_some();
     let state = AppState::new(config).unwrap_or_else(|error| {
         tracing::error!(%error, "could not open DATA_DIR");
         std::process::exit(1);
     });
 
+    let listener = tokio::net::TcpListener::bind(&listen_addr)
+        .await
+        .expect("bind failed");
+    eprintln!("listening on {}", listen_addr);
+    axum::serve(listener, build_app(state))
+        .await
+        .expect("server error");
+}
+
+fn build_app(state: AppState) -> Router {
+    let has_web_dist = state.config.web_dist_dir.is_some();
     let admin_routes = Router::new()
         .route(
             "/providers/kugou-lite/login/qr",
@@ -66,6 +78,14 @@ async fn main() {
         .route(
             "/providers/kugou-lite/login/qr/{session_id}",
             get(routes::admin::poll_qr_login),
+        )
+        .route(
+            "/accounts/{account_id}/refresh-token",
+            post(routes::admin::refresh_account_token),
+        )
+        .route(
+            "/accounts/{account_id}/entitlements/sync",
+            post(routes::admin::sync_account_entitlements),
         )
         .route("/sources", get(routes::admin::list_sources))
         .route(
@@ -111,16 +131,10 @@ async fn main() {
         .nest("/api/v1/runtime", runtime_routes)
         .layer(trace_layer);
 
-    let app: Router<()> = if has_web_dist {
+    if has_web_dist {
         app.fallback(routes::static_fs::serve)
     } else {
         app
     }
-    .with_state(state);
-
-    let listener = tokio::net::TcpListener::bind(&listen_addr)
-        .await
-        .expect("bind failed");
-    eprintln!("listening on {}", listen_addr);
-    axum::serve(listener, app).await.expect("server error");
+    .with_state(state)
 }

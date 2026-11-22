@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **独立账号操作与事件日志**。音源详情可分别刷新 Token 和同步权益。事件日志记录取链、Token 刷新、账号登录和权益同步，支持按类别和结果筛选。
+- **事件保留上限**。使用 `EVENT_LOG_LIMIT` 设置保留数量，默认保留最新 10,000 条。
+
 ### Changed
 
 - **SQLite 存储**。首次启动会将旧账号、音源和已有权益快照一起导入，已导入洛雪的脚本继续使用原地址和凭据。旧文件留存供回退，历史日志及扫码会话留在原目录。

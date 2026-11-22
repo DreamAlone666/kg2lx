@@ -13,14 +13,17 @@ use tempfile::Builder;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::domain::account::{AccountStatus, ProviderAccount};
+use crate::domain::cookie_store::CookieStore;
+use crate::domain::entitlement::{EntitlementSnapshot, VipEntitlement};
+use crate::domain::event_log::{EventLog, ListEvents, LogView};
 use crate::domain::login_session::LoginSession;
 use crate::domain::provider::ProviderKind;
-use crate::domain::runtime_log::{ListRuntimeLogsQuery, RuntimeLog, RuntimeLogView};
 use crate::domain::source::Source;
 use crate::error::AppError;
 use crate::repos::account::AccountRepo;
+use crate::repos::entitlement::EntitlementRepo;
+use crate::repos::event_log::EventLogRepo;
 use crate::repos::login_session::LoginSessionRepo;
-use crate::repos::runtime_log::RuntimeLogRepo;
 use crate::repos::source::SourceRepo;
 
 const SCHEMA_VERSION: i64 = 1;
@@ -31,11 +34,19 @@ type Job = Box<dyn FnOnce(&mut Connection) + Send>;
 
 pub struct Sqlite {
     jobs: mpsc::Sender<Job>,
+    event_log_limit: i64,
 }
 
 impl Sqlite {
-    pub fn open(data_dir: &Path) -> Result<Self, AppError> {
+    pub fn open(data_dir: &Path, event_log_limit: u32) -> Result<Self, AppError> {
         let mut connection = open_database(data_dir)?;
+        let event_log_limit = i64::from(event_log_limit);
+        connection
+            .execute(
+                "DELETE FROM event_logs WHERE seq <= (SELECT max(seq) - ?1 FROM event_logs)",
+                [event_log_limit],
+            )
+            .map_err(sqlite_error)?;
         let (jobs, mut worker) = mpsc::channel::<Job>(DATABASE_QUEUE_CAPACITY);
         std::thread::Builder::new()
             .name("kg2lx-sqlite".into())
@@ -44,7 +55,10 @@ impl Sqlite {
                     job(&mut connection);
                 }
             })?;
-        Ok(Self { jobs })
+        Ok(Self {
+            jobs,
+            event_log_limit,
+        })
     }
 
     async fn run<T: Send + 'static>(
@@ -150,10 +164,9 @@ fn provider_at(row: &Row<'_>, index: usize) -> rusqlite::Result<ProviderKind> {
 }
 
 const ACCOUNT_SELECT: &str = "
-    SELECT a.account_id, a.provider, a.upstream_userid, a.display_name, a.status,
-           a.cookies_json, a.last_refresh_at, a.last_success_at, a.last_error,
-           a.last_error_code, a.created_at, a.updated_at, e.items_json
-    FROM accounts a LEFT JOIN account_entitlements e USING (account_id)";
+    SELECT account_id, provider, upstream_userid, display_name, status, cookies_json,
+           last_refresh_at, credential_version, last_error, last_error_code, created_at, updated_at
+    FROM accounts";
 
 fn read_account(row: &Row<'_>) -> rusqlite::Result<ProviderAccount> {
     Ok(ProviderAccount {
@@ -170,59 +183,31 @@ fn read_account(row: &Row<'_>) -> rusqlite::Result<ProviderAccount> {
         },
         cookies: decode(row.get_ref(5)?.as_str()?, 5)?,
         last_refresh_at: row.get(6)?,
-        last_success_at: row.get(7)?,
+        credential_version: row.get(7)?,
         last_error: row.get(8)?,
         last_error_code: row.get(9)?,
         created_at: row.get(10)?,
         updated_at: row.get(11)?,
-        entitlements: row
-            .get::<_, Option<String>>(12)?
-            .map(|json| decode(&json, 12))
-            .transpose()?,
     })
 }
 
-fn write_account(
-    conn: &Connection,
-    account: &ProviderAccount,
-    update: bool,
-) -> rusqlite::Result<()> {
-    let insert = "INSERT INTO accounts (account_id, provider, upstream_userid, display_name, status,
-        cookies_json, last_refresh_at, last_success_at, last_error, last_error_code, created_at, updated_at)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)";
-    let conflict = if update {
-        "ON CONFLICT(account_id) DO UPDATE SET display_name = excluded.display_name,
-         status = excluded.status, cookies_json = excluded.cookies_json,
-         last_refresh_at = excluded.last_refresh_at, last_success_at = excluded.last_success_at,
-         last_error = excluded.last_error, last_error_code = excluded.last_error_code,
-         updated_at = excluded.updated_at"
-    } else {
-        ""
-    };
+fn account_by_id(conn: &Connection, account_id: &str) -> rusqlite::Result<ProviderAccount> {
+    conn.prepare_cached(&format!("{ACCOUNT_SELECT} WHERE account_id = ?1"))?
+        .query_row([account_id], read_account)
+}
+
+fn write_account(conn: &Connection, account: &ProviderAccount) -> rusqlite::Result<()> {
     conn.execute(
-        &format!("{insert} {conflict}"),
+        "INSERT INTO accounts (account_id, provider, upstream_userid, display_name, status,
+         cookies_json, last_refresh_at, credential_version, last_error, last_error_code, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
-            account.account_id,
-            account.provider.to_string(),
-            account.upstream_userid,
-            account.display_name,
-            account.status.as_str(),
-            encode(&account.cookies)?,
-            account.last_refresh_at,
-            account.last_success_at,
-            account.last_error,
-            account.last_error_code,
-            account.created_at,
-            account.updated_at,
+            account.account_id, account.provider.to_string(), account.upstream_userid,
+            account.display_name, account.status.as_str(), encode(&account.cookies)?,
+            account.last_refresh_at, account.credential_version, account.last_error,
+            account.last_error_code, account.created_at, account.updated_at,
         ],
     )?;
-    if let Some(items) = &account.entitlements {
-        conn.execute(
-            "INSERT INTO account_entitlements (account_id, items_json) VALUES (?1, ?2)
-             ON CONFLICT(account_id) DO UPDATE SET items_json = excluded.items_json",
-            params![account.account_id, encode(items)?],
-        )?;
-    }
     Ok(())
 }
 
@@ -230,15 +215,8 @@ fn write_account(
 impl AccountRepo for Sqlite {
     async fn find_by_id(&self, account_id: &str) -> Result<Option<ProviderAccount>, AppError> {
         let account_id = account_id.to_owned();
-        self.run(move |conn| {
-            conn.query_row(
-                &format!("{ACCOUNT_SELECT} WHERE a.account_id = ?1"),
-                [account_id],
-                read_account,
-            )
-            .optional()
-        })
-        .await
+        self.run(move |conn| account_by_id(conn, &account_id).optional())
+            .await
     }
 
     async fn find_by_provider_userid(
@@ -249,7 +227,7 @@ impl AccountRepo for Sqlite {
         let upstream_userid = upstream_userid.to_owned();
         self.run(move |conn| {
             conn.query_row(
-                &format!("{ACCOUNT_SELECT} WHERE a.provider = ?1 AND a.upstream_userid = ?2"),
+                &format!("{ACCOUNT_SELECT} WHERE provider = ?1 AND upstream_userid = ?2"),
                 params![provider.to_string(), upstream_userid],
                 read_account,
             )
@@ -258,14 +236,138 @@ impl AccountRepo for Sqlite {
         .await
     }
 
-    async fn upsert(&self, account: &ProviderAccount) -> Result<(), AppError> {
-        let account = account.clone();
+    async fn save_auth(
+        &self,
+        previous: &ProviderAccount,
+        updated: &ProviderAccount,
+    ) -> Result<ProviderAccount, AppError> {
+        let previous = previous.clone();
+        let updated = updated.clone();
         self.run(move |conn| {
-            let tx = conn.transaction()?;
-            write_account(&tx, &account, true)?;
-            tx.commit()
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let current = account_by_id(&tx, &previous.account_id)?;
+            if current.credential_version != previous.credential_version {
+                return Ok(current);
+            }
+
+            let mut cookies = current.cookies;
+            // An authentication response owns the keys it changed. Keep unrelated cookies
+            // received while authentication was in flight.
+            for (key, value) in updated.cookies.items {
+                let authoritative = updated.credential_version != previous.credential_version
+                    && matches!(
+                        key.as_str(),
+                        "token" | "userid" | "dfid" | "t1" | "vip_token" | "vip_type"
+                    );
+                if authoritative || previous.cookies.get(&key) != Some(value.as_str()) {
+                    cookies.insert(key, value);
+                }
+            }
+            tx.execute(
+                "UPDATE accounts SET status = ?2, cookies_json = ?3, last_refresh_at = ?4,
+                 credential_version = ?5, last_error = ?6, last_error_code = ?7,
+                 updated_at = ?8 WHERE account_id = ?1",
+                params![
+                    updated.account_id,
+                    updated.status.as_str(),
+                    encode(&cookies)?,
+                    updated.last_refresh_at,
+                    updated.credential_version,
+                    updated.last_error,
+                    updated.last_error_code,
+                    updated.updated_at
+                ],
+            )?;
+            let account = account_by_id(&tx, &updated.account_id)?;
+            tx.commit()?;
+            Ok(account)
         })
         .await
+    }
+
+    async fn merge_cookies(
+        &self,
+        request: &ProviderAccount,
+        response: &CookieStore,
+    ) -> Result<ProviderAccount, AppError> {
+        let request = request.clone();
+        let response = response.clone();
+        self.run(move |conn| {
+            if request.cookies == response {
+                return account_by_id(conn, &request.account_id);
+            }
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let mut current = account_by_id(&tx, &request.account_id)?;
+            if current.credential_version != request.credential_version {
+                return Ok(current);
+            }
+            let mut changed = false;
+            for (key, value) in response.items {
+                let sent = request.cookies.get(&key);
+                if sent != Some(value.as_str()) && current.cookies.get(&key) == sent {
+                    current.cookies.insert(key, value);
+                    changed = true;
+                }
+            }
+            if changed {
+                tx.execute(
+                    "UPDATE accounts SET cookies_json = ?2 WHERE account_id = ?1",
+                    params![current.account_id, encode(&current.cookies)?],
+                )?;
+            }
+            tx.commit()?;
+            Ok(current)
+        })
+        .await
+    }
+}
+
+#[async_trait]
+impl EntitlementRepo for Sqlite {
+    async fn entitlement_snapshot(
+        &self,
+        account_id: &str,
+    ) -> Result<EntitlementSnapshot, AppError> {
+        let account_id = account_id.to_owned();
+        self.run(move |conn| {
+            let row = conn.query_row(
+                "SELECT items_json, synced_at, sync_failed FROM account_entitlements WHERE account_id = ?1",
+                [account_id], |row| {
+                    let json: Option<String> = row.get(0)?;
+                    Ok(EntitlementSnapshot {
+                        items: json.map(|value| decode(&value, 0)).transpose()?,
+                        synced_at: row.get(1)?,
+                        sync_failed: row.get(2)?,
+                    })
+                },
+            ).optional()?;
+            Ok(row.unwrap_or_default())
+        }).await
+    }
+
+    async fn record_sync(
+        &self,
+        account_id: &str,
+        snapshot: Option<(Vec<VipEntitlement>, i64)>,
+    ) -> Result<(), AppError> {
+        let account_id = account_id.to_owned();
+        self.run(move |conn| {
+            if let Some((items, synced_at)) = snapshot {
+                conn.execute(
+                    "INSERT INTO account_entitlements (account_id, items_json, synced_at, sync_failed)
+                     VALUES (?1, ?2, ?3, 0) ON CONFLICT(account_id) DO UPDATE SET
+                     items_json = excluded.items_json, synced_at = excluded.synced_at, sync_failed = 0",
+                    params![account_id, encode(&items)?, synced_at],
+                )?;
+            } else {
+                conn.execute(
+                    "INSERT INTO account_entitlements (account_id, sync_failed) VALUES (?1, 1)
+                     ON CONFLICT(account_id) DO UPDATE SET sync_failed = 1",
+                    [account_id],
+                )?;
+            }
+            Ok(())
+        }).await
     }
 }
 
@@ -286,18 +388,11 @@ fn read_source(row: &Row<'_>) -> rusqlite::Result<Source> {
     })
 }
 
-fn write_source(conn: &Connection, source: &Source, update: bool) -> rusqlite::Result<()> {
-    let insert = "INSERT INTO sources (source_id, account_id, provider, name, script_token,
-        runtime_token, created_at, updated_at, quality_fallback)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)";
-    let conflict = if update {
-        "ON CONFLICT(source_id) DO UPDATE SET name = excluded.name,
-         updated_at = excluded.updated_at, quality_fallback = excluded.quality_fallback"
-    } else {
-        ""
-    };
+fn write_source(conn: &Connection, source: &Source) -> rusqlite::Result<()> {
     conn.execute(
-        &format!("{insert} {conflict}"),
+        "INSERT INTO sources (source_id, account_id, provider, name, script_token,
+         runtime_token, created_at, updated_at, quality_fallback)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             source.source_id,
             source.account_id,
@@ -354,10 +449,28 @@ impl SourceRepo for Sqlite {
         .await
     }
 
-    async fn upsert(&self, source: &Source) -> Result<(), AppError> {
-        let source = source.clone();
-        self.run(move |conn| write_source(conn, &source, true))
-            .await
+    async fn update_settings(
+        &self,
+        source_id: &str,
+        name: Option<String>,
+        quality_fallback: Option<bool>,
+        updated_at: i64,
+    ) -> Result<Source, AppError> {
+        let source_id = source_id.to_owned();
+        self.run(move |conn| {
+            conn.prepare_cached(
+                "UPDATE sources SET name = coalesce(?2, name),
+                 quality_fallback = coalesce(?3, quality_fallback), updated_at = ?4
+                 WHERE source_id = ?1
+                 RETURNING source_id, account_id, provider, name, script_token, runtime_token,
+                           created_at, updated_at, quality_fallback",
+            )?
+            .query_row(
+                params![source_id, name, quality_fallback, updated_at],
+                read_source,
+            )
+        })
+        .await
     }
 
     async fn list_all(&self) -> Result<Vec<Source>, AppError> {
@@ -389,45 +502,100 @@ impl LoginSessionRepo for Sqlite {
         let session = session.clone();
         self.run(move |conn| {
             conn.execute(
-                "INSERT INTO login_sessions (session_id, session_json) VALUES (?1, ?2)
-                 ON CONFLICT(session_id) DO UPDATE SET session_json = excluded.session_json",
-                params![session.session_id, encode(&session)?],
+                "DELETE FROM login_sessions WHERE expires_at < ?1",
+                [crate::domain::login_session::now_ts() - 300],
             )?;
-            Ok(())
+            write_session(conn, &session)
+        })
+        .await
+    }
+
+    async fn bind(
+        &self,
+        session: &LoginSession,
+        account: &ProviderAccount,
+        new_source: Option<&Source>,
+    ) -> Result<(), AppError> {
+        let session = session.clone();
+        let account = account.clone();
+        let new_source = new_source.cloned();
+        self.run(move |conn| {
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let reattached = tx.execute(
+                "UPDATE accounts SET cookies_json = ?2, credential_version = credential_version + 1,
+                 status = CASE WHEN status = 'disabled' THEN status ELSE 'active' END,
+                 last_refresh_at = ?3, last_error = NULL, last_error_code = NULL, updated_at = ?4
+                 WHERE account_id = ?1",
+                params![account.account_id, encode(&account.cookies)?,
+                    account.last_refresh_at, account.updated_at],
+            )?;
+            if reattached == 0 {
+                write_account(&tx, &account)?;
+            }
+            if let Some(source) = new_source {
+                write_source(&tx, &source)?;
+            }
+            write_session(&tx, &session)?;
+            tx.commit()
         })
         .await
     }
 }
 
+fn write_session(conn: &Connection, session: &LoginSession) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO login_sessions (session_id, session_json, expires_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(session_id) DO UPDATE SET session_json = excluded.session_json",
+        params![session.session_id, encode(&session)?, session.expires_at],
+    )?;
+    Ok(())
+}
+
 #[async_trait]
-impl RuntimeLogRepo for Sqlite {
-    async fn append(&self, log: &RuntimeLog) -> Result<(), AppError> {
+impl EventLogRepo for Sqlite {
+    async fn append(&self, log: &EventLog) -> Result<(), AppError> {
         let log = log.clone();
+        let limit = self.event_log_limit;
         self.run(move |conn| {
-            conn.execute(
-                "INSERT INTO event_logs (source_id, ok, payload_json) VALUES (?1, ?2, ?3)",
-                params![log.source_id, log.ok, encode(&log)?],
+            let tx = conn.transaction()?;
+            tx.execute(
+                "INSERT INTO event_logs (source_id, account_id, event_type, ok, payload_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    log.context.source_id,
+                    log.context.account_id,
+                    log.event.event_type().as_str(),
+                    log.ok,
+                    encode(&log)?
+                ],
             )?;
-            Ok(())
+            // seq has no gaps from appends and cleanup always removes the oldest prefix.
+            let cutoff = tx.last_insert_rowid() - limit;
+            if cutoff > 0 {
+                tx.execute("DELETE FROM event_logs WHERE seq <= ?1", [cutoff])?;
+            }
+            tx.commit()
         })
         .await
     }
 
-    async fn list_by_source(
-        &self,
-        query: &ListRuntimeLogsQuery,
-    ) -> Result<Vec<RuntimeLog>, AppError> {
+    async fn list(&self, query: &ListEvents) -> Result<Vec<EventLog>, AppError> {
         let source_id = query.source_id.clone();
-        let errors_only = query.view == RuntimeLogView::Errors;
+        let account_id = query.account_id.clone();
+        let event_type = query.event_type.map(|kind| kind.as_str());
+        let errors_only = query.view == LogView::Errors;
         let limit = query.limit as i64;
         self.run(move |conn| {
-            conn.prepare(
-                "SELECT payload_json FROM event_logs WHERE source_id = ?1 AND (NOT ?2 OR NOT ok)
-                 ORDER BY seq DESC LIMIT ?3",
+            conn.prepare_cached(
+                "SELECT payload_json FROM event_logs
+                 WHERE (source_id = ?1 OR (source_id IS NULL AND account_id = ?2))
+                   AND (?3 IS NULL OR event_type = ?3) AND (NOT ?4 OR NOT ok)
+                 ORDER BY seq DESC LIMIT ?5",
             )?
-            .query_map(params![source_id, errors_only, limit], |row| {
-                decode(row.get_ref(0)?.as_str()?, 0)
-            })?
+            .query_map(
+                params![source_id, account_id, event_type, errors_only, limit],
+                |row| decode(row.get_ref(0)?.as_str()?, 0),
+            )?
             .collect()
         })
         .await

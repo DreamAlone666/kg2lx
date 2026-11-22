@@ -2,29 +2,15 @@ import { adminSession, handleAuthError } from '../../state/admin-session.svelte'
 import type { SourceSummary, SourceDetail } from '../../api/types';
 import { describeApiError } from '../../domain';
 
+export type AccountAction = 'refresh' | 'sync';
+
 class SourcesController {
   sources = $state<SourceSummary[]>([]);
   currentSource = $state<SourceDetail | null>(null);
   loading = $state(false);
   error = $state<string | null>(null);
-  refreshing = $state<Record<string, boolean>>({});
-  /**
-   * 标题保存进行中。
-   *
-   * 不复用 `refreshing[sourceId]`：那张表是「这个音源正在刷新登录」的公开信号，
-   * 列表页也读它来降透明度；把改名写进去会让一次改名在别处显示成「刷新中」，
-   * 两个动作的反馈就此串味。
-   */
+  accountActions = $state<Partial<Record<string, AccountAction>>>({});
   savingName = $state(false);
-  /**
-   * 音质降级开关保存进行中。
-   *
-   * 与 `savingName` 分开，理由和当初不把它并进 `refreshing[sourceId]` 完全一样：
-   * `savingName` 是**改名**这个动作的公开信号，详情页的「刷新 Token」按钮与
-   * SourceTitle 的「保存」按钮都直接读它（前者据此禁用、后者据此显示 pending）。
-   * 共用会让一次拨开关把那个按钮点亮成「保存中…」，并在开关自己毫无提示的情况下
-   * 把刷新按钮锁住——两个动作的反馈再次串味。
-   */
   savingQualityFallback = $state(false);
   /**
    * 列表最近一次成功拉取的时刻（Unix 秒）。
@@ -70,26 +56,43 @@ class SourcesController {
     }
   }
 
-  /**
-   * 强制刷新账号状态。
-   *
-   * 返回三态而不是布尔值：「上一次刷新还没结束」与「刷新失败」是两件事，
-   * 用同一个 false 表达会让调用方把前者提示成「刷新失败，请稍后重试」——
-   * 用户被指责了一次根本没有发生的失败。
-   */
-  async refreshSource(sourceId: string): Promise<'ok' | 'failed' | 'busy'> {
-    if (this.refreshing[sourceId]) return 'busy';
-    this.refreshing[sourceId] = true;
+  async runAccountAction(sourceId: string, accountId: string, action: AccountAction) {
+    if (this.accountActions[accountId]) return { status: 'busy' } as const;
+    this.accountActions[accountId] = action;
     try {
-      await adminSession.api.refreshSource(sourceId);
-      await this.loadSource(sourceId);
-      await this.loadSources();
-      return 'ok';
-    } catch (e: any) {
-      if (!handleAuthError(e)) this.error = describeApiError(e);
-      return 'failed';
+      let actionError: string | undefined;
+      try {
+        if (action === 'refresh') await adminSession.api.refreshToken(accountId);
+        else await adminSession.api.syncEntitlements(accountId);
+      } catch (error) {
+        if (handleAuthError(error)) return { status: 'redirected' } as const;
+        actionError = describeApiError(error);
+      }
+
+      // Failures are persisted too. Reload just the account projection so a slow action cannot
+      // overwrite a title or quality preference saved while it was running.
+      try {
+        const { account } = await adminSession.api.getSource(sourceId);
+        if (this.currentSource?.account_id === accountId) this.currentSource.account = account;
+        this.sources = this.sources.map((source) =>
+          source.account_id === accountId ? {
+            ...source,
+            account_status: account.status,
+            last_refresh_at: account.last_refresh_at,
+            entitlements: account.entitlements,
+            entitlements_synced_at: account.entitlements_synced_at,
+            entitlements_sync_failed: account.entitlements_sync_failed,
+          } : source
+        );
+      } catch (error) {
+        if (handleAuthError(error)) return { status: 'redirected' } as const;
+        if (!actionError) return { status: 'unconfirmed' } as const;
+      }
+      return actionError
+        ? { status: 'failed', message: actionError } as const
+        : { status: 'ok' } as const;
     } finally {
-      this.refreshing[sourceId] = false;
+      delete this.accountActions[accountId];
     }
   }
 

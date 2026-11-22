@@ -1,9 +1,10 @@
 <script lang="ts">
+	import { resolve } from '$app/paths';
 	import { Badge, Card, CardContent, CardHeader, StatusBadge } from '$lib/components/ui';
 	import {
 	accountStatusLabel,
 	formatDateTime,
-	isNamedVipProduct,
+	summarizeEntitlements,
 	labelOf,
 	providerLabel,
 	vipProductLabel
@@ -28,18 +29,7 @@
 	 */
 	let { source }: { source: SourceSummary } = $props();
 
-	/**
-	 * 卡片上要渲染的会员权益：在期的、且我们能命名的那些。
-	 *
-	 * 判据与详情页同源（isNamedVipProduct 与 vipProductLabel 都来自领域层），所以两页不会
-	 * 各自决定「哪些算权益」。1 天窗口的未命名条目不上卡片：它们只要在期就永远落在临近阈值
-	 * 内，标出来只会让标记失去意义。
-	 */
-	const listedEntitlements = $derived(
-		(source.entitlements ?? []).filter(
-			(entitlement) => entitlement.active && isNamedVipProduct(entitlement.product_type)
-		)
-	);
+	const snapshot = $derived(summarizeEntitlements(source));
 
 	/** 从未刷新过时不要拼成「最近刷新 从未」，那不是一句人话。 */
 	const lastRefreshText = $derived(
@@ -54,7 +44,7 @@
 
 <!-- 是否要把账号 ID 单独报出来，与下面那行可见内容用的是同一条判断。 -->
 <a
-	href="/sources/{source.source_id}"
+	href={resolve(`/sources/${source.source_id}`)}
 	class="block"
 	style="view-transition-name: source-{source.source_id}"
 	aria-label={showsAccountId
@@ -100,7 +90,7 @@
 
 						用 product_type 做 key：同一条权益在一个账号里只出现一次。
 					-->
-					{#each listedEntitlements as entitlement (entitlement.product_type)}
+					{#each snapshot.state === 'failed' ? [] : snapshot.named as entitlement, index (`${entitlement.product_type}:${index}`)}
 						<StatusBadge
 							tone={VIP_ENTITLEMENT_TONE}
 							emphasis={vipEntitlementEmphasis(entitlement.product_type)}
@@ -135,6 +125,16 @@
 			<StatusBadge tone={accountStatusTone(source.account_status)} dot>
 				{labelOf(accountStatusLabel, source.account_status)}
 			</StatusBadge>
+
+			{#if snapshot.state === 'failed'}
+				<p class="text-xs text-danger">权益同步失败 · 在详情重试</p>
+			{:else if snapshot.state === 'unknown'}
+				<p class="text-xs text-muted-foreground">权益待同步 · 在详情同步</p>
+			{:else if snapshot.state === 'empty'}
+				<p class="text-xs text-muted-foreground">上次确认无在期权益</p>
+			{:else if snapshot.hasUnnamedActive && snapshot.named.length === 0}
+				<p class="text-xs text-muted-foreground">上次记录有在期权益</p>
+			{/if}
 
 			<!-- tabular + nowrap：定长时间戳在网格里各卡片对齐，且不会被折行 -->
 			<p class="tabular text-xs whitespace-nowrap text-muted-foreground">

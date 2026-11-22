@@ -41,7 +41,7 @@
 	 * 重复提交已由「保存」自身的 pending 挡住。把它算进来的唯一效果是——若某次保存
 	 * 的请求始终不落地，用户取消退出后会连「重命名」都点不动，只能刷新页面。
 	 */
-	const busy = $derived(Boolean(sourcesController.refreshing[source.source_id]));
+	const busy = $derived(Boolean(sourcesController.accountActions[source.account_id]));
 
 	async function startEdit() {
 		draft = source.name;

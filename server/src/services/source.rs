@@ -1,16 +1,20 @@
 use std::sync::Arc;
 
 use crate::config::Config;
-use crate::domain::account::{self, AccountStatus, VipEntitlement};
-use crate::domain::runtime_log::{ListRuntimeLogsQuery, RuntimeLog, RuntimeLogView};
+use crate::domain::entitlement::EntitlementSnapshot;
+use crate::domain::event_log::{
+    EventContext, EventLog, EventTrigger, EventType, ListEvents, LogView,
+};
 use crate::domain::source::{
     self, SCRIPT_NAME_ADVISORY_CHARS, SCRIPT_NAME_MAX_BYTES, sanitize_script_meta,
 };
 use crate::error::AppError;
 use crate::repos::account::AccountRepo;
-use crate::repos::runtime_log::RuntimeLogRepo;
+use crate::repos::entitlement::EntitlementRepo;
+use crate::repos::event_log::EventLogRepo;
 use crate::repos::source::SourceRepo;
-use crate::services::kugou_lite_client::KugouLiteClient;
+use crate::services::auth::AccountAuth;
+use crate::services::entitlement::EntitlementService;
 
 #[derive(serde::Serialize)]
 pub struct SourceListItem {
@@ -24,27 +28,8 @@ pub struct SourceListItem {
     /// `userid` 缺失时返回去掉尾随空格的结果，不会产生「酷狗概念版 」这类文案。
     pub default_name: String,
     pub userid: String,
-    /// 上游会员权益明细，与详情页的 `account.entitlements` 是**同一个结构体、同一份
-    /// 数据**（`VipEntitlement`），刻意不另造一个精简版：两个页面对「这个账号有哪些
-    /// 权益」必须给出同一个答案，各留一份字段就是留给它们漂移的机会。
-    ///
-    /// 列表**必须**带它：列表要回答「这个音源现在还能不能用」，而此前回答这件事的是
-    /// 账号级的聚合布尔值（`vip_active`）——那个值既冗余又低效，已经删除（权益是
-    /// 并列的增量信息，聚合值只是它的派生品，上游新增一档权益时会静默失真）。改成
-    /// 「有哪些**有名字**的权益」之后，列表与详情口径一致，扫一眼就能看出这个账号
-    /// 有没有权益、是哪几条，而不用逐个点进详情。
-    ///
-    /// 空数组是**正常状态**（这个账号一条权益都没有），不是「查不到上游」：这一列只
-    /// 由**成功**的权益查询写入，因此空数组的成因只可能是「上一次查到的就是空的」；
-    /// 问不到上游时账号会被标成 `login_failed`，权益保持上一次成功时的值不变。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub entitlements: Option<Vec<VipEntitlement>>,
-    /// 账号状态，与详情页 `account.status` 同源同格式。
-    ///
-    /// 列表要回答「账号还活着吗」这个最核心的问题，而列表本来就是用来扫一眼做判断的。
-    /// 它与上面的 `entitlements` 回答的是**两件不相干的事**：账号状态只由登录态决定，
-    /// 权益是并列的增量信息。列表此前只有一个账号级的聚合布尔值（`vip_active`），
-    /// 把「活着吗」和「有权益吗」混成了同一个问题的答案，两项现在各由自己的字段回答。
+    #[serde(flatten)]
+    pub entitlement: EntitlementSnapshot,
     pub account_status: String,
     /// 账号最近一次刷新成功的时刻。
     ///
@@ -91,22 +76,11 @@ pub struct UpdateSourceResponse {
     pub updated_at: i64,
 }
 
-/// 详情页里的账号信息。
-///
-/// 会员权益**只有 `entitlements` 这一个口径**：账号级的聚合布尔值（`vip_active`）
-/// 与它的同族 `vip_type` 都已删除——权益本就是并列的增量信息，聚合值只是它的派生品，
-/// 既冗余又会在上游新增一档权益时静默失真。
 #[derive(serde::Serialize)]
 pub struct SourceAccountInfo {
     pub userid: String,
-    /// 上游会员权益明细（逐条 `product_type` + 是否在期 + 起止时刻），与列表
-    /// （`SourceListItem`）用的是**同一个结构体**，见那里的说明。
-    ///
-    /// 空数组是**正常状态**（这个账号一条权益都没有），不是「查不到上游」；两者在
-    /// 这里可区分，因为后者走的是 `UPSTREAM_VIP_CHECK_FAILED` 错误路径，根本不会有
-    /// 这一次响应。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub entitlements: Option<Vec<VipEntitlement>>,
+    #[serde(flatten)]
+    pub entitlement: EntitlementSnapshot,
     pub status: String,
     pub last_refresh_at: Option<i64>,
     pub last_error: Option<String>,
@@ -122,16 +96,18 @@ pub struct SourceAccountInfo {
 #[derive(serde::Serialize)]
 pub struct RefreshResponse {
     pub ok: bool,
-    pub source_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
     pub updated_at: i64,
 }
 
 #[derive(serde::Serialize)]
 pub struct SourceLogsResponse {
     pub source_id: String,
-    pub view: RuntimeLogView,
+    pub view: LogView,
+    pub event_type: Option<EventType>,
     pub limit: usize,
-    pub items: Vec<RuntimeLog>,
+    pub items: Vec<EventLog>,
 }
 
 /// 音源 PATCH 的输入。
@@ -148,23 +124,23 @@ pub struct UpdateSourceInput {
 
 pub struct SourceService {
     config: Arc<Config>,
-    client: Arc<KugouLiteClient>,
+    snapshots: Arc<dyn EntitlementRepo>,
     account_repo: Arc<dyn AccountRepo>,
     source_repo: Arc<dyn SourceRepo>,
-    log_repo: Arc<dyn RuntimeLogRepo>,
+    log_repo: Arc<dyn EventLogRepo>,
 }
 
 impl SourceService {
     pub fn new(
         config: Arc<Config>,
-        client: Arc<KugouLiteClient>,
+        snapshots: Arc<dyn EntitlementRepo>,
         account_repo: Arc<dyn AccountRepo>,
         source_repo: Arc<dyn SourceRepo>,
-        log_repo: Arc<dyn RuntimeLogRepo>,
+        log_repo: Arc<dyn EventLogRepo>,
     ) -> Self {
         Self {
             config,
-            client,
+            snapshots,
             account_repo,
             source_repo,
             log_repo,
@@ -178,16 +154,16 @@ impl SourceService {
             let account = self.account_repo.find_by_id(&s.account_id).await?;
             // 账号缺失时状态写空串：前端 labelOf / accountStatusTone 已有回退，
             // 不为此新增枚举值，避免污染两个穷举词典。
-            let (userid, entitlements, account_status, last_refresh_at) = match account {
+            let (userid, account_status, last_refresh_at) = match account {
                 Some(ref a) => (
                     a.upstream_userid.clone(),
-                    a.entitlements.clone(),
                     a.status.as_str().to_string(),
                     a.last_refresh_at,
                 ),
-                None => (String::new(), None, String::new(), None),
+                None => (String::new(), String::new(), None),
             };
             let script_url = format!("{}/s/{}.js", self.config.public_base_url, s.script_token);
+            let entitlement = self.snapshots.entitlement_snapshot(&s.account_id).await?;
             items.push(SourceListItem {
                 source_id: s.source_id,
                 account_id: s.account_id,
@@ -196,7 +172,7 @@ impl SourceService {
                 name: s.name,
                 default_name: source::default_name(&userid),
                 userid,
-                entitlements,
+                entitlement,
                 account_status,
                 last_refresh_at,
                 updated_at: s.updated_at,
@@ -221,11 +197,8 @@ impl SourceService {
 
         let script_url = format!("{}/s/{}.js", self.config.public_base_url, s.script_token);
 
-        let rt_preview = if s.runtime_token.len() > 8 {
-            format!("{}...", &s.runtime_token[..8])
-        } else {
-            format!("{}...", s.runtime_token)
-        };
+        let prefix: String = s.runtime_token.chars().take(8).collect();
+        let rt_preview = format!("{prefix}...");
 
         Ok(SourceDetail {
             source_id: s.source_id,
@@ -239,7 +212,10 @@ impl SourceService {
             runtime_token_preview: rt_preview,
             account: SourceAccountInfo {
                 userid: account.upstream_userid,
-                entitlements: account.entitlements,
+                entitlement: self
+                    .snapshots
+                    .entitlement_snapshot(&account.account_id)
+                    .await?,
                 status: account.status.as_str().to_string(),
                 last_refresh_at: account.last_refresh_at,
                 last_error: account.last_error,
@@ -270,7 +246,7 @@ impl SourceService {
         source_id: &str,
         input: UpdateSourceInput,
     ) -> Result<UpdateSourceResponse, AppError> {
-        let mut s = self
+        let s = self
             .source_repo
             .find_by_id(source_id)
             .await?
@@ -294,11 +270,10 @@ impl SourceService {
 
         // 标题先解析完再落盘：清洗失败要在写入任何字段之前返回 400，绝不允许
         // 「开关写进去了、标题报 400」这种半成功状态。
-        let new_name = match input.name {
-            // 请求没提标题 => 保持存储值不动，而不是「恢复默认名」。
-            None => s.name.clone(),
-            Some(None) => default_name.clone(),
-            Some(Some(ref raw)) if raw.trim().is_empty() => default_name.clone(),
+        let name = match input.name {
+            None => None,
+            Some(None) => Some(default_name.clone()),
+            Some(Some(ref raw)) if raw.trim().is_empty() => Some(default_name.clone()),
             Some(Some(ref raw)) => {
                 let cleaned = sanitize_script_meta(raw);
                 if cleaned.is_empty() {
@@ -310,31 +285,16 @@ impl SourceService {
                         SCRIPT_NAME_MAX_BYTES,
                     ));
                 }
-                cleaned
+                Some(cleaned)
             }
         };
-
-        // 两个字段都没出现在请求里 => 空操作，**不 upsert**。此时唯一会变的只有
-        // `updated_at`，而界面拿它回答「这个音源刚被改过吗」：空推一次时间戳会把
-        // 一次什么都没做的请求显示成一次修改，也让详情页的「保存成功」看起来成立。
-        // 原样回传当前的 `updated_at`，前端据此不会刷新时间。
-        if input.name.is_none() && input.quality_fallback.is_none() {
-            return Ok(UpdateSourceResponse {
-                ok: true,
-                source_id: s.source_id,
-                name: s.name,
-                default_name,
-                quality_fallback: s.quality_fallback,
-                updated_at: s.updated_at,
-            });
-        }
-
-        s.name = new_name;
-        if let Some(value) = input.quality_fallback {
-            s.quality_fallback = value;
-        }
-        s.updated_at = source::now_ts();
-        self.source_repo.upsert(&s).await?;
+        let s = if name.is_some() || input.quality_fallback.is_some() {
+            self.source_repo
+                .update_settings(&s.source_id, name, input.quality_fallback, source::now_ts())
+                .await?
+        } else {
+            s
+        };
 
         Ok(UpdateSourceResponse {
             ok: true,
@@ -346,98 +306,95 @@ impl SourceService {
         })
     }
 
-    pub async fn refresh_source(&self, source_id: &str) -> Result<RefreshResponse, AppError> {
-        let s = self
+    pub async fn refresh_source(
+        &self,
+        source_id: &str,
+        auth: &Arc<AccountAuth>,
+        entitlement: &Arc<EntitlementService>,
+    ) -> Result<RefreshResponse, AppError> {
+        let source = self
             .source_repo
             .find_by_id(source_id)
             .await?
             .ok_or_else(AppError::source_not_found)?;
-
-        let mut account = self
+        let account = self
             .account_repo
-            .find_by_id(&s.account_id)
+            .find_by_id(&source.account_id)
+            .await?
+            .ok_or_else(AppError::account_not_found)?;
+        let context =
+            EventContext::new(EventTrigger::Admin, Some(account.account_id.clone()), None);
+        let refreshed = auth.refresh_manual(account, context.clone()).await?;
+        // The compatibility route used to request both actions. Sync separately so an
+        // entitlement outage cannot delay or change the result of refreshing the token.
+        let entitlement = entitlement.clone();
+        let account_id = refreshed.account_id.clone();
+        tokio::spawn(async move {
+            let _ = entitlement.sync(account_id, context).await;
+        });
+        Ok(RefreshResponse {
+            ok: true,
+            source_id: Some(source.source_id),
+            updated_at: refreshed.last_refresh_at.unwrap_or(refreshed.updated_at),
+        })
+    }
+
+    pub async fn refresh_account_by_id(
+        &self,
+        auth: &Arc<AccountAuth>,
+        account_id: &str,
+    ) -> Result<RefreshResponse, AppError> {
+        let account = self
+            .account_repo
+            .find_by_id(account_id)
             .await?
             .ok_or_else(AppError::account_not_found)?;
 
-        let result: Result<i64, AppError> = async {
-            let refresh = self.client.refresh_login(&account.cookies).await?;
-            account.cookies = refresh.cookies;
-
-            if account.cookies.is_empty("dfid") {
-                let with_dfid = self.client.ensure_dfid(&account.cookies).await?;
-                account.cookies = with_dfid;
-            }
-
-            let vip = self.client.fetch_vip_status(&account.cookies).await?;
-            account.cookies = vip.cookies;
-            // 权益明细**原样**落到账号上，包括空列表：空的意思是「这个账号目前一条
-            // 权益都没有」，而它是一次成功的查询结果，不是失败。真正问不到上游时
-            // 上面那行已经以 `UPSTREAM_VIP_CHECK_FAILED` 返回了，两条路径在这里就
-            // 分开了——不要给空列表加「保留上一次的权益」之类的兜底，那会让界面
-            // 继续显示一份已经不成立的权益。
-            account.entitlements = Some(vip.entitlements);
-
-            let now = account::now_ts();
-            account.last_refresh_at = Some(now);
-            account.last_success_at = Some(now);
-            // 与 runtime.rs 的刷新路径同规则：成功时 code 必须跟着 message 一起清，
-            // 否则界面会把上一次失败的 code 翻译成一条已经不成立的错误标签。
-            account.last_error = None;
-            account.last_error_code = None;
-            // 账号状态只由**登录态**决定，与 runtime.rs 同一约定：能走到这里就说明
-            // 刷新成功了。权益在不在期由 `entitlements` 表达。
-            account.status = AccountStatus::Active;
-            account.updated_at = now;
-            self.account_repo.upsert(&account).await?;
-            Ok(now)
-        }
-        .await;
-
-        let now = match result {
-            Ok(now) => now,
-            Err(err) => {
-                let now = account::now_ts();
-                account.status = AccountStatus::LoginFailed;
-                // 与 runtime.rs 同一约定：code 供界面查中文，message 只留原文，
-                // 不再带 `"CODE: "` 前缀。
-                account.last_error_code = Some(err.code.as_str().to_string());
-                account.last_error = Some(err.message.clone());
-                account.updated_at = now;
-                let _ = self.account_repo.upsert(&account).await;
-                return Err(err);
-            }
-        };
-
+        let context =
+            EventContext::new(EventTrigger::Admin, Some(account.account_id.clone()), None);
+        let account = auth.refresh_manual(account, context).await?;
         Ok(RefreshResponse {
             ok: true,
-            source_id: source_id.into(),
-            updated_at: now,
+            source_id: None,
+            updated_at: account.last_refresh_at.unwrap_or(account.updated_at),
         })
+    }
+
+    pub async fn sync_entitlements(
+        &self,
+        service: &Arc<EntitlementService>,
+        account_id: String,
+    ) -> Result<i64, AppError> {
+        let context = EventContext::new(EventTrigger::Admin, Some(account_id.clone()), None);
+        service.sync(account_id, context).await
     }
 
     pub async fn list_source_logs(
         &self,
         source_id: &str,
         limit: usize,
-        view: RuntimeLogView,
+        view: LogView,
+        event_type: Option<EventType>,
     ) -> Result<SourceLogsResponse, AppError> {
-        self.source_repo
+        let source = self
+            .source_repo
             .find_by_id(source_id)
             .await?
             .ok_or_else(AppError::source_not_found)?;
-
-        let query = ListRuntimeLogsQuery {
+        let query = ListEvents {
             source_id: source_id.into(),
+            account_id: source.account_id,
             limit,
             view,
+            event_type,
         };
-        let items = self.log_repo.list_by_source(&query).await?;
-
+        let items = self.log_repo.list(&query).await?;
         Ok(SourceLogsResponse {
             source_id: source_id.into(),
-            view: query.view,
-            limit: query.limit,
-            items: items.into_iter().map(RuntimeLog::sanitized).collect(),
+            view,
+            limit,
+            event_type,
+            items,
         })
     }
 }
@@ -445,15 +402,15 @@ impl SourceService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::account::{AccountStatus, ProviderAccount};
+    use crate::domain::entitlement::VipEntitlement;
 
     use std::sync::Mutex;
 
     use async_trait::async_trait;
 
-    use crate::domain::account::ProviderAccount;
     use crate::domain::cookie_store::CookieStore;
     use crate::domain::provider::ProviderKind;
-    use crate::domain::runtime_log::ListRuntimeLogsQuery;
     use crate::domain::source::Source;
 
     // ---- 测试替身 ----
@@ -504,9 +461,24 @@ mod tests {
             Ok(None)
         }
 
-        async fn upsert(&self, source: &Source) -> Result<(), AppError> {
-            self.upserts.lock().unwrap().push(source.clone());
-            Ok(())
+        async fn update_settings(
+            &self,
+            _source_id: &str,
+            name: Option<String>,
+            quality_fallback: Option<bool>,
+            updated_at: i64,
+        ) -> Result<Source, AppError> {
+            let mut writes = self.upserts.lock().unwrap();
+            let mut source = writes.last().or(self.source.as_ref()).unwrap().clone();
+            if let Some(name) = name {
+                source.name = name;
+            }
+            if let Some(quality_fallback) = quality_fallback {
+                source.quality_fallback = quality_fallback;
+            }
+            source.updated_at = updated_at;
+            writes.push(source.clone());
+            Ok(source)
         }
 
         async fn list_all(&self) -> Result<Vec<Source>, AppError> {
@@ -532,8 +504,40 @@ mod tests {
             Ok(None)
         }
 
-        async fn upsert(&self, _account: &ProviderAccount) -> Result<(), AppError> {
-            Ok(())
+        async fn save_auth(
+            &self,
+            _previous: &ProviderAccount,
+            _updated: &ProviderAccount,
+        ) -> Result<ProviderAccount, AppError> {
+            unreachable!("test did not expect authentication");
+        }
+
+        async fn merge_cookies(
+            &self,
+            request: &ProviderAccount,
+            _response: &crate::domain::cookie_store::CookieStore,
+        ) -> Result<ProviderAccount, AppError> {
+            Ok(request.clone())
+        }
+    }
+
+    struct FakeSnapshot(EntitlementSnapshot);
+
+    #[async_trait]
+    impl EntitlementRepo for FakeSnapshot {
+        async fn entitlement_snapshot(
+            &self,
+            _account_id: &str,
+        ) -> Result<EntitlementSnapshot, AppError> {
+            Ok(self.0.clone())
+        }
+
+        async fn record_sync(
+            &self,
+            _account_id: &str,
+            _snapshot: Option<(Vec<VipEntitlement>, i64)>,
+        ) -> Result<(), AppError> {
+            unreachable!("test did not expect an entitlement sync");
         }
     }
 
@@ -542,15 +546,12 @@ mod tests {
     struct EmptyLogRepo;
 
     #[async_trait]
-    impl RuntimeLogRepo for EmptyLogRepo {
-        async fn append(&self, _log: &RuntimeLog) -> Result<(), AppError> {
+    impl EventLogRepo for EmptyLogRepo {
+        async fn append(&self, _log: &EventLog) -> Result<(), AppError> {
             Ok(())
         }
 
-        async fn list_by_source(
-            &self,
-            _query: &ListRuntimeLogsQuery,
-        ) -> Result<Vec<RuntimeLog>, AppError> {
+        async fn list(&self, _query: &ListEvents) -> Result<Vec<EventLog>, AppError> {
             Ok(Vec::new())
         }
     }
@@ -566,6 +567,7 @@ mod tests {
             data_dir: "./data".into(),
             upstream_timeout_ms: 1_000,
             account_refresh_ttl: 6 * 3600,
+            event_log_limit: crate::config::DEFAULT_EVENT_LOG_LIMIT,
             web_dist_dir: None,
         })
     }
@@ -599,10 +601,9 @@ mod tests {
             upstream_userid: TEST_USERID.into(),
             display_name: None,
             status: AccountStatus::Active,
-            entitlements: Some(Vec::new()),
             cookies: CookieStore::new(),
             last_refresh_at: None,
-            last_success_at: None,
+            credential_version: 0,
             last_error: None,
             last_error_code: None,
             created_at: 0,
@@ -611,23 +612,27 @@ mod tests {
     }
 
     fn build_service(source: Source) -> (SourceService, Arc<RecordingSourceRepo>) {
-        build_service_with_account(source, sample_account())
+        build_service_with_snapshot(source, EntitlementSnapshot::default())
     }
 
     /// 同上，但账号由调用方给出：权益明细的曝光测试需要账号真的带着权益。
-    fn build_service_with_account(
+    fn build_service_with_snapshot(
         source: Source,
-        account: ProviderAccount,
+        snapshot: EntitlementSnapshot,
     ) -> (SourceService, Arc<RecordingSourceRepo>) {
         let config = test_config();
-        let client = Arc::new(KugouLiteClient::new(&config));
         let source_repo = Arc::new(RecordingSourceRepo::new(source));
         let account_repo: Arc<dyn AccountRepo> = Arc::new(FakeAccountRepo {
-            account: Some(account),
+            account: Some(sample_account()),
         });
-        let log_repo: Arc<dyn RuntimeLogRepo> = Arc::new(EmptyLogRepo);
-        let service =
-            SourceService::new(config, client, account_repo, source_repo.clone(), log_repo);
+        let log_repo: Arc<dyn EventLogRepo> = Arc::new(EmptyLogRepo);
+        let service = SourceService::new(
+            config,
+            Arc::new(FakeSnapshot(snapshot)),
+            account_repo,
+            source_repo.clone(),
+            log_repo,
+        );
         (service, source_repo)
     }
 
@@ -802,8 +807,8 @@ mod tests {
     /// 同一个账号给出不同的答案，而没有任何一层会报错。
     #[tokio::test]
     async fn entitlements_are_exposed_in_both_the_list_and_the_detail() {
-        let account = ProviderAccount {
-            entitlements: Some(vec![
+        let snapshot = EntitlementSnapshot {
+            items: Some(vec![
                 VipEntitlement {
                     product_type: "svip".into(),
                     active: true,
@@ -817,9 +822,9 @@ mod tests {
                     end_at: None,
                 },
             ]),
-            ..sample_account()
+            ..EntitlementSnapshot::default()
         };
-        let (service, _repo) = build_service_with_account(sample_source(), account);
+        let (service, _repo) = build_service_with_snapshot(sample_source(), snapshot);
 
         // 「上游没说」的时间必须是 `null` 而不是 0（那是 1970 年）；这条由下面的
         // 整体相等断言一并钉住。

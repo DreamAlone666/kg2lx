@@ -3,7 +3,7 @@ use std::fmt;
 
 use serde::Deserialize;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CookieStore {
     pub items: BTreeMap<String, String>,
 }

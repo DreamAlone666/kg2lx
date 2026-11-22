@@ -1448,8 +1448,14 @@ mod tests {
             Ok(None)
         }
 
-        async fn upsert(&self, _source: &Source) -> Result<(), AppError> {
-            Ok(())
+        async fn update_settings(
+            &self,
+            _source_id: &str,
+            _name: Option<String>,
+            _quality_fallback: Option<bool>,
+            _updated_at: i64,
+        ) -> Result<Source, AppError> {
+            unreachable!("test did not update the source")
         }
 
         async fn list_all(&self) -> Result<Vec<Source>, AppError> {
@@ -1475,8 +1481,20 @@ mod tests {
             Ok(None)
         }
 
-        async fn upsert(&self, _account: &ProviderAccount) -> Result<(), AppError> {
-            Ok(())
+        async fn save_auth(
+            &self,
+            _previous: &ProviderAccount,
+            _updated: &ProviderAccount,
+        ) -> Result<ProviderAccount, AppError> {
+            unreachable!("test did not expect authentication");
+        }
+
+        async fn merge_cookies(
+            &self,
+            request: &ProviderAccount,
+            _response: &crate::domain::cookie_store::CookieStore,
+        ) -> Result<ProviderAccount, AppError> {
+            Ok(request.clone())
         }
     }
 
@@ -1489,6 +1507,7 @@ mod tests {
             data_dir: "./data".into(),
             upstream_timeout_ms: 1_000,
             account_refresh_ttl: 6 * 3600,
+            event_log_limit: crate::config::DEFAULT_EVENT_LOG_LIMIT,
             web_dist_dir,
         })
     }

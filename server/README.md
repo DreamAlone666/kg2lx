@@ -26,6 +26,7 @@
 - `DATA_DIR`：数据存储目录，默认值为 `./data`。
 - `UPSTREAM_TIMEOUT_MS`：请求上游 API 的超时时间（毫秒），默认值为 `10000`。
 - `ACCOUNT_REFRESH_TTL`：账号登录态的保鲜阈值（秒），默认值为 `21600`。**它不是刷新周期：只在收到取链请求时才判断是否需要刷新登录，服务内没有定时任务，没有取链流量就不会打扰上游。** 旧名 `REFRESH_INTERVAL_SECS` 仍可读取，但会打一条弃用提示。
+- `EVENT_LOG_LIMIT`：数据库保留的最新事件数，默认 `10000`，可设为 1–100,000。
 - `WEB_DIST_DIR`：可选，管理后台前端构建产物目录。配置后，服务端将同时提供 API 和前端静态文件服务，未匹配到 API 路由的请求将回退到 `index.html`（SPA 模式）。未配置时仅提供 API 服务。配置后目录不存在将在启动时直接报错退出。
 
 **启动示例：**
@@ -86,13 +87,12 @@ curl \
   http://127.0.0.1:8787/api/v1/admin/sources/<source_id>
 ```
 
-**5. 强制刷新音源及账号状态**
+**5. 刷新登录与同步权益**
 
-```bash
-curl -X POST \
-  -H "Authorization: Bearer change-me" \
-  http://127.0.0.1:8787/api/v1/admin/sources/<source_id>/refresh
-```
+- **刷新 Token**。发送 `POST /api/v1/admin/accounts/{account_id}/refresh-token` 更新登录凭据。
+- **同步权益**。发送 `POST /api/v1/admin/accounts/{account_id}/entitlements/sync` 读取上游快照，失败时保留上次成功记录。
+- **旧刷新地址**。`POST /api/v1/admin/sources/{source_id}/refresh` 保留原回执，刷新 Token 成功后在后台同步权益。
+- **事件日志**。`GET /api/v1/admin/sources/{source_id}/logs` 支持 `event_type`（`music_url`、`token_refresh`、`account_login`、`entitlement`）和 `view`（`all`、`errors`）。
 
 ## 洛雪运行流程 (LX Runtime Flow)
 

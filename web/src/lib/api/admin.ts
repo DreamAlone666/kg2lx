@@ -4,9 +4,11 @@ import type {
   SourceDetail,
   QrLoginStartResponse,
   QrLoginPollResponse,
-  RefreshSourceResponse,
+  RefreshTokenResponse,
+  SyncEntitlementsResponse,
   SourceLogsResponse,
-  RuntimeLogView,
+  EventType,
+  LogView,
   UpdateSourceResponse,
 } from './types';
 
@@ -55,12 +57,13 @@ export class AdminApi {
 
   async listSourceLogs(
     sourceId: string,
-    query?: { limit?: number; view?: RuntimeLogView },
+    query?: { limit?: number; view?: LogView; eventType?: EventType },
     signal?: AbortSignal,
   ): Promise<SourceLogsResponse> {
     const params = new URLSearchParams();
     if (query?.limit) params.set('limit', query.limit.toString());
     if (query?.view) params.set('view', query.view);
+    if (query?.eventType) params.set('event_type', query.eventType);
     const queryString = params.toString();
     return this.http.get(`/api/v1/admin/sources/${sourceId}/logs${queryString ? `?${queryString}` : ''}`, { signal });
   }
@@ -73,7 +76,11 @@ export class AdminApi {
     return this.http.get(`/api/v1/admin/providers/kugou-lite/login/qr/${sessionId}`, { signal });
   }
 
-  async refreshSource(sourceId: string, signal?: AbortSignal): Promise<RefreshSourceResponse> {
-    return this.http.post(`/api/v1/admin/sources/${sourceId}/refresh`, null, { signal });
+  async refreshToken(accountId: string): Promise<RefreshTokenResponse> {
+    return this.http.post(`/api/v1/admin/accounts/${accountId}/refresh-token`, null);
+  }
+
+  async syncEntitlements(accountId: string): Promise<SyncEntitlementsResponse> {
+    return this.http.post(`/api/v1/admin/accounts/${accountId}/entitlements/sync`, null);
   }
 }

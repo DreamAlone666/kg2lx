@@ -3,7 +3,7 @@ import type {
 	AccountStatus,
 	LoginSessionStatus,
 	ProviderKind,
-	RuntimeLogListItem,
+	MusicUrlEvent,
 } from '$lib/api/types';
 
 /**
@@ -23,7 +23,6 @@ export const providerLabel: Record<ProviderKind, string> = {
 export const accountStatusLabel: Record<AccountStatus, string> = {
 	active: '正常',
 	pending: '待处理',
-	expired: '已过期',
 	disabled: '已禁用',
 	login_failed: '登录失败',
 };
@@ -38,10 +37,8 @@ export const sessionStatusLabel: Record<LoginSessionStatus, string> = {
 	failed: '失败',
 };
 
-export const runtimeStageLabel: Record<RuntimeLogListItem['stage'], string> = {
+export const runtimeStageLabel: Record<MusicUrlEvent['stage'], string> = {
 	precheck: '预检',
-	ensure_dfid: 'DFID',
-	refresh_login: '刷新登录',
 	fetch_music_url: '取链',
 };
 

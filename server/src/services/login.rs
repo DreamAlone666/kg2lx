@@ -1,15 +1,20 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::config::Config;
 use crate::domain::account::{self, AccountStatus, ProviderAccount};
+use crate::domain::event_log::{Event, EventContext, EventLog, EventTrigger, LoginOutcome};
 use crate::domain::login_session::{self, LoginSession, LoginSessionStatus};
 use crate::domain::provider::ProviderKind;
 use crate::domain::source;
 use crate::error::AppError;
 use crate::repos::account::AccountRepo;
+use crate::repos::event_log::{self, EventLogRepo};
 use crate::repos::login_session::LoginSessionRepo;
 use crate::repos::source::SourceRepo;
+use crate::services::auth::AccountAuth;
 use crate::services::kugou_lite_client::KugouLiteClient;
+use crate::services::singleflight::KeyedLocks;
 
 #[derive(serde::Serialize)]
 pub struct QrLoginStartResponse {
@@ -51,6 +56,9 @@ pub struct SourceInfo {
 pub struct LoginService {
     config: Arc<Config>,
     client: Arc<KugouLiteClient>,
+    auth: Arc<AccountAuth>,
+    logs: Arc<dyn EventLogRepo>,
+    session_locks: KeyedLocks,
     session_repo: Arc<dyn LoginSessionRepo>,
     account_repo: Arc<dyn AccountRepo>,
     source_repo: Arc<dyn SourceRepo>,
@@ -60,6 +68,8 @@ impl LoginService {
     pub fn new(
         config: Arc<Config>,
         client: Arc<KugouLiteClient>,
+        auth: Arc<AccountAuth>,
+        logs: Arc<dyn EventLogRepo>,
         session_repo: Arc<dyn LoginSessionRepo>,
         account_repo: Arc<dyn AccountRepo>,
         source_repo: Arc<dyn SourceRepo>,
@@ -67,6 +77,9 @@ impl LoginService {
         Self {
             config,
             client,
+            auth,
+            logs,
+            session_locks: KeyedLocks::default(),
             session_repo,
             account_repo,
             source_repo,
@@ -95,7 +108,8 @@ impl LoginService {
 
         self.session_repo.save(&session).await?;
 
-        let key = self.client.request_qr_key(&session.temp_cookies).await?;
+        let key = self.client.request_qr_key(&session.temp_cookies).await;
+        let key = self.record_qr_transport_result(key).await?;
         session.qr_key = key.qr_key;
         session.temp_cookies = key.cookies;
         session.updated_at = login_session::now_ts();
@@ -104,7 +118,8 @@ impl LoginService {
         let qr = self
             .client
             .create_qr_code(&session.qr_key, &session.temp_cookies)
-            .await?;
+            .await;
+        let qr = self.record_qr_transport_result(qr).await?;
         session.qr_url = qr.qr_url.clone();
         session.qr_base64 = qr.qr_base64.clone();
         session.temp_cookies = qr.cookies;
@@ -125,6 +140,7 @@ impl LoginService {
         &self,
         session_id: &str,
     ) -> Result<QrLoginPollResponse, AppError> {
+        let _guard = self.session_locks.lock(session_id).await;
         let mut session = self
             .session_repo
             .find_by_id(session_id)
@@ -136,184 +152,222 @@ impl LoginService {
         }
 
         let now = login_session::now_ts();
-        if now >= session.expires_at {
-            session.status = LoginSessionStatus::Expired;
-            session.updated_at = now;
-            self.session_repo.save(&session).await?;
+        if session.status == LoginSessionStatus::Expired {
             return Ok(Self::state_response(session_id, "expired"));
+        }
+        if now >= session.expires_at {
+            return self.expire(&mut session).await;
+        }
+        if session.status == LoginSessionStatus::Authorized {
+            return self.finish_binding(&mut session).await;
         }
 
         let poll = self
             .client
             .poll_qr_login(&session.qr_key, &session.temp_cookies)
-            .await?;
+            .await;
+        let poll = self.record_qr_transport_result(poll).await?;
         session.temp_cookies = poll.cookies;
         session.updated_at = now;
-        self.session_repo.save(&session).await?;
 
         match poll.status_code {
-            0 => {
-                session.status = LoginSessionStatus::Expired;
-                session.updated_at = now;
+            0 => return self.expire(&mut session).await,
+            1 | 2 => {
+                let (status, label) = if poll.status_code == 1 {
+                    (LoginSessionStatus::WaitingScan, "waiting_scan")
+                } else {
+                    (LoginSessionStatus::WaitingConfirm, "waiting_confirm")
+                };
+                session.status = status;
                 self.session_repo.save(&session).await?;
-                return Ok(Self::state_response(session_id, "expired"));
+                return Ok(Self::state_response(session_id, label));
             }
-            2 => {
-                session.status = LoginSessionStatus::WaitingConfirm;
-                session.updated_at = now;
+            4 => {
+                session.status = LoginSessionStatus::Authorized;
                 self.session_repo.save(&session).await?;
-                return Ok(Self::state_response(session_id, "waiting_confirm"));
             }
-            1 => {
-                session.updated_at = now;
-                self.session_repo.save(&session).await?;
-                return Ok(Self::state_response(session_id, "waiting_scan"));
-            }
-            4 => {}
             _ => {
                 session.status = LoginSessionStatus::Failed;
                 session.error = poll.message.clone();
-                session.updated_at = now;
                 self.session_repo.save(&session).await?;
-                return Err(AppError::upstream_login_failed(
+                let error = AppError::upstream_login_failed(
                     poll.message
                         .unwrap_or_else(|| "unknown qr check error".into()),
-                ));
+                );
+                self.log_login(
+                    EventContext::new(EventTrigger::Qr, None, None),
+                    LoginOutcome::Failed,
+                    None,
+                    Some(&error),
+                )
+                .await;
+                return Err(error);
             }
         }
 
-        session.status = LoginSessionStatus::Authorized;
-        session.updated_at = now;
-        self.session_repo.save(&session).await?;
+        self.finish_binding(&mut session).await
+    }
 
-        let refresh = self.client.refresh_login(&session.temp_cookies).await?;
-        session.temp_cookies = refresh.cookies;
-        session.updated_at = login_session::now_ts();
-        self.session_repo.save(&session).await?;
-
-        if session.temp_cookies.is_empty("dfid") {
-            let with_dfid = self.client.ensure_dfid(&session.temp_cookies).await?;
-            session.temp_cookies = with_dfid;
-            session.updated_at = login_session::now_ts();
-            self.session_repo.save(&session).await?;
-        }
-
-        let vip = self.client.fetch_vip_status(&session.temp_cookies).await?;
-        session.temp_cookies = vip.cookies.clone();
-        session.updated_at = login_session::now_ts();
-        self.session_repo.save(&session).await?;
-
-        // 这里曾是「没有 VIP 权益就拒绝绑定」的闸，连同它写下的英文
-        // `VIP not active for concept membership` 一起删除了：**登录态与权益是
-        // 两件事**，扫码授权成功就意味着这个账号可用，而权益只决定能取到哪一档
-        // 音质（免费歌曲与部分高音质歌没有会员照样能取链）。旧闸把账号挡在绑定
-        // 之外，用户拿着一个完全可用的账号却连音源都建不出来。
-        // 权益明细照常随账号落盘（`entitlements`），后台据此展示。
-
-        let userid = session
+    async fn finish_binding(
+        &self,
+        session: &mut LoginSession,
+    ) -> Result<QrLoginPollResponse, AppError> {
+        let started = Instant::now();
+        let userid = match session
             .temp_cookies
             .get("userid")
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| {
-                AppError::upstream_login_failed("missing userid after qr authorization")
-            })?
-            .to_string();
-
+            .filter(|id| !id.is_empty() && *id != "0")
+        {
+            Some(id) => id.to_owned(),
+            None => {
+                let error =
+                    AppError::upstream_login_failed("missing userid after qr authorization");
+                self.log_login(
+                    EventContext::new(EventTrigger::Qr, None, None),
+                    LoginOutcome::Failed,
+                    None,
+                    Some(&error),
+                )
+                .await;
+                return Err(error);
+            }
+        };
+        let _identity = self.auth.identities.lock(&userid).await;
         let existing = self
             .account_repo
             .find_by_provider_userid(ProviderKind::KugouLite, &userid)
             .await?;
-
-        let now2 = account::now_ts();
-        let account = match existing {
-            Some(mut acc) => {
-                acc.cookies = session.temp_cookies.clone();
-                acc.status = AccountStatus::Active;
-                // 重新扫码成功即整体覆盖权益明细，包括空的（「这个账号现在一条权益
-                // 都没有」是刚查到的事实，不该保留上一次的条目）。
-                acc.entitlements = Some(vip.entitlements);
-                acc.last_refresh_at = Some(now2);
-                acc.last_success_at = Some(now2);
-                // 重新登录成功即视为错误已消失：code 与 message 一起清，避免界面
-                // 拿旧的 code 继续显示一条已经不成立的错误标签。
-                acc.last_error = None;
-                acc.last_error_code = None;
-                acc.updated_at = now2;
-                self.account_repo.upsert(&acc).await?;
-                acc
-            }
-            None => {
-                let account_id = format!("acc_{}", uuid::Uuid::new_v4());
-                let acc = ProviderAccount {
-                    account_id: account_id.clone(),
-                    provider: ProviderKind::KugouLite,
-                    upstream_userid: userid.clone(),
-                    display_name: None,
-                    status: AccountStatus::Active,
-                    entitlements: Some(vip.entitlements),
-                    cookies: session.temp_cookies.clone(),
-                    last_refresh_at: Some(now2),
-                    last_success_at: Some(now2),
-                    last_error: None,
-                    last_error_code: None,
-                    created_at: now2,
-                    updated_at: now2,
-                };
-                self.account_repo.upsert(&acc).await?;
-                acc
-            }
+        let account_id = existing.as_ref().map_or_else(
+            || format!("acc_{}", uuid::Uuid::new_v4()),
+            |account| account.account_id.clone(),
+        );
+        let rebind = existing.is_some();
+        let existing_source = if rebind {
+            self.source_repo.find_by_account_id(&account_id).await?
+        } else {
+            None
         };
-
-        let existing_source = self
-            .source_repo
-            .find_by_account_id(&account.account_id)
-            .await?;
-
-        let src = match existing_source {
-            Some(s) => s,
-            None => {
-                let source_id = format!("src_{}", uuid::Uuid::new_v4());
-                let script_token = format!("st_{}", uuid::Uuid::new_v4());
-                let runtime_token = format!("rt_{}", uuid::Uuid::new_v4());
-                let name = source::default_name(&userid);
-                let now3 = source::now_ts();
-                let s = source::Source {
-                    source_id,
-                    account_id: account.account_id.clone(),
-                    provider: ProviderKind::KugouLite,
-                    name,
-                    script_token,
-                    runtime_token,
-                    created_at: now3,
-                    updated_at: now3,
-                    // 新建音源按保守默认：不自动降级，行为与本次改动之前一致，由用户显式打开。
-                    quality_fallback: false,
-                };
-                self.source_repo.upsert(&s).await?;
-                s
+        let context = EventContext::new(EventTrigger::Qr, Some(account_id.clone()), None);
+        let result = async {
+            let mut cookies = session.temp_cookies.clone();
+            if let Err(error) = self
+                .auth
+                .authenticate_qr(&mut cookies, context.clone())
+                .await
+            {
+                if cookies != session.temp_cookies {
+                    session.temp_cookies = cookies;
+                    self.session_repo.save(session).await?;
+                }
+                return Err(error);
             }
+            if cookies.get("userid") != Some(userid.as_str()) {
+                return Err(AppError::upstream_login_failed(
+                    "refreshed userid differs from QR authorization",
+                ));
+            }
+            let now = account::now_ts();
+            let mut account = existing.unwrap_or_else(|| ProviderAccount {
+                account_id: account_id.clone(),
+                provider: ProviderKind::KugouLite,
+                upstream_userid: userid.clone(),
+                display_name: None,
+                status: AccountStatus::Active,
+                cookies: crate::domain::cookie_store::CookieStore::new(),
+                credential_version: 0,
+                last_refresh_at: None,
+                last_error: None,
+                last_error_code: None,
+                created_at: now,
+                updated_at: now,
+            });
+            account.cookies = cookies;
+            account.last_refresh_at = Some(now);
+            account.updated_at = now;
+
+            let mut bound = session.clone();
+            bound.status = LoginSessionStatus::Bound;
+            bound.bound_account_id = Some(account_id.clone());
+            bound.updated_at = now;
+            bound.temp_cookies = crate::domain::cookie_store::CookieStore::new();
+            let new_source = existing_source.is_none().then(|| source::Source {
+                source_id: format!("src_{}", uuid::Uuid::new_v4()),
+                account_id: account_id.clone(),
+                provider: ProviderKind::KugouLite,
+                name: source::default_name(&userid),
+                script_token: format!("st_{}", uuid::Uuid::new_v4()),
+                runtime_token: format!("rt_{}", uuid::Uuid::new_v4()),
+                created_at: now,
+                updated_at: now,
+                quality_fallback: false,
+            });
+            self.session_repo
+                .bind(&bound, &account, new_source.as_ref())
+                .await?;
+            *session = bound;
+            self.build_bound_response(session).await
+        }
+        .await;
+        let outcome = match (&result, rebind) {
+            (Ok(_), true) => LoginOutcome::Rebound,
+            (Ok(_), false) => LoginOutcome::Bound,
+            (Err(_), _) => LoginOutcome::Failed,
         };
+        self.log_login(
+            context,
+            outcome,
+            Some(started.elapsed().as_millis() as u64),
+            result.as_ref().err(),
+        )
+        .await;
+        result
+    }
 
-        session.status = LoginSessionStatus::Bound;
-        session.bound_account_id = Some(account.account_id.clone());
-        session.updated_at = now2;
-        self.session_repo.save(&session).await?;
+    async fn expire(&self, session: &mut LoginSession) -> Result<QrLoginPollResponse, AppError> {
+        session.status = LoginSessionStatus::Expired;
+        session.updated_at = login_session::now_ts();
+        self.session_repo.save(session).await?;
+        self.log_login(
+            EventContext::new(EventTrigger::Qr, None, None),
+            LoginOutcome::Expired,
+            None,
+            None,
+        )
+        .await;
+        Ok(Self::state_response(&session.session_id, "expired"))
+    }
 
-        let script_url = format!("{}/s/{}.js", self.config.public_base_url, src.script_token);
+    async fn record_qr_transport_result<T>(
+        &self,
+        result: Result<T, AppError>,
+    ) -> Result<T, AppError> {
+        if let Err(error) = &result {
+            self.log_login(
+                EventContext::new(EventTrigger::Qr, None, None),
+                LoginOutcome::Failed,
+                None,
+                Some(error),
+            )
+            .await;
+        }
+        result
+    }
 
-        Ok(QrLoginPollResponse {
-            session_id: session_id.into(),
-            status: "bound".into(),
-            account: Some(AccountInfo {
-                account_id: account.account_id,
-                userid,
-            }),
-            source: Some(SourceInfo {
-                source_id: src.source_id,
-                name: src.name,
-                script_url,
-            }),
-        })
+    async fn log_login(
+        &self,
+        context: EventContext,
+        outcome: LoginOutcome,
+        latency_ms: Option<u64>,
+        error: Option<&AppError>,
+    ) {
+        let mut event = EventLog::new(
+            context,
+            Event::AccountLogin { outcome },
+            latency_ms,
+            error.map(|error| error.code),
+        );
+        event.ok = matches!(outcome, LoginOutcome::Bound | LoginOutcome::Rebound);
+        event_log::record(self.logs.as_ref(), event).await;
     }
 
     async fn build_bound_response(

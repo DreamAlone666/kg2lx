@@ -6,9 +6,10 @@ use rusqlite::Transaction;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
-use super::{write_account, write_source};
-use crate::domain::account::{AccountStatus, ProviderAccount, VipEntitlement};
+use super::{encode, write_account, write_source};
+use crate::domain::account::{AccountStatus, ProviderAccount};
 use crate::domain::cookie_store::CookieStore;
+use crate::domain::entitlement::VipEntitlement;
 use crate::domain::provider::ProviderKind;
 use crate::domain::source::Source;
 use crate::error::AppError;
@@ -57,13 +58,12 @@ impl LegacyAccount {
             display_name: self.display_name,
             status,
             cookies: self.cookies,
-            last_refresh_at: self.last_refresh_at,
-            last_success_at: self.last_success_at,
+            credential_version: 0,
+            last_refresh_at: self.last_refresh_at.or(self.last_success_at),
             last_error: self.last_error,
             last_error_code: self.last_error_code,
             created_at: self.created_at,
             updated_at: self.updated_at,
-            entitlements: self.entitlements,
         })
     }
 }
@@ -104,12 +104,22 @@ impl LegacySource {
 
 pub(super) fn import(tx: &Transaction<'_>, data_dir: &Path) -> Result<(), AppError> {
     for path in json_files(&data_dir.join("accounts"))? {
-        let account = read_file::<LegacyAccount>(&path)?.into_account(&path)?;
-        write_account(tx, &account, false).map_err(|error| import_error(&path, error))?;
+        let mut legacy = read_file::<LegacyAccount>(&path)?;
+        let items = legacy.entitlements.take();
+        let account = legacy.into_account(&path)?;
+        write_account(tx, &account).map_err(|error| import_error(&path, error))?;
+        if let Some(items) = items {
+            (|| {
+                tx.execute(
+                    "INSERT INTO account_entitlements (account_id, items_json, sync_failed) VALUES (?1, ?2, 0)",
+                    rusqlite::params![account.account_id, encode(&items)?],
+                )
+            })().map_err(|error| import_error(&path, error))?;
+        }
     }
     for path in json_files(&data_dir.join("sources"))? {
         let source = read_file::<LegacySource>(&path)?.into_source(&path)?;
-        write_source(tx, &source, false).map_err(|error| import_error(&path, error))?;
+        write_source(tx, &source).map_err(|error| import_error(&path, error))?;
     }
     Ok(())
 }
@@ -164,6 +174,7 @@ fn import_error(path: &Path, error: impl std::fmt::Display) -> AppError {
 mod tests {
     use super::*;
     use crate::repos::account::AccountRepo;
+    use crate::repos::entitlement::EntitlementRepo;
     use crate::repos::source::SourceRepo;
     use crate::repos::sqlite::{DATABASE_FILE, Sqlite, open_database};
     use serde_json::{Value, json};
@@ -237,7 +248,7 @@ mod tests {
         write(dir, "logs/runtime-test.jsonl", json!({"legacy": true}));
         let before = fs::read(dir.join("accounts/acc_old.json")).unwrap();
 
-        let db = Sqlite::open(dir).unwrap();
+        let db = Sqlite::open(dir, crate::config::DEFAULT_EVENT_LOG_LIMIT).unwrap();
         let old = AccountRepo::find_by_id(&db, "acc_old")
             .await
             .unwrap()
@@ -246,7 +257,13 @@ mod tests {
         assert_eq!(old.cookies.get("token"), Some("test-cookie"));
         assert_eq!(old.cookies.get("dfid"), Some("test-device"));
         assert_eq!(old.last_refresh_at, Some(100));
-        assert!(old.entitlements.is_none());
+        assert!(
+            db.entitlement_snapshot("acc_old")
+                .await
+                .unwrap()
+                .items
+                .is_none()
+        );
         let old_source = db.find_by_runtime_token("rt_old").await.unwrap().unwrap();
         assert_eq!(old_source.source_id, "src_old");
         assert_eq!(old_source.account_id, "acc_old");
@@ -261,7 +278,12 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(known.status, AccountStatus::Disabled);
-        let items = known.entitlements.unwrap();
+        let items = db
+            .entitlement_snapshot("acc_known")
+            .await
+            .unwrap()
+            .items
+            .unwrap();
         assert_eq!(
             (
                 items[0].product_type.as_str(),
@@ -283,7 +305,14 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(empty.status, AccountStatus::Pending);
-        assert!(empty.entitlements.unwrap().is_empty());
+        assert!(
+            db.entitlement_snapshot("acc_empty")
+                .await
+                .unwrap()
+                .items
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(fs::read(dir.join("accounts/acc_old.json")).unwrap(), before);
 
         // A stale legacy directory remains available for rollback. SQLite is now authoritative.

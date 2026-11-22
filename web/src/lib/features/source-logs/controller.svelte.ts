@@ -1,7 +1,7 @@
 import { adminSession, handleAuthError } from '../../state/admin-session.svelte';
 import { createVisibilityAwareTimer } from '../../utils/polling';
 import { describeApiError } from '../../domain';
-import type { RuntimeLogListItem, RuntimeLogView } from '../../api/types';
+import type { EventType, SourceEvent, LogView } from '../../api/types';
 
 /** 轮询间隔。取链是低频事件，5 秒足够及时且不会打扰后端。 */
 const POLL_INTERVAL_MS = 5000;
@@ -19,8 +19,9 @@ const NEW_ROW_MARK_MS = 1000;
  * 避免用户在后台空转请求、切回来又先看到过期数据。
  */
 class SourceLogsController {
-	logs = $state<RuntimeLogListItem[]>([]);
-	view = $state<RuntimeLogView>('all');
+	logs = $state<SourceEvent[]>([]);
+	view = $state<LogView>('all');
+	eventType = $state<EventType | undefined>(undefined);
 	loading = $state(false);
 	error = $state<string | null>(null);
 	/** 本次拉取中新出现的 log_id。仅用于让新行播放进入动画，旧行不重播。 */
@@ -75,7 +76,8 @@ class SourceLogsController {
 		try {
 			const res = await adminSession.api.listSourceLogs(sourceId, {
 				limit: 20,
-				view: this.view
+				view: this.view,
+				eventType: this.eventType
 			});
 			if (requestId !== this.requestId || this.currentSourceId !== sourceId) return;
 
@@ -91,20 +93,9 @@ class SourceLogsController {
 			this.error = describeApiError(e);
 		} finally {
 			this.pending.delete(requestId);
-			// 清 loading 刻意**不**再要求 `requestId === this.requestId`。
-			//
-			// 那条件曾让 loading 永久卡死，已实测复现：手动「刷新」发出的是非静默请求，
-			// 只要它还没回来时轮询 tick（或一次视图切换）插进来，requestId 就被顶掉；
-			// 此后该请求的 finally 因条件不成立而跳过，而插进来的那一个是静默的、
-			// 根本不动 loading——结果是徽章永远停在「刷新中」，刷新按钮永远 disabled，
-			// 且界面上没有任何路径能恢复（只能离开页面）。实测点击刷新后 18s、请求延迟
-			// 只有 8s，状态仍是 badge=刷新中 / disabled=true。
-			//
-			// loading 的语义是「用户看得见的加载中」，它只由非静默请求拥有，所以也只该
-			// 由非静默请求来清——与它是否最新无关。同一时刻不会有两个非静默请求重叠：
-			// 设置 loading 后刷新按钮立即 disabled（Double click 分属两个任务，中间微任务
-			// 队列已刷新，第二次不会触发）。
-			if (!silent) this.loading = false;
+			// Filter changes can replace a visible load. Only its latest request may clear loading.
+			// Polling skips pending requests, so a silent response cannot supersede a visible load.
+			if (!silent && requestId === this.requestId) this.loading = false;
 		}
 	}
 
@@ -136,11 +127,14 @@ class SourceLogsController {
 		this.loading = false;
 	}
 
-	setView(view: RuntimeLogView) {
-		if (this.view === view) return;
+	setFilters(view: LogView, eventType: EventType | undefined) {
+		if (this.view === view && this.eventType === eventType) return;
 		this.view = view;
+		this.eventType = eventType;
+		this.logs = [];
+		this.error = null;
 		this.skipNextHighlight = true;
-		if (this.currentSourceId) this.loadLogs(this.currentSourceId, true);
+		if (this.currentSourceId) void this.loadLogs(this.currentSourceId);
 	}
 
 	setPaused(paused: boolean) {
@@ -159,7 +153,7 @@ class SourceLogsController {
 	}
 
 	refresh() {
-		if (this.currentSourceId) this.loadLogs(this.currentSourceId);
+		if (this.currentSourceId && !this.loading) void this.loadLogs(this.currentSourceId);
 	}
 
 	/**
@@ -167,7 +161,7 @@ class SourceLogsController {
 	 * 用户将无法分辨哪些是真正刚产生的日志。
 	 */
 	private markNewRows(
-		items: RuntimeLogListItem[],
+		items: SourceEvent[],
 		knownIds: Set<string>,
 		hadRows: boolean
 	) {
