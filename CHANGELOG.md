@@ -15,6 +15,10 @@ All notable changes to this project will be documented in this file.
 - **顺序迁移与日志保留**。SQLite 启动时逐步升级库结构。取链、刷新 Token、账号登录和权益事件分别保留，类别筛选按索引查询。
 - **SQLite 存储**。首次启动会将旧账号、音源和已有权益快照一起导入，已导入洛雪的脚本继续使用原地址和凭据。旧文件留存供回退，历史日志及扫码会话留在原目录。
 
+### Fixed
+
+- **每日权益领升**。识别 KuGouMusicApi 以 HTTP 502 返回的领升幂等码。快照、领升和日记录请求绕过代理的共享缓存。
+
 ## [0.2.0] - 2026-09-22
 
 ### Added

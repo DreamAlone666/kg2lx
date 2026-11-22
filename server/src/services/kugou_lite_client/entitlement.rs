@@ -114,7 +114,7 @@ impl EntitlementUpstream for KugouLiteClient {
             .get(format!("{}/youth/union/vip", self.base_url))
             .timeout(self.default_timeout);
         exchange(request, cookies, |body, status| {
-            let response = business_response(body, status)?;
+            let response = business_response(body, status, None)?;
             let snapshot =
                 decode_vip_snapshot(body).map_err(|_| response.invalid("invalid VIP snapshot"))?;
             let entries = snapshot.data.unwrap().busi_vip;
@@ -158,7 +158,7 @@ impl EntitlementUpstream for KugouLiteClient {
             .get(format!("{}/youth/month/vip/record", self.base_url))
             .timeout(self.default_timeout);
         exchange(request, cookies, |body, status| {
-            let mut response = business_response(body, status)?;
+            let mut response = business_response(body, status, None)?;
             let data = response.data.take().unwrap_or_default();
             if response.status != Some(1) || response.code.is_some() {
                 return Err(response.invalid("missing successful daily record status"));
@@ -178,7 +178,9 @@ async fn exchange<T>(
     let mut merged = cookies.clone();
     let mut http_status = None;
     let received = async {
+        // The local proxy caches by hostname and URL, shared across Cookie values.
         let response = request
+            .header("X-Apicache-Bypass", "1")
             .header("Cookie", cookies.to_cookie_header())
             .send()
             .await?;
@@ -244,7 +246,11 @@ impl BusinessResponse {
     }
 }
 
-fn business_response(body: &str, http: u16) -> Result<BusinessResponse, UpstreamFailure> {
+fn business_response(
+    body: &str,
+    http: u16,
+    already_done_code: Option<i64>,
+) -> Result<BusinessResponse, UpstreamFailure> {
     let mut parsed: Value = serde_json::from_str(body).unwrap_or(Value::Null);
     let code = ["error_code", "errcode", "code"]
         .iter()
@@ -256,22 +262,25 @@ fn business_response(body: &str, http: u16) -> Result<BusinessResponse, Upstream
         http,
         data: parsed.get_mut("data").map(Value::take),
     };
+    // KuGouMusicApi wraps nonzero error_code values in HTTP 502, including idempotent
+    // completion. Only the write whose step matches the code can accept that response.
+    let confirmed_duplicate = http == 502 && code.is_some() && code == already_done_code;
     let failure = if requires_human_verification(Some(&parsed), body)
         || (parsed.is_null() && requires_human_verification(None, body))
     {
         Some((FailureKind::Verification, "upstream requires verification"))
-    } else if http == 502 {
-        Some((
-            FailureKind::Gateway,
-            "entitlement gateway returned HTTP 502",
-        ))
     } else if http == 429 || code == Some(429) {
         Some((
             FailureKind::RateLimited,
             "upstream rate limited entitlement request",
         ))
-    } else if (200..300).contains(&http) && parsed.is_object() {
+    } else if confirmed_duplicate || ((200..300).contains(&http) && parsed.is_object()) {
         None
+    } else if http == 502 {
+        Some((
+            FailureKind::Gateway,
+            "entitlement gateway returned HTTP 502",
+        ))
     } else {
         Some((
             FailureKind::Unknown,
@@ -290,11 +299,11 @@ fn business_response(body: &str, http: u16) -> Result<BusinessResponse, Upstream
 }
 
 fn parse_grant(body: &str, status: u16, step: GrantStep) -> Result<GrantResult, UpstreamFailure> {
-    let response = business_response(body, status)?;
     let expected = match step {
         GrantStep::Claim => 131001,
         GrantStep::Upgrade => 297002,
     };
+    let response = business_response(body, status, Some(expected))?;
     if response.code == Some(expected) {
         return Ok(GrantResult::AlreadyDone { code: expected });
     }
@@ -497,16 +506,18 @@ mod tests {
     fn business_codes_are_step_specific_and_a_bare_gateway_failure_is_uncertain() {
         for (step, code) in [(GrantStep::Claim, 131001), (GrantStep::Upgrade, 297002)] {
             let body = format!(r#"{{"status":0,"error_code":"{code}"}}"#);
-            assert_eq!(
-                parse_grant(&body, 200, step).unwrap(),
-                GrantResult::AlreadyDone { code }
-            );
             let other_step = if step == GrantStep::Claim {
                 GrantStep::Upgrade
             } else {
                 GrantStep::Claim
             };
-            assert!(parse_grant(&body, 200, other_step).is_err());
+            for status in [200, 502] {
+                assert_eq!(
+                    parse_grant(&body, status, step).unwrap(),
+                    GrantResult::AlreadyDone { code }
+                );
+                assert!(parse_grant(&body, status, other_step).is_err());
+            }
         }
         let failure =
             parse_grant(r#"{"status":0,"errcode":20028}"#, 502, GrantStep::Upgrade).unwrap_err();
@@ -518,6 +529,12 @@ mod tests {
         assert!(failure.write_may_have_applied());
         assert_eq!(
             parse_grant("", 429, GrantStep::Upgrade).unwrap_err().kind,
+            FailureKind::RateLimited
+        );
+        assert_eq!(
+            parse_grant(r#"{"status":0,"error_code":429}"#, 502, GrantStep::Upgrade)
+                .unwrap_err()
+                .kind,
             FailureKind::RateLimited
         );
         assert_eq!(

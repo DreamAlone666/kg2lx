@@ -101,6 +101,9 @@ struct Upstream {
 
 impl Upstream {
     async fn serve(State(this): State<Arc<Self>>, request: Request) -> Response {
+        if request.uri().path().starts_with("/youth/") {
+            assert_eq!(request.headers().get("x-apicache-bypass").unwrap(), "1");
+        }
         match request.uri().path() {
             "/login/qr/key" => Json(json!({"data":{"key":"qr-test"}})).into_response(),
             "/login/qr/create" => {
@@ -163,7 +166,10 @@ impl Upstream {
                     format!("receive_day={}", upstream_day(entitlement_time()))
                 );
                 this.claim.on_request().await;
-                Json(json!({"status":0,"error_code":131001,"cookie":"fixture_grant=merged"}))
+                (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({"status":0,"error_code":131001,"cookie":"fixture_grant=merged"})),
+                )
                     .into_response()
             }
             "/youth/day/vip/upgrade" => {
@@ -171,7 +177,11 @@ impl Upstream {
                 let cookie = request.headers().get("cookie").unwrap().to_str().unwrap();
                 assert!(cookie.contains("fixture_grant=merged"));
                 this.upgrade.on_request().await;
-                Json(json!({"status":0,"error_code":297002})).into_response()
+                (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({"status":0,"error_code":297002})),
+                )
+                    .into_response()
             }
             _ => StatusCode::NOT_FOUND.into_response(),
         }
@@ -825,7 +835,8 @@ async fn entitlement_adapter_uses_a_dedicated_write_deadline_and_does_not_follow
             counter.fetch_add(1, SeqCst);
             StatusCode::OK
         }))
-        .route("/youth/month/vip/record", get(|| async {
+        .route("/youth/month/vip/record", get(|request: Request| async move {
+            assert_eq!(request.headers().get("x-apicache-bypass").unwrap(), "1");
             Json(json!({"status":1,"data":{"list":[{"receive_day":"2035-02-01","vip_type":"svip"}]}}))
         }))).await;
     let data = tempfile::tempdir().unwrap();
