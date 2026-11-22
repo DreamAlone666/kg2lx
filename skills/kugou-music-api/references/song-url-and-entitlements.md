@@ -1,6 +1,6 @@
 # KuGou `/song/url`, `/user/vip/detail` And `/youth/union/vip`
 
-This file records what was measured about these endpoints through the local `KuGouMusicApi` service with a real account's cookies, on 2026-09-20 and 2026-09-21. It covers the cases where the call succeeds at the HTTP level but the caller still did not get what it wanted: no playable link, a lower rendition than was asked for, or membership that reads as absent.
+These observations cover missing playable links, unexpected renditions, and membership fields in responses from the local `KuGouMusicApi` service.
 
 ## `/song/url` Request Parameters
 
@@ -8,9 +8,9 @@ This file records what was measured about these endpoints through the local `KuG
 - `hash` is typically the file hash of that song's 128k rendition.
 - `quality` values observed in real requests: `128`, `320`, `flac`, `high`. `high` is the parameter that maps to the hi-res tier; `super` and `multitrack` were also observed. `interface.d.ts` lists further values.
 
-## `/song/url` Response: Three Business States
+## `/song/url` Response: Four Business States
 
-The top-level `status` field separates three response shapes that a caller otherwise tends to lump together.
+The top-level `status` field separates four response shapes that a caller otherwise tends to lump together.
 
 ### `status: 1` — a link was issued
 
@@ -24,7 +24,23 @@ Carries `priv_status: 0` and a `fail_process` array, and no `url`.
 
 Carries `error_code`. Observed values: `35104` (Hash not found) and `20010` (parameter error). This shape is completely different from `status: 2`: it is not a refusal of a quality, it is a failure to identify the resource at all.
 
-`priv_status` appears on both `status: 1` and `status: 2` responses, so the business state is read from the top-level `status`, not from `priv_status` alone.
+### `status: 3` — the whole song's play behavior is refused
+
+Carries `priv_status: 0` and, in the sample observed, `fail_process: []` (key present, array empty); no `url`, and **no** `error_code`.
+
+It is **not** a statement about the requested quality, and that is what separates it from `status: 2`: the same song returns `3` at `128`, `320` and `flac` alike, and neither substituting another rendition's `hash` nor adding `album_audio_id` changes it.
+
+The renditions exist, so `3` must not be read as "no such rendition": the by-hash audio-info route (`/audio`, upstream `kmr.service.kugou.com/v1/audio/audio`) and `/v2/get_res_privilege/lite` both list that song's 128 / 320 / flac entries — flac included, each with a byte size — while `/song/url` refuses to hand a link over.
+
+`/v2/get_res_privilege/lite` (local route `/privilege/lite`) is what tells the two refusals apart. For every quality of a `status: 3` song the entry carries the literal
+
+    "_msg": "Deny: the current behavior of the audio is forbidden."
+
+whereas an entry for a song that returns `status: 1` carries `"_msg": ""`. Same account, same request shape; only the song changes. In that sample the denied entries also read `privilege: 5` with `old_cpy: 1`, and the playable ones `privilege: 10` with `old_cpy: 0` — but `_msg` is the field that said what happened.
+
+The payload names no reason for the denial. One case observed was a studio recording the App itself only offers as a Live version, which is consistent with a rights or pulled-recording restriction; nothing in the response says which of the possible reasons it is.
+
+`priv_status` appears on `status: 1`, `2` and `3` responses, so the business state is read from the top-level `status`, not from `priv_status` alone. Observed: `priv_status: 1` with `status: 1`, and `priv_status: 0` with both `status: 2` and `status: 3` — it does not separate the two kinds of refusal.
 
 ## `fail_process` Is A Recorded Observation, Not A Criterion
 
@@ -65,7 +81,7 @@ The top-level `is_vip` and `vip_type` are frequently `0` while an entry inside `
 
 ### Entitlements expire silently, and independently
 
-After its expiry instant an entry flips to `is_vip: 0` — no error, no status change, and nothing else about the account looks wrong. The consequence reaches `/song/url` **per song**, not per endpoint: measured with `tvip` as the only entry still in window, songs that need a quality privilege were refused at `320`/`flac`/`high`, while a song that is already free at a higher rendition kept returning its link. Conversely, once a valid entitlement is present, requests that were previously refused immediately start returning links again.
+After expiry an entry flips to `is_vip: 0`. With only `tvip` still active, songs that required a quality privilege were refused at `320`, `flac`, and `high`. A song that was already free at a higher rendition kept returning its link. Previously refused requests can return links once the new entitlement becomes effective. [Observed daily upgrade propagation](claim-and-upgrade.md#proxy-caching-and-observed-propagation)
 
 Each entitlement has its own independent start/end window, so different `product_type` entries can expire on different dates. Which entry grants access to which quality was not isolated beyond that `tvip`-only case.
 
@@ -91,4 +107,4 @@ The end value is not a constant. Two reads about 1.5 hours apart returned a diff
 
 ## How To Re-verify
 
-With an account's cookies, `curl` `/song/url` and `/user/vip/detail` directly, request the same `hash` at `quality=128`, `320`, `flac`, and `high`, and compare `status`, `fail_process`, `extName`, and `fileSize` across the four responses. Then `curl` `/user/vip/detail` and `/youth/union/vip` and read `data.busi_vip[]` entry by entry rather than reading the top level; the request-side differences above reproduce by comparing those two routes, then dropping `opt_product_types`, adding `product_type=svip`, and dropping `busi_type`.
+With an account's cookies, `curl` `/song/url` and `/user/vip/detail` directly, request the same `hash` at `quality=128`, `320`, `flac`, and `high`, and compare `status`, `fail_process`, `extName`, and `fileSize` across the four responses. Then `curl` `/user/vip/detail` and `/youth/union/vip` and read `data.busi_vip[]` entry by entry rather than reading the top level; the request-side differences above reproduce by comparing those two routes, then dropping `opt_product_types`, adding `product_type=svip`, and dropping `busi_type`. For a `status: 3`, add `/privilege/lite` (which posts to `/v2/get_res_privilege/lite`) with the same `hash` and read each quality entry's `_msg` and `privilege`, and check the by-hash audio-info route for the same song's rendition list and sizes; that pair is how you show the refusal is not a missing rendition. Vary one thing at a time — the song, the `quality`, the `hash`, `album_audio_id` — since `3` is per-song.

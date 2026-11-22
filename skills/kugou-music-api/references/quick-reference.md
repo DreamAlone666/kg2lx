@@ -35,8 +35,7 @@ Use this file first. Open the larger repo docs only when you need endpoint-speci
 ## Call-wide caveats
 
 - Docs show GET examples, but the service supports both GET and POST
-- For POST requests, add a unique `timestamp` in the URL so the request URL is not cached
-- Identical URLs are cached for about 2 minutes
+- The pinned proxy caches HTTP 200 responses by hostname and URL for about two minutes. Send `X-Apicache-Bypass: 1` for fresh account-specific reads and authenticated writes. [Proxy cache details](claim-and-upgrade.md#proxy-caching-and-observed-propagation)
 - QR login is especially sensitive to cache reuse; add a unique `timestamp` to `/login/qr/key`, `/login/qr/create`, and `/login/qr/check`
 - Cross-origin calls should include credentials such as `withCredentials: true` or `credentials: 'include'`, or pass cookies manually
 - Preserve cookies or token after login for authenticated endpoints
@@ -63,6 +62,7 @@ Use this file first. Open the larger repo docs only when you need endpoint-speci
 - Lyric lookup: `/search/lyric` -> `/lyric`
 - Song URL: `/song/url`
 - New song URL route: `/song/url/new`
+- Concept Edition VIP status and daily grant progress: `/youth/union/vip` and `/youth/month/vip/record`. [Daily VIP operations](claim-and-upgrade.md)
 - Playlist detail: `/playlist/detail`
 - Playlist songs: `/playlist/track/all`
 - User detail: `/user/detail`

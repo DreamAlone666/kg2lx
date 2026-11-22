@@ -1,6 +1,13 @@
 ---
 name: kugou-music-api
-description: Help users call `KuGouMusicApi` / 酷狗 API from this workspace with minimal repo reading. Use this skill whenever the user asks how to call a KuGouMusicApi endpoint, which endpoint to use for a goal, how to log in, how to pass cookie or token, what query/body params are required, what response fields to expect, or wants a `curl`/`fetch`/Axios example for search, lyric, song URL, playlist, user, album, rank, video, radio, QR login, WeChat login, or related 酷狗接口. Also use it to interpret a response that did not do what the caller wanted, even though the HTTP call itself succeeded — why `/song/url` came back with no playable link, why a `/song/url` response carrying business `status` `1` still holds only the 128k rendition when a higher `quality` was requested, why `/user/vip/detail` reports membership as expired or not expired, why it lists fewer entitlements than the account holds unless `opt_product_types` is passed on `/youth/union/vip`, or what `/song/url` `status` values `2` and `0`, `priv_status`, `fail_process`, `extName`, `fileSize`, `error_code`, `data.busi_vip[]`, or `errcode 20028` mean. Also use it for Chinese prompts like “这个接口怎么调”, “要传什么参数”, “怎么拿歌曲 url”, “歌词怎么取”, “歌单详情调哪个接口”, “为什么返回 Parameter Error”, “这个请求为什么不通”, or “为什么拿不到播放链接 / 为什么这首歌只有 128k / 为什么会员显示已过期” when the question is about calling the repo's exposed API rather than analyzing backend internals. Prefer `references/quick-reference.md`, `references/song-url-and-entitlements.md`, `KuGouMusicApi/docs/README.md`, `KuGouMusicApi/interface.d.ts`, and `KuGouMusicApi/README.md`; avoid source digging unless docs conflict or omit a calling detail that would block a real request.
+description: >-
+  Help users call the local KuGouMusicApi (酷狗 API) and interpret its responses.
+  Use for route selection, HTTP parameters, cookies or tokens, and curl, fetch,
+  or Axios examples for search, lyrics, playback, playlists, users, albums, ranks,
+  videos, radio, and QR or WeChat login. Also use for missing links, unexpected
+  audio quality, human verification responses, and Concept Edition (概念版) VIP
+  status, daily claims, upgrades, or record checks. Typical questions include
+  “这个接口怎么调”, “为什么只有 128k”, “为什么会员显示过期”, and “今日 VIP 已领但未升级”.
 ---
 
 # KuGou Music API
@@ -17,6 +24,8 @@ Optimize for one outcome: get the user to a working request quickly. This is not
 - Focus on how to call the API, not how the server is built.
 
 ## Read order
+
+For playback refusals, actual audio quality, or membership fields, start with [Song URLs and entitlements](references/song-url-and-entitlements.md). For daily claims, upgrades, records, or ad rewards, start with [Daily VIP operations](references/claim-and-upgrade.md).
 
 Use this order and stop early if the answer is already clear:
 
@@ -54,7 +63,7 @@ Current verified examples you should remember:
 - `/login/qr/key` may return `data.qrcode` and `data.qrcode_img`, not just `data.key`.
 - `/login/qr/create` may return `data.url` and `data.base64`, not just `data.qrurl` and `data.qrimg`.
 - `/login/qr/check` can return `userid` as either an integer or a string.
-- `/song/url` may expose playable links at top-level `url`, often as an array, not only under `data.url`; its top-level `status` separates a success (`1`) from an explicit refusal for the requested quality (`2`) and from a resource-not-found or bad-parameter response (`0`) — see `references/song-url-and-entitlements.md`.
+- `/song/url` can return playable links at the top-level `url`, often as an array. The observed business states include link issued (`1`), requested quality refused (`2`), invalid or missing resource (`0`), and song-level playback refused (`3`). [Song URLs and entitlements](references/song-url-and-entitlements.md)
 - `/user/vip/detail` can report Concept membership inside `data.busi_vip[]` even when top-level `is_vip` and `vip_type` are both `0`; that array holds several independent entitlements, each with its own start/end window. `/youth/union/vip` reaches the same upstream call with `opt_product_types` added, and returns the four entries where the default route returns two, the two it omits being the 1-day ones — see `references/song-url-and-entitlements.md`.
 
 ## When code fallback is allowed
@@ -136,6 +145,11 @@ If the user wants a playable song URL:
 - Recommend `/register/dev` first.
 - Then use `/song/url`.
 - Mention `/song/url/new` only when the user specifically wants the newer route or multiple quality URLs, and note the documented encrypted-audio caveat.
+- When no link comes back, try a lower quality for `status: 2`, inspect the song's `_msg` on `/privilege/lite` for `status: 3`, or check the resource and request parameters for `status: 0`.
+
+If the user wants daily Concept Edition VIP:
+
+- Read current entitlements with `/youth/union/vip` and check daily grant progress with `/youth/month/vip/record`. The claim, upgrade, and ad routes change account state. Use the step-specific business code and a fresh daily record to resolve ambiguous results. [Daily VIP operations](references/claim-and-upgrade.md)
 
 If the user wants playlist data:
 
