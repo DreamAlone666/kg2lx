@@ -8,6 +8,7 @@ All notable changes to this project will be documented in this file.
 
 - **独立账号操作与事件日志**。音源详情可分别刷新 Token 和同步权益。事件日志记录取链、Token 刷新、账号登录和权益同步，支持按类别和结果筛选。
 - **事件保留上限**。使用 `EVENT_LOG_LIMIT` 设置取链保留数量，默认 10,000 条。
+- **每日权益领升**。账号可通过管理 API 开启按需领升，或手动领取和继续升级。领取与升级分步落盘，结果不明时按日记录恢复。管理 API 独立回显调度和传播状态，日志支持查询领升和对账事件。
 
 ### Changed
 

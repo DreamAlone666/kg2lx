@@ -9,6 +9,7 @@ use crate::error::AppError;
 pub(super) const MIGRATIONS: &[&str] = &[
     include_str!("migrations/001_init.sql"),
     include_str!("migrations/002_event_pools.sql"),
+    include_str!("migrations/003_entitlement_renewal.sql"),
 ];
 
 pub(super) fn migrate(
@@ -66,6 +67,8 @@ mod tests {
              INSERT INTO sources (source_id, account_id, provider, name, script_token, runtime_token,
                                   created_at, updated_at, quality_fallback)
              VALUES ('src-test', 'test-account', 'kugou_lite', 'fixture', 'script-fixture', 'runtime-fixture', 1, 1, 0);
+             INSERT INTO account_entitlements (account_id, items_json, synced_at, sync_failed)
+             VALUES ('test-account', '[{"product_type":"svip","active":true,"begin_at":100,"end_at":200}]', 100, 0);
              INSERT INTO event_logs (source_id, account_id, event_type, ok, payload_json)
              VALUES (NULL, 'test-account', 'entitlement', 1, '{"detail":{"action":"sync"}}');"#,
         )
@@ -79,15 +82,19 @@ mod tests {
     }
 
     #[test]
-    fn opens_the_existing_v1_file_and_applies_v2_without_reimporting() {
+    fn upgrades_v1_to_v2_and_keeps_old_snapshots_separate_from_v3_evidence() {
         let dir = tempfile::tempdir().unwrap();
-        drop(old_disk_database(&dir.path().join(DATABASE_FILE)));
+        let path = dir.path().join(DATABASE_FILE);
+        let mut v1 = old_disk_database(&path);
         let legacy_dir = dir.path().join("accounts");
         std::fs::create_dir(&legacy_dir).unwrap();
         std::fs::write(legacy_dir.join("broken.json"), "{").unwrap();
 
+        migrate(&mut v1, &path, 1, &MIGRATIONS[..2]).unwrap();
+        assert_eq!(version(&v1), 2);
+        drop(v1);
         let migrated = open_database(dir.path()).unwrap();
-        assert_eq!(version(&migrated), 2);
+        assert_eq!(version(&migrated), MIGRATIONS.len() as i64);
         let tokens: (String, String) = migrated
             .query_row(
                 "SELECT script_token, runtime_token FROM sources",
@@ -105,8 +112,20 @@ mod tests {
             )
             .unwrap();
         assert_eq!(preserved, ("sync".into(), 1));
+        let snapshot: (String, Option<String>, i64) = migrated
+            .query_row(
+                "SELECT json_extract(items_json, '$[0].product_type'), svip_evidence_json,
+                    (SELECT count(*) FROM entitlement_renewal) FROM account_entitlements",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(snapshot, ("svip".into(), None, 0));
         drop(migrated);
-        assert_eq!(version(&open_database(dir.path()).unwrap()), 2);
+        assert_eq!(
+            version(&open_database(dir.path()).unwrap()),
+            MIGRATIONS.len() as i64
+        );
     }
 
     #[test]
@@ -137,7 +156,10 @@ mod tests {
             .unwrap();
         assert_eq!((partial, events), (0, 1));
         drop(examined);
-        assert_eq!(version(&open_database(dir.path()).unwrap()), 2);
+        assert_eq!(
+            version(&open_database(dir.path()).unwrap()),
+            MIGRATIONS.len() as i64
+        );
     }
 
     #[test]

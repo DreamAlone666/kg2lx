@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::config::Config;
+use crate::domain::account::now_ts;
 use crate::error::AppError;
 use crate::repos::account::AccountRepo;
 use crate::repos::event_log::EventLogRepo;
@@ -27,6 +28,13 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(config: Config) -> Result<Self, AppError> {
+        Self::with_entitlement_clock(config, now_ts)
+    }
+
+    pub(crate) fn with_entitlement_clock(
+        config: Config,
+        now: impl Fn() -> i64 + Send + Sync + 'static,
+    ) -> Result<Self, AppError> {
         let storage = Arc::new(Sqlite::open(&config.data_dir, config.event_log_limit)?);
         let config = Arc::new(config);
         let accounts: Arc<dyn AccountRepo> = storage.clone();
@@ -43,8 +51,10 @@ impl AppState {
             client.clone(),
             accounts.clone(),
             storage.clone(),
+            storage.clone(),
             logs.clone(),
             auth.admin_actions.clone(),
+            now,
         ));
         let login = Arc::new(LoginService::new(
             config.clone(),
@@ -68,6 +78,7 @@ impl AppState {
             sources.clone(),
             accounts.clone(),
             logs,
+            Some(entitlement.clone()),
         ));
         let script = Arc::new(ScriptService::new(config.clone(), sources, accounts));
         Ok(Self {

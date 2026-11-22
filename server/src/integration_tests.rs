@@ -15,9 +15,14 @@ use crate::app_state::AppState;
 use crate::config::Config;
 use crate::domain::account::now_ts;
 use crate::domain::cookie_store::CookieStore;
+use crate::domain::renewal::GrantStep;
+use crate::domain::renewal::{upstream_day, upstream_svip_timestamp};
 use crate::repos::account::AccountRepo;
 use crate::repos::sqlite::Sqlite;
 use crate::services::kugou_lite_client::KugouLiteClient;
+use crate::services::kugou_lite_client::entitlement::{
+    EntitlementUpstream, GrantResult, RecordEntry,
+};
 
 const ADMIN_TOKEN: &str = "test-admin-token";
 const ACCOUNT: &str = "acc_fixture";
@@ -26,6 +31,12 @@ const AUTH_ROUTE: &str = "/api/v1/admin/accounts/acc_fixture/refresh-token";
 const SYNC_ROUTE: &str = "/api/v1/admin/accounts/acc_fixture/entitlements/sync";
 const DETAIL_ROUTE: &str = "/api/v1/admin/sources/src_fixture";
 const LOG_ROUTE: &str = "/api/v1/admin/sources/src_fixture/logs";
+const RENEWAL_ROUTE: &str = "/api/v1/admin/accounts/acc_fixture/entitlements/renewal";
+const CLAIM_ROUTE: &str = "/api/v1/admin/accounts/acc_fixture/entitlements/renewal/claim";
+
+fn entitlement_time() -> i64 {
+    upstream_svip_timestamp("2035-02-01 12:00:00").unwrap()
+}
 
 struct HttpServer {
     base: String,
@@ -81,6 +92,8 @@ struct Upstream {
     login: Pause,
     song: Pause,
     vip: Pause,
+    claim: Pause,
+    upgrade: Pause,
     login_mode: AtomicUsize,
     vip_mode: AtomicUsize,
     song_mode: AtomicUsize,
@@ -136,9 +149,29 @@ impl Upstream {
                     2 if number == 1 => (StatusCode::UNAUTHORIZED, Json(json!({"status":0,"code":301}))).into_response(),
                     3 => Json(json!({"status":1,"url":"https://example.test/song.flac", "cookie":"token=late-song",
                         "priv_status":0,"fail_process":[],"extName":"flac","bitRate":0,"fileSize":80000,"timeLength":8})).into_response(),
+                    4 if request.uri().query().is_some_and(|query| query.contains("quality=flac")) =>
+                        Json(json!({"status":2,"data":{},"priv_status":0})).into_response(),
+                    4 => Json(json!({"status":1,"url":"https://example.test/fallback.mp3"})).into_response(),
                     _ => Json(json!({"status":1,"url":"https://example.test/song.flac",
                         "priv_status":0,"fail_process":[],"extName":"flac","bitRate":0,"fileSize":80000,"timeLength":8})).into_response(),
                 }
+            }
+            "/youth/day/vip" => {
+                assert_eq!(request.method(), Method::POST);
+                assert_eq!(
+                    request.uri().query().unwrap(),
+                    format!("receive_day={}", upstream_day(entitlement_time()))
+                );
+                this.claim.on_request().await;
+                Json(json!({"status":0,"error_code":131001,"cookie":"fixture_grant=merged"}))
+                    .into_response()
+            }
+            "/youth/day/vip/upgrade" => {
+                assert_eq!(request.method(), Method::POST);
+                let cookie = request.headers().get("cookie").unwrap().to_str().unwrap();
+                assert!(cookie.contains("fixture_grant=merged"));
+                this.upgrade.on_request().await;
+                Json(json!({"status":0,"error_code":297002})).into_response()
             }
             _ => StatusCode::NOT_FOUND.into_response(),
         }
@@ -191,17 +224,20 @@ impl Fixture {
                 );
             }
         }
-        let state = AppState::new(Config {
-            listen_addr: "127.0.0.1:0".into(),
-            public_base_url: "http://example.test".into(),
-            admin_token: ADMIN_TOKEN.into(),
-            kugou_api_base_url: upstream_server.base.clone(),
-            data_dir: data.path().to_owned(),
-            upstream_timeout_ms: 4_000,
-            account_refresh_ttl: 100,
-            event_log_limit: crate::config::DEFAULT_EVENT_LOG_LIMIT,
-            web_dist_dir: None,
-        })
+        let state = AppState::with_entitlement_clock(
+            Config {
+                listen_addr: "127.0.0.1:0".into(),
+                public_base_url: "http://example.test".into(),
+                admin_token: ADMIN_TOKEN.into(),
+                kugou_api_base_url: upstream_server.base.clone(),
+                data_dir: data.path().to_owned(),
+                upstream_timeout_ms: 4_000,
+                account_refresh_ttl: 100,
+                event_log_limit: crate::config::DEFAULT_EVENT_LOG_LIMIT,
+                web_dist_dir: None,
+            },
+            entitlement_time,
+        )
         .unwrap();
         let server = HttpServer::start(crate::build_app(state.clone())).await;
         let http = Client::builder()
@@ -298,6 +334,7 @@ async fn binds_and_refreshes_during_vip_outage_and_exposes_four_event_categories
     assert_eq!(status, StatusCode::BAD_GATEWAY);
     let (_, response) = app.admin(Method::GET, &detail).await;
     assert_eq!(response["account"]["status"], "active");
+    assert_eq!(response["account"]["renewal"]["enabled"], false);
     assert_eq!(response["account"]["entitlements_sync_failed"], true);
     assert!(response["account"].get("entitlements").is_none());
 
@@ -581,6 +618,7 @@ async fn event_retention_caps_rows_and_reopens_without_reimporting() {
             EventContext::new(EventTrigger::Admin, Some(ACCOUNT.into()), None),
             Event::Entitlement {
                 action: EntitlementAction::Sync,
+                observation: None,
             },
             None,
             None,
@@ -594,6 +632,7 @@ async fn event_retention_caps_rows_and_reopens_without_reimporting() {
         limit: 20,
         view: LogView::All,
         event_type: None,
+        include_renewal: false,
     };
     let rows = db.list(&query).await.unwrap();
     assert_eq!(
@@ -667,4 +706,164 @@ async fn legacy_refresh_replies_before_the_separate_sync_and_preserves_a_known_s
         before["account"]["entitlements_synced_at"]
     );
     assert_eq!(after["account"]["entitlements_sync_failed"], true);
+}
+
+#[tokio::test]
+async fn renewal_api_keeps_legacy_fallback_and_logs_and_uses_account_scope() {
+    let app = Fixture::start(Some(now_ts())).await;
+    let (_, detail) = app.admin(Method::GET, DETAIL_ROUTE).await;
+    assert_eq!(detail["account"]["renewal"]["enabled"], false);
+    assert!(detail["account"].get("entitlements").is_none());
+
+    let change = |enabled| {
+        app.http
+            .patch(format!("{}{RENEWAL_ROUTE}", app.server.base))
+            .json(&json!({"enabled":enabled}))
+    };
+    assert_eq!(
+        change(true).send().await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let enabled = change(true).bearer_auth(ADMIN_TOKEN).send().await.unwrap();
+    assert_eq!(enabled.status(), StatusCode::OK);
+    assert_eq!(enabled.json::<Value>().await.unwrap()["enabled"], true);
+    let (_, sources) = app.admin(Method::GET, "/api/v1/admin/sources").await;
+    for source in sources["items"].as_array().unwrap() {
+        assert_eq!(source["renewal"]["enabled"], true);
+    }
+
+    let patched = app
+        .http
+        .patch(format!("{}{DETAIL_ROUTE}", app.server.base))
+        .bearer_auth(ADMIN_TOKEN)
+        .json(&json!({"quality_fallback":true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(patched.status(), StatusCode::OK);
+    app.upstream.song_mode.store(4, SeqCst);
+    app.upstream.vip.pause_next();
+
+    // The mock's entitlement read is blocked, so the original playback could not finish if
+    // it awaited the renewal job. The lower-tier URL is the existing fallback response.
+    let reply = tokio::time::timeout(
+        Duration::from_secs(2),
+        app.song("rt_fixture", old_three_fields()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        reply,
+        (
+            StatusCode::OK,
+            json!({"url":"https://example.test/fallback.mp3"})
+        )
+    );
+    app.upstream.vip.wait_until_entered().await;
+    assert_eq!(app.upstream.claim.requests.load(SeqCst), 0);
+    app.upstream.vip.release.notify_one();
+    let (status, state) = app.admin(Method::POST, CLAIM_ROUTE).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(state["state"], "propagating");
+    assert!(state["estimated_end_at"].is_null());
+    assert_eq!(app.upstream.claim.requests.load(SeqCst), 1);
+    assert_eq!(app.upstream.upgrade.requests.load(SeqCst), 1);
+    assert_eq!(app.upstream.login.requests.load(SeqCst), 0);
+
+    let (_, detail) = app.admin(Method::GET, DETAIL_ROUTE).await;
+    assert_eq!(detail["account"]["entitlements"], json!([]));
+    assert_eq!(detail["account"]["renewal"], state);
+    let (_, old) = app
+        .admin(Method::GET, &format!("{LOG_ROUTE}?event_type=entitlement"))
+        .await;
+    assert_eq!(old["items"].as_array().unwrap().len(), 1);
+    assert_eq!(old["items"][0]["detail"]["action"], "sync");
+
+    let (_, new) = app
+        .admin(Method::GET, &format!("{LOG_ROUTE}?include_renewal=true"))
+        .await;
+    let logs = new["items"].as_array().unwrap();
+    let original = logs
+        .iter()
+        .find(|item| item["detail"]["upstream_status"] == 2)
+        .unwrap();
+    for (event, (action, code)) in logs
+        .iter()
+        .take(2)
+        .zip([("upgrade", 297002), ("claim", 131001)])
+    {
+        assert_eq!(event["detail"]["action"], action);
+        assert_eq!(event["detail"]["reason"], "t2_expired_refusal");
+        assert_eq!(event["detail"]["upstream_code"], code);
+        assert_eq!(event["ok"], true);
+        assert_eq!(event["correlation_id"], original["correlation_id"]);
+    }
+    let disabled = change(false).bearer_auth(ADMIN_TOKEN).send().await.unwrap();
+    assert_eq!(disabled.json::<Value>().await.unwrap()["enabled"], false);
+    assert_eq!(
+        app.admin(Method::POST, CLAIM_ROUTE).await.1["upgrade"],
+        "done"
+    );
+    assert_eq!(app.upstream.claim.requests.load(SeqCst), 1);
+}
+
+#[tokio::test]
+async fn entitlement_adapter_uses_a_dedicated_write_deadline_and_does_not_follow_redirects() {
+    use axum::routing::{get, post};
+
+    let replayed = Arc::new(AtomicUsize::new(0));
+    let counter = replayed.clone();
+    let upstream = HttpServer::start(Router::new()
+        .route("/youth/day/vip", post(|| async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            Json(json!({"status":1,"data":{"recharge_hours":24}}))
+        }))
+        .route("/youth/day/vip/upgrade", post(|| async {
+            (StatusCode::TEMPORARY_REDIRECT, [("location", "/write-sentinel")])
+        }))
+        .route("/write-sentinel", post(move || async move {
+            counter.fetch_add(1, SeqCst);
+            StatusCode::OK
+        }))
+        .route("/youth/month/vip/record", get(|| async {
+            Json(json!({"status":1,"data":{"list":[{"receive_day":"2035-02-01","vip_type":"svip"}]}}))
+        }))).await;
+    let data = tempfile::tempdir().unwrap();
+    let mut config = Config {
+        listen_addr: "127.0.0.1:0".into(),
+        public_base_url: "http://example.test".into(),
+        admin_token: ADMIN_TOKEN.into(),
+        kugou_api_base_url: upstream.base.clone(),
+        data_dir: data.path().to_owned(),
+        upstream_timeout_ms: 10,
+        account_refresh_ttl: 100,
+        event_log_limit: 100,
+        web_dist_dir: None,
+    };
+    let client = KugouLiteClient::new(&config);
+    let day = upstream_day(entitlement_time());
+    let cookies = CookieStore::new();
+    assert_eq!(
+        client
+            .grant(&cookies, GrantStep::Claim, day, Duration::from_secs(1))
+            .await
+            .result
+            .unwrap(),
+        GrantResult::Confirmed {
+            added_hours: Some(24)
+        },
+    );
+    let failure = client
+        .grant(&cookies, GrantStep::Upgrade, day, Duration::from_secs(1))
+        .await
+        .result
+        .unwrap_err();
+    assert!(failure.write_may_have_applied());
+    assert_eq!(failure.http_status, Some(307));
+    assert_eq!(replayed.load(SeqCst), 0);
+
+    config.upstream_timeout_ms = 2_000;
+    let client = KugouLiteClient::new(&config);
+    let record = client.daily_record(&cookies).await.result.unwrap();
+    assert_eq!(record.entry(day), RecordEntry::Found(GrantStep::Upgrade));
 }

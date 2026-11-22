@@ -40,16 +40,23 @@ fn prune(conn: &Connection, kind: EventType, configured: i64) -> rusqlite::Resul
     Ok(())
 }
 
-fn list_sql(filtered: bool) -> String {
+fn list_sql(filtered: bool, include_renewal: bool) -> String {
     // The two branches are disjoint. A concrete type predicate lets each index seek to the
     // selected category and supply seq order directly to UNION ALL's merge.
     let type_filter = if filtered { "AND event_type = ?5" } else { "" };
+    let renewal_filter = if include_renewal {
+        ""
+    } else {
+        // The existing web client only labels snapshot syncs.
+        "AND (event_type <> 'entitlement' OR json_extract(payload_json, '$.detail.action') = 'sync')"
+    };
     format!(
         "SELECT payload_json FROM (
-            SELECT seq, payload_json FROM event_logs WHERE source_id = ?1 AND (NOT ?3 OR NOT ok) {type_filter}
+            SELECT seq, payload_json FROM event_logs WHERE source_id = ?1 AND (NOT ?3 OR NOT ok)
+                {type_filter} {renewal_filter}
             UNION ALL
             SELECT seq, payload_json FROM event_logs WHERE source_id IS NULL AND account_id = ?2
-                AND (NOT ?3 OR NOT ok) {type_filter}
+                AND (NOT ?3 OR NOT ok) {type_filter} {renewal_filter}
             ORDER BY seq DESC LIMIT ?4
         )"
     )
@@ -85,9 +92,10 @@ impl EventLogRepo for Sqlite {
         let account_id = query.account_id.clone();
         let event_type = query.event_type.map(EventType::as_str);
         let errors_only = query.view == LogView::Errors;
+        let include_renewal = query.include_renewal;
         let limit = query.limit as i64;
         self.run(move |conn| {
-            let mut stmt = conn.prepare_cached(&list_sql(event_type.is_some()))?;
+            let mut stmt = conn.prepare_cached(&list_sql(event_type.is_some(), include_renewal))?;
             let params: [&dyn ToSql; 5] =
                 [&source_id, &account_id, &errors_only, &limit, &event_type];
             let count = if event_type.is_some() { 5 } else { 4 };
@@ -122,6 +130,7 @@ mod tests {
             limit: 20,
             view: LogView::All,
             event_type: Some(event_type),
+            include_renewal: false,
         }
     }
 
@@ -131,6 +140,7 @@ mod tests {
         let db = Sqlite::open(dir.path(), 10_000).unwrap();
         let sync = || Event::Entitlement {
             action: EntitlementAction::Sync,
+            observation: None,
         };
         let low_frequency = [
             EventLog::new(
@@ -217,7 +227,7 @@ mod tests {
                 |row| row.get(0),
             )?;
             assert_eq!(log_total, 10_000);
-            let sql = list_sql(true);
+            let sql = list_sql(true, false);
             let parameters = params!["src-test", "test-account", false, 20, "entitlement"];
             let mut plan = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
             let details = plan

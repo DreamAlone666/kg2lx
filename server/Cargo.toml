@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 async-trait = "0.1.89"
 axum = "0.8.9"
-chrono = "0.4.44"
+chrono = { version = "0.4.44", features = ["serde"] }
 dotenvy = "0.15.7"
 reqwest = { version = "0.13.2", features = ["json"] }
 rusqlite = { version = "0.43.0", features = ["bundled"] }

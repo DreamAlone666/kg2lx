@@ -28,3 +28,9 @@ pub struct EntitlementSnapshot {
     #[serde(rename = "entitlements_sync_failed")]
     pub sync_failed: bool,
 }
+use crate::domain::renewal::SvipEvidence;
+
+pub struct EntitlementObservation {
+    pub items: Vec<VipEntitlement>,
+    pub svip: SvipEvidence,
+}

@@ -4,6 +4,7 @@ use axum::http::HeaderMap;
 
 use crate::app_state::AppState;
 use crate::domain::event_log::{EventType, LogView};
+use crate::domain::renewal::RenewalStatus;
 use crate::error::AppError;
 use crate::services::source::UpdateSourceInput;
 
@@ -44,7 +45,7 @@ pub async fn list_sources(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
     verify_admin(&headers, &state.config.admin_token)?;
-    let items = state.source.list_sources().await?;
+    let items = state.source.list_sources(&state.entitlement).await?;
     Ok(Json(serde_json::json!({ "items": items })))
 }
 
@@ -54,7 +55,10 @@ pub async fn get_source(
     Path(source_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     verify_admin(&headers, &state.config.admin_token)?;
-    let detail = state.source.get_source(&source_id).await?;
+    let detail = state
+        .source
+        .get_source(&source_id, &state.entitlement)
+        .await?;
     Ok(Json(serde_json::to_value(detail).unwrap()))
 }
 
@@ -97,6 +101,35 @@ pub async fn sync_account_entitlements(
     Ok(Json(
         serde_json::json!({ "ok": true, "synced_at": synced_at }),
     ))
+}
+
+#[derive(serde::Deserialize)]
+pub struct RenewalSettingsBody {
+    enabled: bool,
+}
+
+pub async fn set_auto_claim(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(account_id): Path<String>,
+    Json(body): Json<RenewalSettingsBody>,
+) -> Result<Json<RenewalStatus>, AppError> {
+    verify_admin(&headers, &state.config.admin_token)?;
+    Ok(Json(
+        state
+            .entitlement
+            .set_auto_claim(&account_id, body.enabled)
+            .await?,
+    ))
+}
+
+pub async fn claim_account_entitlements(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(account_id): Path<String>,
+) -> Result<Json<RenewalStatus>, AppError> {
+    verify_admin(&headers, &state.config.admin_token)?;
+    Ok(Json(state.entitlement.renew_manually(account_id).await?))
 }
 
 /// 音源配置 PATCH 的请求体。
@@ -159,6 +192,8 @@ pub struct ListLogsParams {
     pub limit: Option<String>,
     pub view: Option<String>,
     pub event_type: Option<EventType>,
+    #[serde(default)]
+    pub include_renewal: bool,
 }
 
 pub async fn list_source_logs(
@@ -186,7 +221,13 @@ pub async fn list_source_logs(
 
     let resp = state
         .source
-        .list_source_logs(&source_id, limit, view, params.event_type)
+        .list_source_logs(
+            &source_id,
+            limit,
+            view,
+            params.event_type,
+            params.include_renewal,
+        )
         .await?;
     Ok(Json(serde_json::to_value(resp).unwrap()))
 }

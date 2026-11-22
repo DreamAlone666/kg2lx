@@ -5,6 +5,7 @@ use crate::domain::entitlement::EntitlementSnapshot;
 use crate::domain::event_log::{
     EventContext, EventLog, EventTrigger, EventType, ListEvents, LogView,
 };
+use crate::domain::renewal::{RenewalReason, RenewalStatus};
 use crate::domain::source::{
     self, SCRIPT_NAME_ADVISORY_CHARS, SCRIPT_NAME_MAX_BYTES, sanitize_script_meta,
 };
@@ -30,6 +31,7 @@ pub struct SourceListItem {
     pub userid: String,
     #[serde(flatten)]
     pub entitlement: EntitlementSnapshot,
+    pub renewal: RenewalStatus,
     pub account_status: String,
     /// 账号最近一次刷新成功的时刻。
     ///
@@ -81,6 +83,7 @@ pub struct SourceAccountInfo {
     pub userid: String,
     #[serde(flatten)]
     pub entitlement: EntitlementSnapshot,
+    pub renewal: RenewalStatus,
     pub status: String,
     pub last_refresh_at: Option<i64>,
     pub last_error: Option<String>,
@@ -147,7 +150,10 @@ impl SourceService {
         }
     }
 
-    pub async fn list_sources(&self) -> Result<Vec<SourceListItem>, AppError> {
+    pub async fn list_sources(
+        &self,
+        renewals: &EntitlementService,
+    ) -> Result<Vec<SourceListItem>, AppError> {
         let sources = self.source_repo.list_all().await?;
         let mut items = Vec::new();
         for s in sources {
@@ -164,6 +170,7 @@ impl SourceService {
             };
             let script_url = format!("{}/s/{}.js", self.config.public_base_url, s.script_token);
             let entitlement = self.snapshots.entitlement_snapshot(&s.account_id).await?;
+            let renewal = renewals.renewal_status(&s.account_id).await?;
             items.push(SourceListItem {
                 source_id: s.source_id,
                 account_id: s.account_id,
@@ -173,6 +180,7 @@ impl SourceService {
                 default_name: source::default_name(&userid),
                 userid,
                 entitlement,
+                renewal,
                 account_status,
                 last_refresh_at,
                 updated_at: s.updated_at,
@@ -182,7 +190,11 @@ impl SourceService {
         Ok(items)
     }
 
-    pub async fn get_source(&self, source_id: &str) -> Result<SourceDetail, AppError> {
+    pub async fn get_source(
+        &self,
+        source_id: &str,
+        renewals: &EntitlementService,
+    ) -> Result<SourceDetail, AppError> {
         let s = self
             .source_repo
             .find_by_id(source_id)
@@ -216,6 +228,7 @@ impl SourceService {
                     .snapshots
                     .entitlement_snapshot(&account.account_id)
                     .await?,
+                renewal: renewals.renewal_status(&account.account_id).await?,
                 status: account.status.as_str().to_string(),
                 last_refresh_at: account.last_refresh_at,
                 last_error: account.last_error,
@@ -330,7 +343,9 @@ impl SourceService {
         let entitlement = entitlement.clone();
         let account_id = refreshed.account_id.clone();
         tokio::spawn(async move {
-            let _ = entitlement.sync(account_id, context).await;
+            let _ = entitlement
+                .sync(account_id, context, RenewalReason::PostRefresh)
+                .await;
         });
         Ok(RefreshResponse {
             ok: true,
@@ -366,7 +381,9 @@ impl SourceService {
         account_id: String,
     ) -> Result<i64, AppError> {
         let context = EventContext::new(EventTrigger::Admin, Some(account_id.clone()), None);
-        service.sync(account_id, context).await
+        service
+            .sync(account_id, context, RenewalReason::Manual)
+            .await
     }
 
     pub async fn list_source_logs(
@@ -375,6 +392,7 @@ impl SourceService {
         limit: usize,
         view: LogView,
         event_type: Option<EventType>,
+        include_renewal: bool,
     ) -> Result<SourceLogsResponse, AppError> {
         let source = self
             .source_repo
@@ -387,6 +405,7 @@ impl SourceService {
             limit,
             view,
             event_type,
+            include_renewal,
         };
         let items = self.log_repo.list(&query).await?;
         Ok(SourceLogsResponse {
@@ -412,6 +431,23 @@ mod tests {
     use crate::domain::cookie_store::CookieStore;
     use crate::domain::provider::ProviderKind;
     use crate::domain::source::Source;
+    use crate::repos::sqlite::Sqlite;
+    use crate::services::kugou_lite_client::KugouLiteClient;
+
+    fn renewal_status_reader(config: &Config) -> (EntitlementService, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(Sqlite::open(dir.path(), config.event_log_limit).unwrap());
+        let service = EntitlementService::new(
+            Arc::new(KugouLiteClient::new(config)),
+            storage.clone(),
+            storage.clone(),
+            storage.clone(),
+            storage,
+            Arc::default(),
+            source::now_ts,
+        );
+        (service, dir)
+    }
 
     // ---- 测试替身 ----
     //
@@ -535,7 +571,7 @@ mod tests {
         async fn record_sync(
             &self,
             _account_id: &str,
-            _snapshot: Option<(Vec<VipEntitlement>, i64)>,
+            _snapshot: Option<(crate::domain::entitlement::EntitlementObservation, i64)>,
         ) -> Result<(), AppError> {
             unreachable!("test did not expect an entitlement sync");
         }
@@ -785,12 +821,16 @@ mod tests {
             ..sample_source()
         };
         let (service, _repo) = build_service(source);
+        let (renewals, _dir) = renewal_status_reader(&service.config);
 
-        let list = service.list_sources().await.expect("list");
+        let list = service.list_sources(&renewals).await.expect("list");
         assert_eq!(list.len(), 1);
         assert!(list[0].quality_fallback, "列表必须回显开关当前值");
 
-        let detail = service.get_source("src_test").await.expect("detail");
+        let detail = service
+            .get_source("src_test", &renewals)
+            .await
+            .expect("detail");
         assert!(detail.quality_fallback, "详情必须回显开关当前值");
     }
 
@@ -825,6 +865,7 @@ mod tests {
             ..EntitlementSnapshot::default()
         };
         let (service, _repo) = build_service_with_snapshot(sample_source(), snapshot);
+        let (renewals, _dir) = renewal_status_reader(&service.config);
 
         // 「上游没说」的时间必须是 `null` 而不是 0（那是 1970 年）；这条由下面的
         // 整体相等断言一并钉住。
@@ -843,15 +884,21 @@ mod tests {
             },
         ]);
 
-        let list = serde_json::to_value(service.list_sources().await.expect("list")).unwrap();
+        let list =
+            serde_json::to_value(service.list_sources(&renewals).await.expect("list")).unwrap();
         assert_eq!(list.as_array().unwrap().len(), 1);
         assert_eq!(
             list[0]["entitlements"], expected,
             "列表必须带权益明细：扫一眼列表要能看出这个账号有哪些权益"
         );
 
-        let detail =
-            serde_json::to_value(service.get_source("src_test").await.expect("detail")).unwrap();
+        let detail = serde_json::to_value(
+            service
+                .get_source("src_test", &renewals)
+                .await
+                .expect("detail"),
+        )
+        .unwrap();
         assert_eq!(
             detail["account"]["entitlements"], expected,
             "详情与列表必须是同一份数据，口径不得分叉"

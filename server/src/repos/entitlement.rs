@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-use crate::domain::entitlement::{EntitlementSnapshot, VipEntitlement};
+use crate::domain::entitlement::{EntitlementObservation, EntitlementSnapshot};
 use crate::error::AppError;
 
 #[async_trait]
@@ -11,6 +11,6 @@ pub trait EntitlementRepo: Send + Sync {
     async fn record_sync(
         &self,
         account_id: &str,
-        snapshot: Option<(Vec<VipEntitlement>, i64)>,
+        snapshot: Option<(EntitlementObservation, i64)>,
     ) -> Result<(), AppError>;
 }

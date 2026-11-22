@@ -5,11 +5,13 @@ use crate::domain::account::AccountStatus;
 use crate::domain::event_log::{
     Event, EventContext, EventLog, EventTrigger, MusicUrlEvent, MusicUrlStage, RefreshReason,
 };
+use crate::domain::renewal::PlaybackSignal;
 use crate::error::{AppError, ErrorCode};
 use crate::repos::account::AccountRepo;
 use crate::repos::event_log::{self, EventLogRepo};
 use crate::repos::source::SourceRepo;
 use crate::services::auth::AccountAuth;
+use crate::services::entitlement::EntitlementService;
 use crate::services::kugou_lite_client::{
     MusicUrlFetcher, MusicUrlRequest, MusicUrlResult, map_quality, next_lower_quality,
     upstream_refused_quality,
@@ -48,6 +50,7 @@ pub struct RuntimeService {
     source_repo: Arc<dyn SourceRepo>,
     account_repo: Arc<dyn AccountRepo>,
     logs: Arc<dyn EventLogRepo>,
+    entitlement: Option<Arc<EntitlementService>>,
 }
 
 impl RuntimeService {
@@ -57,6 +60,7 @@ impl RuntimeService {
         source_repo: Arc<dyn SourceRepo>,
         account_repo: Arc<dyn AccountRepo>,
         logs: Arc<dyn EventLogRepo>,
+        entitlement: Option<Arc<EntitlementService>>,
     ) -> Self {
         Self {
             auth,
@@ -64,6 +68,7 @@ impl RuntimeService {
             source_repo,
             account_repo,
             logs,
+            entitlement,
         }
     }
 
@@ -110,7 +115,8 @@ impl RuntimeService {
         };
         let mut fallback_index = 0;
         let mut retry_count = 0;
-        loop {
+        let mut renewal_signal = None;
+        let result = loop {
             let started = Instant::now();
             let response = self
                 .fetcher
@@ -128,7 +134,7 @@ impl RuntimeService {
                 Err(error) => {
                     self.record(&context, &req, Some(attempt), Some(error.code))
                         .await;
-                    return Err(error);
+                    break Err(error);
                 }
             };
             attempt.response = Some(&response);
@@ -148,14 +154,24 @@ impl RuntimeService {
                     AppError::upstream_request_failed("upstream requires human verification");
                 self.record(&context, &req, Some(attempt), Some(error.code))
                     .await;
-                return Err(error);
+                break Err(error);
+            }
+            let refused = upstream_refused_quality(response.observation.status);
+            if fallback_index == 0 && (200..300).contains(&response.status_code) {
+                renewal_signal = if !response.url.is_empty() {
+                    Some(PlaybackSignal::Link)
+                } else if refused {
+                    Some(PlaybackSignal::TargetRefused)
+                } else {
+                    None
+                };
             }
             if !response.url.is_empty() {
                 self.record(&context, &req, Some(attempt), None).await;
-                return Ok(RuntimeMusicUrlResponse { url: response.url });
+                break Ok(RuntimeMusicUrlResponse { url: response.url });
             }
             // A known refusal owns the fallback decision even when an auth heuristic also matches.
-            if upstream_refused_quality(response.observation.status) {
+            if refused {
                 if retry_count == 0
                     && source.quality_fallback
                     && let Some(lower) = next_lower_quality(&upstream_req.quality)
@@ -178,7 +194,7 @@ impl RuntimeService {
                 };
                 self.record(&context, &req, Some(attempt), Some(error.code))
                     .await;
-                return Err(error);
+                break Err(error);
             }
             if retry_count == 0 && response.auth_failed {
                 // Record the rejected attempt before the refresh so its observation is visible.
@@ -199,8 +215,12 @@ impl RuntimeService {
             let error = AppError::upstream_play_url_empty();
             self.record(&context, &req, Some(attempt), Some(error.code))
                 .await;
-            return Err(error);
+            break Err(error);
+        };
+        if let (Some(entitlement), Some(signal)) = (&self.entitlement, renewal_signal) {
+            entitlement.on_playback(context, signal);
         }
+        result
     }
 
     async fn record(
@@ -659,6 +679,7 @@ mod tests {
             source_repo,
             account_repo,
             log_repo.clone(),
+            None,
         );
         (service, log_repo)
     }
@@ -693,8 +714,14 @@ mod tests {
             account_repo.clone(),
             log_repo.clone(),
         ));
-        let service =
-            RuntimeService::new(auth, fetcher, source_repo, account_repo, log_repo.clone());
+        let service = RuntimeService::new(
+            auth,
+            fetcher,
+            source_repo,
+            account_repo,
+            log_repo.clone(),
+            None,
+        );
         (service, log_repo)
     }
 

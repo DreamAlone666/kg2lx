@@ -1,6 +1,7 @@
 mod events;
 mod legacy;
 mod migrations;
+mod renewal;
 
 use std::fs;
 use std::io::ErrorKind;
@@ -16,7 +17,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::domain::account::{AccountStatus, ProviderAccount};
 use crate::domain::cookie_store::CookieStore;
-use crate::domain::entitlement::{EntitlementSnapshot, VipEntitlement};
+use crate::domain::entitlement::{EntitlementObservation, EntitlementSnapshot};
 use crate::domain::login_session::LoginSession;
 use crate::domain::provider::ProviderKind;
 use crate::domain::source::Source;
@@ -331,16 +332,17 @@ impl EntitlementRepo for Sqlite {
     async fn record_sync(
         &self,
         account_id: &str,
-        snapshot: Option<(Vec<VipEntitlement>, i64)>,
+        snapshot: Option<(EntitlementObservation, i64)>,
     ) -> Result<(), AppError> {
         let account_id = account_id.to_owned();
         self.run(move |conn| {
-            if let Some((items, synced_at)) = snapshot {
+            if let Some((observed, synced_at)) = snapshot {
                 conn.execute(
-                    "INSERT INTO account_entitlements (account_id, items_json, synced_at, sync_failed)
-                     VALUES (?1, ?2, ?3, 0) ON CONFLICT(account_id) DO UPDATE SET
-                     items_json = excluded.items_json, synced_at = excluded.synced_at, sync_failed = 0",
-                    params![account_id, encode(&items)?, synced_at],
+                    "INSERT INTO account_entitlements (account_id, items_json, synced_at, sync_failed, svip_evidence_json)
+                     VALUES (?1, ?2, ?3, 0, ?4) ON CONFLICT(account_id) DO UPDATE SET
+                     items_json = excluded.items_json, synced_at = excluded.synced_at, sync_failed = 0,
+                     svip_evidence_json = excluded.svip_evidence_json",
+                    params![account_id, encode(&observed.items)?, synced_at, encode(&observed.svip)?],
                 )?;
             } else {
                 conn.execute(

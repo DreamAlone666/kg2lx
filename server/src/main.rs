@@ -15,7 +15,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::extract::MatchedPath;
 use axum::http::{Request, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use tower_http::trace::TraceLayer;
 use tracing::Span;
 
@@ -86,6 +86,14 @@ fn build_app(state: AppState) -> Router {
         .route(
             "/accounts/{account_id}/entitlements/sync",
             post(routes::admin::sync_account_entitlements),
+        )
+        .route(
+            "/accounts/{account_id}/entitlements/renewal",
+            patch(routes::admin::set_auto_claim),
+        )
+        .route(
+            "/accounts/{account_id}/entitlements/renewal/claim",
+            post(routes::admin::claim_account_entitlements),
         )
         .route("/sources", get(routes::admin::list_sources))
         .route(

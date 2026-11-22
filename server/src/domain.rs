@@ -4,4 +4,5 @@ pub mod entitlement;
 pub mod event_log;
 pub mod login_session;
 pub mod provider;
+pub mod renewal;
 pub mod source;

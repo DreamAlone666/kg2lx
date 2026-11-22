@@ -1,3 +1,5 @@
+pub(crate) mod entitlement;
+
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -126,7 +128,7 @@ struct VipBusinessEntry {
     vip_end_time: Option<Value>,
 }
 
-fn parse_vip_snapshot(body: &str) -> Result<Vec<VipEntitlement>, AppError> {
+fn decode_vip_snapshot(body: &str) -> Result<VipDetailResponse, AppError> {
     let parsed: VipDetailResponse = serde_json::from_str(body)
         .map_err(|_| AppError::upstream_vip_check_failed("invalid vip response"))?;
     if parsed.status.is_some_and(|status| status != 1) {
@@ -134,10 +136,17 @@ fn parse_vip_snapshot(body: &str) -> Result<Vec<VipEntitlement>, AppError> {
             "upstream rejected vip query",
         ));
     }
-    let data = parsed
+    if parsed.data.is_none() {
+        return Err(AppError::upstream_vip_check_failed("missing vip snapshot"));
+    }
+    Ok(parsed)
+}
+
+#[cfg(test)]
+fn parse_vip_snapshot(body: &str) -> Result<Vec<VipEntitlement>, AppError> {
+    Ok(decode_vip_snapshot(body)?
         .data
-        .ok_or_else(|| AppError::upstream_vip_check_failed("missing vip snapshot"))?;
-    Ok(data
+        .unwrap()
         .busi_vip
         .iter()
         .map(VipBusinessEntry::to_entitlement)
@@ -429,14 +438,6 @@ impl AuthFailure {
     }
 }
 
-pub struct VipStatusResult {
-    /// 上游给的权益明细：**有哪几条、各自到什么时候**。这是关于会员权益的唯一口径
-    /// ——此前还额外返回一个账号级的聚合布尔值（「有没有会员」），那个值既冗余又
-    /// 低效，已删除。
-    pub entitlements: Vec<VipEntitlement>,
-    pub cookies: CookieStore,
-}
-
 pub struct MusicUrlRequest {
     pub hash: String,
     pub album_audio_id: Option<String>,
@@ -490,6 +491,7 @@ impl MusicUrlFetcher for KugouLiteClient {
 pub struct KugouLiteClient {
     base_url: String,
     client: reqwest::Client,
+    entitlement_writes: reqwest::Client,
     default_timeout: Duration,
 }
 
@@ -501,6 +503,11 @@ impl KugouLiteClient {
             // 这里不再重复归一化。
             base_url: config.kugou_api_base_url.clone(),
             client,
+            entitlement_writes: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .retry(reqwest::retry::never())
+                .build()
+                .expect("entitlement HTTP client"),
             default_timeout: Duration::from_millis(config.upstream_timeout_ms),
         }
     }
@@ -736,42 +743,6 @@ impl KugouLiteClient {
             )));
         }
         Ok(merged)
-    }
-
-    pub async fn fetch_vip_status(
-        &self,
-        cookies: &CookieStore,
-        timeout: Duration,
-    ) -> Result<VipStatusResult, AppError> {
-        // The union endpoint includes dvip and qvip alongside the Concept Edition entries.
-        let url = format!("{}/youth/union/vip", self.base_url);
-        let resp = self
-            .client
-            .get(url)
-            .timeout(timeout)
-            .header("Cookie", cookies.to_cookie_header())
-            .send()
-            .await
-            .map_err(|e| AppError::upstream_vip_check_failed(format!("vip detail: {e}")))?;
-        let status = resp.status().as_u16();
-        let mut merged = cookies.clone();
-        merge_cookies_from_headers(&mut merged, resp.headers());
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| AppError::upstream_vip_check_failed(format!("vip body: {e}")))?;
-
-        if !(200..300).contains(&status) {
-            return Err(AppError::upstream_vip_check_failed(format!(
-                "vip detail HTTP {status}"
-            )));
-        }
-        let entitlements = parse_vip_snapshot(&body)?;
-        merge_cookies_from_body_if_present(&mut merged, &body);
-        Ok(VipStatusResult {
-            entitlements,
-            cookies: merged,
-        })
     }
 
     pub async fn fetch_music_url(

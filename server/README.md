@@ -94,6 +94,19 @@ curl \
 - **旧刷新地址**。`POST /api/v1/admin/sources/{source_id}/refresh` 保留原回执，刷新 Token 成功后在后台同步权益。
 - **事件日志**。`GET /api/v1/admin/sources/{source_id}/logs` 支持 `event_type`（`music_url`、`token_refresh`、`account_login`、`entitlement`）和 `view`（`all`、`errors`）。
 
+### 每日权益领升
+
+- `PATCH /api/v1/admin/accounts/{account_id}/entitlements/renewal` 接收 `{"enabled":true}` 或 `{"enabled":false}`。开关按账号生效，存量和新绑定账号默认为关闭。
+- `POST /api/v1/admin/accounts/{account_id}/entitlements/renewal/claim` 手动领取或继续升级。手动操作在自动领取关闭时仍可用，共用每日进度、互斥和退避。响应返回当前调度状态，业务结果见 `last_outcome`。例如，`awaiting_upgrade` 表示已领待升级，`waiting_for_reconciliation` 表示要先核对日记录。
+- 音源列表的 `renewal` 和详情的 `account.renewal` 回显调度状态，两个领升接口也返回该结构。它包含领升进度、上游日、是否需要确认 `svip`、退避截止及传播等待。时间戳单位为 Unix 秒。`estimated_end_at` 是本地推算，确认的到期信息由 `entitlements` 和 `entitlements_synced_at` 提供。
+- 日志查询加 `include_renewal=true` 可查看领取、升级与日记录对账。后台领升沿用触发它的播放请求 ID。业务码 `131001` 和 `297002` 分别作为领取和升级的幂等完成记录。
+
+自动领取在目标档返回可用链接且已确认的 `svip` 剩余不足 48 小时但仍在期时触发。权益确认已过期时，只有目标档明确返回 `status: 2` 才触发。两种情况均由后续后台任务处理，本次取链照常返回链接、执行降档或返回拒绝。升级确认后有约 120 秒传播等待。
+
+写入发出前先保存当天对应步骤的进度。请求结果不明确时，后续播放或手动触发先读取日记录。当天的 `tvip` 确认领取，`svip` 确认两个步骤。超时尝试的单次预算依次为 1 秒、5 秒和 30 秒。缺失记录需等候传播预算后再确认，无法解析或未覆盖所需日期的记录会保留待对账状态。验证要求或 HTTP 502 当日暂停，HTTP 429 的指数退避从 60 秒起，最多 1 小时，重启和跨日后继续生效。
+
+当前按 UTC+8 划分上游日和解释无偏移的 `svip` 时间。切日前 35 秒暂缓写入，跨日收到的结果通过日记录核对。切日、跨日升级归属及实际日记录响应格式与可见延迟仍需上游实测。
+
 ## 洛雪运行流程 (LX Runtime Flow)
 
 **获取音源脚本：**

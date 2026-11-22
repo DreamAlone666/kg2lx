@@ -27,7 +27,21 @@ impl<T: Clone + Send + Sync + 'static> SingleFlight<T> {
         key: String,
         work: impl Future<Output = Result<T, AppError>> + Send + 'static,
     ) -> Result<T, AppError> {
-        let mut receiver = {
+        self.start(key, work)
+            .wait_for(Option::is_some)
+            .await
+            .map_err(|_| AppError::internal("account operation stopped"))?
+            .as_ref()
+            .expect("waited for a result")
+            .clone()
+    }
+
+    pub fn start(
+        &self,
+        key: String,
+        work: impl Future<Output = Result<T, AppError>> + Send + 'static,
+    ) -> watch::Receiver<Outcome<T>> {
+        {
             let mut entries = self.in_flight.lock().unwrap();
             if let Some(receiver) = entries.get(&key).filter(|rx| rx.has_changed().is_ok()) {
                 receiver.clone()
@@ -44,14 +58,7 @@ impl<T: Clone + Send + Sync + 'static> SingleFlight<T> {
                 });
                 receiver
             }
-        };
-        receiver
-            .wait_for(Option::is_some)
-            .await
-            .map_err(|_| AppError::internal("account operation stopped"))?
-            .as_ref()
-            .expect("waited for a result")
-            .clone()
+        }
     }
 }
 

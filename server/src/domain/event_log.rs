@@ -1,4 +1,5 @@
 use crate::domain::account::now_ts;
+use crate::domain::renewal::{RenewalOutcome, RenewalReason};
 use crate::error::ErrorCode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -98,6 +99,8 @@ pub enum Event {
     },
     Entitlement {
         action: EntitlementAction,
+        #[serde(flatten, skip_serializing_if = "Option::is_none")]
+        observation: Option<EntitlementEvent>,
     },
 }
 
@@ -135,6 +138,22 @@ pub enum LoginOutcome {
 #[serde(rename_all = "snake_case")]
 pub enum EntitlementAction {
     Sync,
+    Claim,
+    Upgrade,
+    ReconcileRecord,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EntitlementEvent {
+    pub reason: RenewalReason,
+    pub upstream_day: chrono::NaiveDate,
+    pub outcome: RenewalOutcome,
+    pub upstream_code: Option<i64>,
+    pub http_status: Option<u16>,
+    pub human_verification: bool,
+    pub retry_at: Option<i64>,
+    pub propagating_until: Option<i64>,
+    pub estimated_end_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -185,4 +204,5 @@ pub struct ListEvents {
     pub limit: usize,
     pub view: LogView,
     pub event_type: Option<EventType>,
+    pub include_renewal: bool,
 }
