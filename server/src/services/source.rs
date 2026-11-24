@@ -1,72 +1,9 @@
 use std::sync::Arc;
 
-use crate::config::Config;
-use crate::domain::entitlement::EntitlementSnapshot;
-use crate::domain::account::ProviderAccount;
-use crate::domain::event_log::{
-    EventContext, EventLog, EventTrigger, EventType, ListEvents, ListGlobalEvents, LogView,
-    StoredEventLog,
-};
-use crate::domain::renewal::{RenewalReason, RenewalStatus};
-use crate::domain::source::{
-    self, SCRIPT_NAME_ADVISORY_CHARS, SCRIPT_NAME_MAX_BYTES, sanitize_script_meta,
-};
+use crate::domain::source::{self, SCRIPT_NAME_MAX_BYTES, sanitize_script_meta};
 use crate::error::AppError;
 use crate::repos::account::AccountRepo;
-use crate::repos::entitlement::EntitlementRepo;
-use crate::repos::event_log::EventLogRepo;
 use crate::repos::source::SourceRepo;
-use crate::services::auth::AccountAuth;
-use crate::services::entitlement::EntitlementService;
-
-#[derive(serde::Serialize)]
-pub struct SourceListItem {
-    pub source_id: String,
-    pub account_id: String,
-    pub provider: String,
-    pub script_url: String,
-    /// 当前生效的标题（即 `Source.name`），原样返回以便后台显示计数与超长提示。
-    pub name: String,
-    /// 系统默认标题，供后台展示「默认：酷狗概念版 12345678」与一键恢复。
-    /// `userid` 缺失时返回去掉尾随空格的结果，不会产生「酷狗概念版 」这类文案。
-    pub default_name: String,
-    pub userid: String,
-    #[serde(flatten)]
-    pub entitlement: EntitlementSnapshot,
-    pub renewal: RenewalStatus,
-    pub account_status: String,
-    /// 账号最近一次刷新成功的时刻。
-    ///
-    /// 不能复用下面的 `updated_at`：`refresh_source()` 只写 account 侧的时间戳，
-    /// 从不写 `Source.updated_at`，所以源记录的时间在刷新后纹丝不动，
-    /// 用户点完刷新看不到任何变化。两个字段语义不同，界面展示刷新结果时必须用这一个。
-    pub last_refresh_at: Option<i64>,
-    /// 源记录的更新时间（绑定/改配置时变动），保留以维持 API 兼容，界面不再展示。
-    pub updated_at: i64,
-    /// 音质自动降级开关的当前值（即 `Source.quality_fallback`）。
-    ///
-    /// 列表页要直接渲染开关状态，若只放在详情里，扫一眼列表无法判断哪些音源开了
-    /// 这个会改变实际返回音质的行为。
-    pub quality_fallback: bool,
-}
-
-#[derive(serde::Serialize)]
-pub struct SourceDetail {
-    pub source_id: String,
-    pub account_id: String,
-    pub provider: String,
-    pub script_url: String,
-    /// 当前生效的标题（即 `Source.name`）。
-    pub name: String,
-    /// 系统默认标题，供后台「恢复默认」使用。
-    pub default_name: String,
-    /// 官方对标题的**建议**字符数上限，仅供后台计数提示，不参与拒绝逻辑。
-    pub name_advisory_chars: usize,
-    /// 音质自动降级开关的当前值；详情页据此渲染开关初态。
-    pub quality_fallback: bool,
-    pub runtime_token_preview: String,
-    pub account: SourceAccountInfo,
-}
 
 #[derive(serde::Serialize)]
 pub struct UpdateSourceResponse {
@@ -78,96 +15,6 @@ pub struct UpdateSourceResponse {
     /// 在一次只改标题的 PATCH 之后被渲染回默认态。
     pub quality_fallback: bool,
     pub updated_at: i64,
-}
-
-#[derive(serde::Serialize)]
-pub struct SourceAccountInfo {
-    pub userid: String,
-    #[serde(flatten)]
-    pub entitlement: EntitlementSnapshot,
-    pub renewal: RenewalStatus,
-    pub status: String,
-    pub last_refresh_at: Option<i64>,
-    pub last_error: Option<String>,
-    /// 与 `last_error` 成对：界面按这个稳定 code 查中文文案，`last_error` 只作原文兜底。
-    pub last_error_code: Option<String>,
-}
-
-/// 手动刷新的回执。
-///
-/// 只回执**这次动作本身**的结果（`ok` / 时间戳），不回执权益：刷新成功与「有没有
-/// 权益」是两件事，权益明细由列表与详情接口给出（口径已经统一在那里），在这里再
-/// 回一个聚合布尔值只会多出第二个口径。
-#[derive(serde::Serialize)]
-pub struct RefreshResponse {
-    pub ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_id: Option<String>,
-    pub updated_at: i64,
-}
-
-#[derive(serde::Serialize)]
-pub struct SourceLogsResponse {
-    pub source_id: String,
-    pub view: LogView,
-    pub event_type: Option<EventType>,
-    pub limit: usize,
-    pub items: Vec<EventLog>,
-}
-
-#[derive(serde::Serialize)]
-pub struct AccountSourceItem {
-    pub source_id: String,
-    pub provider: String,
-    pub name: String,
-    pub default_name: String,
-    pub name_advisory_chars: usize,
-    pub script_url: String,
-    pub runtime_token_preview: String,
-    pub quality_fallback: bool,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
-
-#[derive(serde::Serialize)]
-pub struct AccountItem {
-    pub account_id: String,
-    pub provider: String,
-    pub userid: String,
-    pub display_name: Option<String>,
-    pub status: String,
-    pub last_refresh_at: Option<i64>,
-    pub last_error: Option<String>,
-    pub last_error_code: Option<String>,
-    #[serde(flatten)]
-    pub entitlement: EntitlementSnapshot,
-    pub renewal: RenewalStatus,
-    pub sources: Vec<AccountSourceItem>,
-}
-
-pub struct GlobalLogsQuery {
-    pub limit: usize,
-    pub view: LogView,
-    pub event_type: Option<EventType>,
-    pub account_id: Option<String>,
-    pub source_id: Option<String>,
-    pub correlation_id: Option<String>,
-    pub before_seq: Option<i64>,
-    pub after_seq: Option<i64>,
-    pub include_renewal: bool,
-}
-
-#[derive(serde::Serialize)]
-pub struct GlobalLogsResponse {
-    pub view: LogView,
-    pub event_type: Option<EventType>,
-    pub account_id: Option<String>,
-    pub source_id: Option<String>,
-    pub correlation_id: Option<String>,
-    pub limit: usize,
-    pub has_more: bool,
-    pub next_before_seq: Option<i64>,
-    pub items: Vec<StoredEventLog>,
 }
 
 /// 音源 PATCH 的输入。
@@ -183,134 +30,18 @@ pub struct UpdateSourceInput {
 }
 
 pub struct SourceService {
-    config: Arc<Config>,
-    snapshots: Arc<dyn EntitlementRepo>,
     account_repo: Arc<dyn AccountRepo>,
     source_repo: Arc<dyn SourceRepo>,
-    log_repo: Arc<dyn EventLogRepo>,
 }
 
 impl SourceService {
-    pub fn new(
-        config: Arc<Config>,
-        snapshots: Arc<dyn EntitlementRepo>,
-        account_repo: Arc<dyn AccountRepo>,
-        source_repo: Arc<dyn SourceRepo>,
-        log_repo: Arc<dyn EventLogRepo>,
-    ) -> Self {
+    pub fn new(account_repo: Arc<dyn AccountRepo>, source_repo: Arc<dyn SourceRepo>) -> Self {
         Self {
-            config,
-            snapshots,
             account_repo,
             source_repo,
-            log_repo,
         }
     }
 
-    pub async fn list_sources(
-        &self,
-        renewals: &EntitlementService,
-    ) -> Result<Vec<SourceListItem>, AppError> {
-        let sources = self.source_repo.list_all().await?;
-        let mut items = Vec::new();
-        for s in sources {
-            let account = self.account_repo.find_by_id(&s.account_id).await?;
-            // 账号缺失时状态写空串：前端 labelOf / accountStatusTone 已有回退，
-            // 不为此新增枚举值，避免污染两个穷举词典。
-            let (userid, account_status, last_refresh_at) = match account {
-                Some(ref a) => (
-                    a.upstream_userid.clone(),
-                    a.status.as_str().to_string(),
-                    a.last_refresh_at,
-                ),
-                None => (String::new(), String::new(), None),
-            };
-            let script_url = format!("{}/s/{}.js", self.config.public_base_url, s.script_token);
-            let entitlement = self.snapshots.entitlement_snapshot(&s.account_id).await?;
-            let renewal = renewals.renewal_status(&s.account_id).await?;
-            items.push(SourceListItem {
-                source_id: s.source_id,
-                account_id: s.account_id,
-                provider: s.provider.to_string(),
-                script_url,
-                name: s.name,
-                default_name: source::default_name(&userid),
-                userid,
-                entitlement,
-                renewal,
-                account_status,
-                last_refresh_at,
-                updated_at: s.updated_at,
-                quality_fallback: s.quality_fallback,
-            });
-        }
-        Ok(items)
-    }
-
-    pub async fn get_source(
-        &self,
-        source_id: &str,
-        renewals: &EntitlementService,
-    ) -> Result<SourceDetail, AppError> {
-        let s = self
-            .source_repo
-            .find_by_id(source_id)
-            .await?
-            .ok_or_else(AppError::source_not_found)?;
-
-        let account = self
-            .account_repo
-            .find_by_id(&s.account_id)
-            .await?
-            .ok_or_else(AppError::account_not_found)?;
-
-        let script_url = format!("{}/s/{}.js", self.config.public_base_url, s.script_token);
-
-        let prefix: String = s.runtime_token.chars().take(8).collect();
-        let rt_preview = format!("{prefix}...");
-
-        Ok(SourceDetail {
-            source_id: s.source_id,
-            account_id: s.account_id,
-            provider: s.provider.to_string(),
-            script_url,
-            name: s.name,
-            default_name: source::default_name(&account.upstream_userid),
-            name_advisory_chars: SCRIPT_NAME_ADVISORY_CHARS,
-            quality_fallback: s.quality_fallback,
-            runtime_token_preview: rt_preview,
-            account: SourceAccountInfo {
-                userid: account.upstream_userid,
-                entitlement: self
-                    .snapshots
-                    .entitlement_snapshot(&account.account_id)
-                    .await?,
-                renewal: renewals.renewal_status(&account.account_id).await?,
-                status: account.status.as_str().to_string(),
-                last_refresh_at: account.last_refresh_at,
-                last_error: account.last_error,
-                last_error_code: account.last_error_code,
-            },
-        })
-    }
-
-    /// 修改音源的可配置项：标题与「音质自动降级」开关。
-    ///
-    /// 标题语义分档，且**缺失与 `null` 是两件事**：
-    /// - `name: None` => 标题**原样保留**。这是本端点从「改名端点」变成通用 PATCH 的
-    ///   核心：只改开关的请求绝不能碰到标题，否则用户的自定义标题会被静默重置；
-    /// - `name: Some(None)` 或 `Some(Some(raw))` 且 `raw.trim()` 为空 => 恢复服务端
-    ///   默认标题（实例前缀 + userid）；
-    /// - `name: Some(Some(raw))` 非空但清洗后为空（例如只填了 `*/`）=> 400，而不是
-    ///   静默变成默认名，否则用户会被无声地「改名成功」误导；
-    /// - 清洗后超过 [`SCRIPT_NAME_MAX_BYTES`] => 400。
-    ///
-    /// 写入的是清洗后的值，因此 `Source.name` 永远不含 `*/`；渲染路径再洗一遍
-    /// 只是纵深防御，而非唯一防线。注意建议长度（`SCRIPT_NAME_ADVISORY_CHARS`）
-    /// 不参与拒绝逻辑，只由列表/详情回显给后台做计数提示。
-    ///
-    /// 开关语义：`quality_fallback: None` = 不改；`Some(v)` = 直接写入 `v`。
-    /// 两个字段都是 `None` 时**完全不写盘**——见下面的注释。
     pub async fn update_source(
         &self,
         source_id: &str,
@@ -360,7 +91,12 @@ impl SourceService {
         };
         let s = if name.is_some() || input.quality_fallback.is_some() {
             self.source_repo
-                .update_settings(&s.source_id, name, input.quality_fallback, source::now_ts())
+                .update_settings(
+                    &s.source_id,
+                    name,
+                    input.quality_fallback,
+                    crate::domain::now_ts(),
+                )
                 .await?
         } else {
             s
@@ -375,254 +111,22 @@ impl SourceService {
             updated_at: s.updated_at,
         })
     }
-
-    pub async fn refresh_source(
-        &self,
-        source_id: &str,
-        auth: &Arc<AccountAuth>,
-        entitlement: &Arc<EntitlementService>,
-    ) -> Result<RefreshResponse, AppError> {
-        let source = self
-            .source_repo
-            .find_by_id(source_id)
-            .await?
-            .ok_or_else(AppError::source_not_found)?;
-        let account = self
-            .account_repo
-            .find_by_id(&source.account_id)
-            .await?
-            .ok_or_else(AppError::account_not_found)?;
-        let context =
-            EventContext::new(EventTrigger::Admin, Some(account.account_id.clone()), None);
-        let refreshed = auth.refresh_manual(account, context.clone()).await?;
-        // The compatibility route used to request both actions. Sync separately so an
-        // entitlement outage cannot delay or change the result of refreshing the token.
-        let entitlement = entitlement.clone();
-        let account_id = refreshed.account_id.clone();
-        tokio::spawn(async move {
-            let _ = entitlement
-                .sync(account_id, context, RenewalReason::PostRefresh)
-                .await;
-        });
-        Ok(RefreshResponse {
-            ok: true,
-            source_id: Some(source.source_id),
-            updated_at: refreshed.last_refresh_at.unwrap_or(refreshed.updated_at),
-        })
-    }
-
-    pub async fn refresh_account_by_id(
-        &self,
-        auth: &Arc<AccountAuth>,
-        account_id: &str,
-    ) -> Result<RefreshResponse, AppError> {
-        let account = self
-            .account_repo
-            .find_by_id(account_id)
-            .await?
-            .ok_or_else(AppError::account_not_found)?;
-
-        let context =
-            EventContext::new(EventTrigger::Admin, Some(account.account_id.clone()), None);
-        let account = auth.refresh_manual(account, context).await?;
-        Ok(RefreshResponse {
-            ok: true,
-            source_id: None,
-            updated_at: account.last_refresh_at.unwrap_or(account.updated_at),
-        })
-    }
-
-    pub async fn sync_entitlements(
-        &self,
-        service: &Arc<EntitlementService>,
-        account_id: String,
-    ) -> Result<i64, AppError> {
-        let context = EventContext::new(EventTrigger::Admin, Some(account_id.clone()), None);
-        service
-            .sync(account_id, context, RenewalReason::Manual)
-            .await
-    }
-
-    pub async fn list_source_logs(
-        &self,
-        source_id: &str,
-        limit: usize,
-        view: LogView,
-        event_type: Option<EventType>,
-        include_renewal: bool,
-    ) -> Result<SourceLogsResponse, AppError> {
-        let source = self
-            .source_repo
-            .find_by_id(source_id)
-            .await?
-            .ok_or_else(AppError::source_not_found)?;
-        let query = ListEvents {
-            source_id: source_id.into(),
-            account_id: source.account_id,
-            limit,
-            view,
-            event_type,
-            include_renewal,
-        };
-        let items = self.log_repo.list(&query).await?;
-        Ok(SourceLogsResponse {
-            source_id: source_id.into(),
-            view,
-            limit,
-            event_type,
-            items,
-        })
-    }
-
-    async fn build_account_item(
-        &self,
-        account: ProviderAccount,
-        renewals: &EntitlementService,
-    ) -> Result<AccountItem, AppError> {
-        let sources = self
-            .source_repo
-            .list_by_account_id(&account.account_id)
-            .await?;
-        let entitlement = self
-            .snapshots
-            .entitlement_snapshot(&account.account_id)
-            .await?;
-        let renewal = renewals.renewal_status(&account.account_id).await?;
-        let default_name = source::default_name(&account.upstream_userid);
-        let sources = sources
-            .into_iter()
-            .map(|s| {
-                let prefix: String = s.runtime_token.chars().take(8).collect();
-                AccountSourceItem {
-                    source_id: s.source_id,
-                    provider: s.provider.to_string(),
-                    name: s.name,
-                    default_name: default_name.clone(),
-                    name_advisory_chars: SCRIPT_NAME_ADVISORY_CHARS,
-                    script_url: format!("{}/s/{}.js", self.config.public_base_url, s.script_token),
-                    runtime_token_preview: format!("{prefix}..."),
-                    quality_fallback: s.quality_fallback,
-                    created_at: s.created_at,
-                    updated_at: s.updated_at,
-                }
-            })
-            .collect();
-
-        Ok(AccountItem {
-            account_id: account.account_id,
-            provider: account.provider.to_string(),
-            userid: account.upstream_userid,
-            display_name: account.display_name,
-            status: account.status.as_str().to_string(),
-            last_refresh_at: account.last_refresh_at,
-            last_error: account.last_error,
-            last_error_code: account.last_error_code,
-            entitlement,
-            renewal,
-            sources,
-        })
-    }
-
-    pub async fn list_accounts(
-        &self,
-        renewals: &EntitlementService,
-    ) -> Result<Vec<AccountItem>, AppError> {
-        let accounts = self.account_repo.list_all().await?;
-        let mut items = Vec::with_capacity(accounts.len());
-        for account in accounts {
-            items.push(self.build_account_item(account, renewals).await?);
-        }
-        Ok(items)
-    }
-
-    pub async fn get_account(
-        &self,
-        account_id: &str,
-        renewals: &EntitlementService,
-    ) -> Result<AccountItem, AppError> {
-        let account = self
-            .account_repo
-            .find_by_id(account_id)
-            .await?
-            .ok_or_else(AppError::account_not_found)?;
-        self.build_account_item(account, renewals).await
-    }
-
-    pub async fn list_global_logs(
-        &self,
-        input: GlobalLogsQuery,
-    ) -> Result<GlobalLogsResponse, AppError> {
-        let repo_query = ListGlobalEvents {
-            account_id: input.account_id.clone(),
-            source_id: input.source_id.clone(),
-            correlation_id: input.correlation_id.clone(),
-            event_type: input.event_type,
-            view: input.view,
-            before_seq: input.before_seq,
-            after_seq: input.after_seq,
-            limit: input.limit + 1,
-            include_renewal: input.include_renewal,
-        };
-        let mut items = self.log_repo.list_global(&repo_query).await?;
-        let has_more = items.len() > input.limit;
-        if has_more {
-            items.truncate(input.limit);
-        }
-        let next_before_seq =
-            if input.correlation_id.is_none() && input.after_seq.is_none() && has_more {
-                items.last().map(|item| item.seq)
-            } else {
-                None
-            };
-        Ok(GlobalLogsResponse {
-            view: input.view,
-            event_type: input.event_type,
-            account_id: input.account_id,
-            source_id: input.source_id,
-            correlation_id: input.correlation_id,
-            limit: input.limit,
-            has_more,
-            next_before_seq,
-            items,
-        })
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::account::AccountStatus;
-    use crate::domain::entitlement::VipEntitlement;
-
-    use std::sync::Mutex;
-
-    use async_trait::async_trait;
-
+    use crate::domain::account::{AccountStatus, ProviderAccount};
     use crate::domain::cookie_store::CookieStore;
     use crate::domain::provider::ProviderKind;
     use crate::domain::source::Source;
-    use crate::repos::sqlite::Sqlite;
-    use crate::services::kugou_lite_client::KugouLiteClient;
-
-    fn renewal_status_reader(config: &Config) -> (EntitlementService, tempfile::TempDir) {
-        let dir = tempfile::tempdir().unwrap();
-        let storage = Arc::new(Sqlite::open(dir.path(), config.event_log_limit).unwrap());
-        let service = EntitlementService::new(
-            Arc::new(KugouLiteClient::new(config)),
-            storage.clone(),
-            storage.clone(),
-            storage.clone(),
-            storage,
-            Arc::default(),
-            source::now_ts,
-        );
-        (service, dir)
-    }
+    use async_trait::async_trait;
+    use std::sync::Mutex;
 
     // ---- 测试替身 ----
     //
     // `update_source` 只在「查音源 → 查账号 → 写音源」这三步里活动，没有任何上游
-    // 调用，所以这些测试不需要网络。刻意不用真实 `Fs*` 仓库：那要读写临时目录，
+    // 调用，所以这些测试不需要网络。刻意用内存替身：
     // 会把「到底写没写」这个断言埋进文件系统噪声里。
 
     /// 把 `upsert` 写进来的东西留一份。
@@ -667,15 +171,6 @@ mod tests {
             Ok(None)
         }
 
-        async fn list_by_account_id(&self, account_id: &str) -> Result<Vec<Source>, AppError> {
-            Ok(self
-                .source
-                .clone()
-                .into_iter()
-                .filter(|s| s.account_id == account_id)
-                .collect())
-        }
-
         async fn update_settings(
             &self,
             _source_id: &str,
@@ -695,10 +190,6 @@ mod tests {
             writes.push(source.clone());
             Ok(source)
         }
-
-        async fn list_all(&self) -> Result<Vec<Source>, AppError> {
-            Ok(self.source.clone().into_iter().collect())
-        }
     }
 
     struct FakeAccountRepo {
@@ -707,10 +198,6 @@ mod tests {
 
     #[async_trait]
     impl AccountRepo for FakeAccountRepo {
-        async fn list_all(&self) -> Result<Vec<ProviderAccount>, AppError> {
-            Ok(self.account.clone().into_iter().collect())
-        }
-
         async fn find_by_id(&self, _account_id: &str) -> Result<Option<ProviderAccount>, AppError> {
             Ok(self.account.clone())
         }
@@ -740,64 +227,6 @@ mod tests {
         }
     }
 
-    struct FakeSnapshot(EntitlementSnapshot);
-
-    #[async_trait]
-    impl EntitlementRepo for FakeSnapshot {
-        async fn entitlement_snapshot(
-            &self,
-            _account_id: &str,
-        ) -> Result<EntitlementSnapshot, AppError> {
-            Ok(self.0.clone())
-        }
-
-        async fn record_sync(
-            &self,
-            _account_id: &str,
-            _snapshot: Option<(crate::domain::entitlement::EntitlementObservation, i64)>,
-        ) -> Result<(), AppError> {
-            unreachable!("test did not expect an entitlement sync");
-        }
-    }
-
-    /// 本模块不查日志，只需要一个「查了也不炸」的空实现。
-    #[derive(Default)]
-    struct EmptyLogRepo;
-
-    #[async_trait]
-    impl EventLogRepo for EmptyLogRepo {
-        async fn append(&self, _log: &EventLog) -> Result<(), AppError> {
-            Ok(())
-        }
-
-        async fn list(&self, _query: &ListEvents) -> Result<Vec<EventLog>, AppError> {
-            Ok(Vec::new())
-        }
-
-        async fn list_global(
-            &self,
-            _query: &ListGlobalEvents,
-        ) -> Result<Vec<StoredEventLog>, AppError> {
-            Ok(Vec::new())
-        }
-    }
-
-    fn test_config() -> Arc<Config> {
-        Arc::new(Config {
-            listen_addr: "127.0.0.1:0".into(),
-            public_base_url: "http://127.0.0.1:8787".into(),
-            admin_token: "test-admin-token".into(),
-            // 更新路径不该发出任何上游请求。端口取 1 是有意为之：万一哪天真的发了，
-            // 连不上会比「连上了测试环境」更早、更明显地失败。
-            kugou_api_base_url: "http://127.0.0.1:1".into(),
-            data_dir: "./data".into(),
-            upstream_timeout_ms: 1_000,
-            account_refresh_ttl: 6 * 3600,
-            event_log_limit: crate::config::DEFAULT_EVENT_LOG_LIMIT,
-            web_dist_dir: None,
-        })
-    }
-
     const TEST_USERID: &str = "userid_test";
 
     fn sample_source() -> Source {
@@ -825,7 +254,6 @@ mod tests {
             account_id: "acc_test".into(),
             provider: ProviderKind::KugouLite,
             upstream_userid: TEST_USERID.into(),
-            display_name: None,
             status: AccountStatus::Active,
             cookies: CookieStore::new(),
             last_refresh_at: None,
@@ -838,28 +266,14 @@ mod tests {
     }
 
     fn build_service(source: Source) -> (SourceService, Arc<RecordingSourceRepo>) {
-        build_service_with_snapshot(source, EntitlementSnapshot::default())
-    }
-
-    /// 同上，但账号由调用方给出：权益明细的曝光测试需要账号真的带着权益。
-    fn build_service_with_snapshot(
-        source: Source,
-        snapshot: EntitlementSnapshot,
-    ) -> (SourceService, Arc<RecordingSourceRepo>) {
-        let config = test_config();
         let source_repo = Arc::new(RecordingSourceRepo::new(source));
-        let account_repo: Arc<dyn AccountRepo> = Arc::new(FakeAccountRepo {
+        let account_repo = Arc::new(FakeAccountRepo {
             account: Some(sample_account()),
         });
-        let log_repo: Arc<dyn EventLogRepo> = Arc::new(EmptyLogRepo);
-        let service = SourceService::new(
-            config,
-            Arc::new(FakeSnapshot(snapshot)),
-            account_repo,
-            source_repo.clone(),
-            log_repo,
-        );
-        (service, source_repo)
+        (
+            SourceService::new(account_repo, source_repo.clone()),
+            source_repo,
+        )
     }
 
     /// 只改开关时，标题必须**原样保留**。
@@ -1000,107 +414,5 @@ mod tests {
         assert_eq!(resp.name, expected);
         assert_eq!(repo.upserts().len(), 1);
         assert_eq!(repo.upserts()[0].name, expected);
-    }
-
-    /// 新增字段必须出现在列表与详情响应里：界面据此渲染开关初态，
-    /// 少一个字段会让开关永远显示为关。
-    #[tokio::test]
-    async fn list_and_detail_echo_quality_fallback() {
-        let source = Source {
-            quality_fallback: true,
-            ..sample_source()
-        };
-        let (service, _repo) = build_service(source);
-        let (renewals, _dir) = renewal_status_reader(&service.config);
-
-        let list = service.list_sources(&renewals).await.expect("list");
-        assert_eq!(list.len(), 1);
-        assert!(list[0].quality_fallback, "列表必须回显开关当前值");
-
-        let detail = service
-            .get_source("src_test", &renewals)
-            .await
-            .expect("detail");
-        assert!(detail.quality_fallback, "详情必须回显开关当前值");
-    }
-
-    /// 权益明细在**列表与详情上是同一份数据**，且账号级的两个聚合列
-    /// （`vip_active` / `vip_type`）不得以任何形式回到 wire 上。
-    ///
-    /// 断言落在序列化后的 JSON 上而不是结构体的字段上：「列表带不带权益明细」
-    /// 只有在 wire 上才有意义（结构体里多加一个字段、只要它没被序列化出去，用户的
-    /// 列表请求就没变重）。这条同时钉住两件事——列表**必须**带明细（此前那里只有一个
-    /// 聚合布尔值回答「还有没有权益」，那个值已删除，现在由有名字的权益回答），
-    /// 以及两个聚合列**不得**复活。
-    ///
-    /// 列表与详情各自的那一份必须逐字相等：两处口径一旦分叉，用户会看到两个页面对
-    /// 同一个账号给出不同的答案，而没有任何一层会报错。
-    #[tokio::test]
-    async fn entitlements_are_exposed_in_both_the_list_and_the_detail() {
-        let snapshot = EntitlementSnapshot {
-            items: Some(vec![
-                VipEntitlement {
-                    product_type: "svip".into(),
-                    active: true,
-                    begin_at: Some(1700000000),
-                    end_at: Some(1702678400),
-                },
-                VipEntitlement {
-                    product_type: "tvip".into(),
-                    active: false,
-                    begin_at: None,
-                    end_at: None,
-                },
-            ]),
-            ..EntitlementSnapshot::default()
-        };
-        let (service, _repo) = build_service_with_snapshot(sample_source(), snapshot);
-        let (renewals, _dir) = renewal_status_reader(&service.config);
-
-        // 「上游没说」的时间必须是 `null` 而不是 0（那是 1970 年）；这条由下面的
-        // 整体相等断言一并钉住。
-        let expected = serde_json::json!([
-            {
-                "product_type": "svip",
-                "active": true,
-                "begin_at": 1700000000,
-                "end_at": 1702678400,
-            },
-            {
-                "product_type": "tvip",
-                "active": false,
-                "begin_at": null,
-                "end_at": null,
-            },
-        ]);
-
-        let list =
-            serde_json::to_value(service.list_sources(&renewals).await.expect("list")).unwrap();
-        assert_eq!(list.as_array().unwrap().len(), 1);
-        assert_eq!(
-            list[0]["entitlements"], expected,
-            "列表必须带权益明细：扫一眼列表要能看出这个账号有哪些权益"
-        );
-
-        let detail = serde_json::to_value(
-            service
-                .get_source("src_test", &renewals)
-                .await
-                .expect("detail"),
-        )
-        .unwrap();
-        assert_eq!(
-            detail["account"]["entitlements"], expected,
-            "详情与列表必须是同一份数据，口径不得分叉"
-        );
-
-        for (label, payload) in [("列表", &list[0]), ("详情账号", &detail["account"])] {
-            for column in ["vip_active", "vip_type"] {
-                assert!(
-                    payload.get(column).is_none(),
-                    "{label}上不该再有 {column}：权益的唯一口径是 entitlements"
-                );
-            }
-        }
     }
 }

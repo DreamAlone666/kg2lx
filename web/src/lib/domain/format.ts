@@ -40,28 +40,6 @@ export function formatClockTime(ts: number | null | undefined): string {
 }
 
 /**
- * 日志行的时刻：当天只给 `HH:mm:ss`，跨天时补 `MM-DD`。
- *
- * 运行时日志是**跨天混排**的：线上 20 行窗口实测横跨 2026-05 ~ 2026-09。
- * 只显示时分秒会让「21:14 → 14:50」读起来像同一天的几小时，实际相隔四个月，
- * 时间列于是从「排序依据」退化成了错误信息——用户会把四个月前的失败当成刚发生的。
- *
- * 当天不补日期是为了保住 8 字符的紧凑宽度（绝大多数行都是当天），跨天才加宽到
- * 14 字符。精确到年仍可在 title 里读到（见事件日志页面），不必为长尾牺牲常态列宽。
- */
-export function formatLogTime(ts: number | null | undefined, now: number = Date.now()): string {
-	const clock = formatClockTime(ts);
-	if (ts === null || ts === undefined || !Number.isFinite(ts)) return clock;
-	const d = new Date(ts * 1000);
-	const t = new Date(now);
-	const sameDay =
-		d.getFullYear() === t.getFullYear() &&
-		d.getMonth() === t.getMonth() &&
-		d.getDate() === t.getDate();
-	return sameDay ? clock : `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${clock}`;
-}
-
-/**
  * Unix 毫秒级时间戳 → 完整本地时间 `YYYY-MM-DD HH:mm:ss.SSS`（24 小时制）。
  * 明确按毫秒处理，专用于事件日志 created_at_ms。
  */
@@ -162,8 +140,7 @@ export function formatDuration(seconds: number): string {
  * 两者都不可用（没有时长、时长为 0 或负、算不出有限值）时返回 `null`，由调用方决定
  * 不显示——返回 0 或 NaN 会一路渲染成 `0kbps` / `NaNkbps` 这种界面上的假事实。
  *
- * 该文件保持零依赖：进出都是标量，刻意不 import `RuntimeLogListItem`——日志行的字段
- * 形状变化不该把展示格式化拖下水。
+ * 输入和输出均为标量。
  */
 export function effectiveBitRate(
 	bitRate: number | null,

@@ -11,5 +11,9 @@ pub async fn get_script(
         .strip_suffix(".js")
         .ok_or_else(|| AppError::invalid_request("script path must end with .js"))?;
 
-    state.script.render_script_by_token(script_token).await
+    state
+        .script
+        .render_script_by_token(script_token)
+        .await
+        .map_err(AppError::for_public_response)
 }

@@ -3,7 +3,6 @@
 	import { replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import {
-		Alert,
 		Button,
 		Card,
 		CardContent,
@@ -20,12 +19,12 @@
 		effectiveBitRate,
 		eventDiagnosticErrorLabel,
 		eventOutcomeBadge,
-		eventTypeLabel,
 		formatBitRate,
 		formatClockTime,
 		formatDateTimeMs,
 		formatLatency,
 		formatLogTimeMs,
+		entitlementCompletionLabel,
 		isEntitlementAlreadyDone,
 		labelOf,
 		qualityLabel,
@@ -293,7 +292,7 @@
 			{@const d = event.detail}
 			{#if isEntitlementAlreadyDone(d) && d.upstream_code !== undefined && d.upstream_code !== null}
 				<span class="tabular font-mono text-muted-foreground">
-					上游码 {d.upstream_code}（今日已领）
+					上游码 {d.upstream_code}（{entitlementCompletionLabel(d)}）
 				</span>
 			{/if}
 			{#if d.http_status !== undefined && d.http_status !== null && !isEntitlementAlreadyDone(d) && !event.ok}
@@ -409,7 +408,7 @@
 						</button>
 
 						{#each logsController.accounts as acc (acc.account_id)}
-							{@const accLabel = acc.sources[0]?.name || acc.display_name || `账号 ${acc.userid}`}
+							{@const accLabel = acc.sources[0]?.name || `账号 ${acc.userid}`}
 							{@const active = logsController.accountId === acc.account_id}
 							<button
 								type="button"

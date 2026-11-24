@@ -4,19 +4,18 @@ use std::time::{Duration, Instant};
 use chrono::NaiveDate;
 
 use super::{EntitlementService, action_observation};
-use crate::domain::account::{AccountStatus, ProviderAccount};
+use crate::domain::account::ProviderAccount;
 use crate::domain::event_log::{EntitlementAction, EventContext, EventTrigger};
 use crate::domain::renewal::{
-    DailyProgress, DayPause, GrantStep, MIDNIGHT_MARGIN, PROPAGATION_WINDOW, PlaybackSignal,
-    RENEWAL_THRESHOLD, RenewalOutcome, RenewalReason, RenewalSettings, RenewalStatus, StepState,
-    SvipEvidence, WRITE_TIMEOUTS, next_upstream_day_start, upstream_day,
+    DailyProgress, DayPause, GrantStep, MAX_RECORD_READS, MIDNIGHT_MARGIN, PROPAGATION_WINDOW,
+    PlaybackSignal, RENEWAL_THRESHOLD, RenewalOutcome, RenewalReason, RenewalSettings,
+    RenewalStatus, StepState, SvipEvidence, WRITE_TIMEOUTS, next_upstream_day_start, upstream_day,
 };
 use crate::error::{AppError, ErrorCode};
 use crate::services::kugou_lite_client::entitlement::{
     DailyRecord, FailureKind, GrantResult, RecordEntry, UpstreamFailure,
 };
 
-const MAX_RECORD_READS: u8 = 8;
 const MAX_SNAPSHOT_READ_ATTEMPTS: u8 = 2;
 const READ_RETRY_DELAY: i64 = 30;
 const REJECTED_RETRY_DELAY: i64 = 15;
@@ -36,7 +35,6 @@ impl RenewalRun {
 
     fn can_continue(&self, now: i64) -> bool {
         upstream_day(now) == self.day
-            && self.account.status != AccountStatus::Disabled
             && self.progress.paused.is_none()
             && self.progress.retry_at.is_none_or(|until| until <= now)
             && self
@@ -113,14 +111,6 @@ impl EntitlementService {
             return Ok(());
         }
         let account = self.account(account_id).await?;
-        if account.status == AccountStatus::Disabled {
-            return if signal.is_some() {
-                Ok(())
-            } else {
-                Err(AppError::account_disabled())
-            };
-        }
-
         let now = (self.now)();
         let day = upstream_day(now);
         let mut run = RenewalRun {
@@ -171,11 +161,15 @@ impl EntitlementService {
     ) -> Result<Option<(RenewalReason, SvipEvidence)>, AppError> {
         if run.progress.next_step().is_none() {
             // When the cache has settled, give the confirmed snapshot one chance to catch up.
-            if evidence == SvipEvidence::Unknown && !run.progress.post_upgrade_read {
+            if evidence == SvipEvidence::Unknown
+                && !run.progress.post_upgrade_read
+                && self
+                    .confirm_automatic_snapshot(run, RenewalReason::ConfirmSnapshot)
+                    .await?
+                    .is_some()
+            {
                 run.progress.post_upgrade_read = true;
                 self.save_run(run, None).await?;
-                self.confirm_automatic_snapshot(run, RenewalReason::ConfirmSnapshot)
-                    .await?;
             }
             return Ok(None);
         }
@@ -197,7 +191,10 @@ impl EntitlementService {
             }
             run.progress.snapshot_reads += 1;
             self.save_run(run, None).await?;
-            evidence = self.confirm_automatic_snapshot(run, reason).await?;
+            evidence = self
+                .confirm_automatic_snapshot(run, reason)
+                .await?
+                .unwrap_or_default();
         }
         let trigger = match (signal, evidence.remaining((self.now)())) {
             (PlaybackSignal::Link, Some(remaining))
@@ -215,22 +212,24 @@ impl EntitlementService {
         &self,
         run: &mut RenewalRun,
         reason: RenewalReason,
-    ) -> Result<SvipEvidence, AppError> {
+    ) -> Result<Option<SvipEvidence>, AppError> {
         match self
             .read_snapshot(&mut run.account, &run.context, reason)
             .await?
         {
             Ok((_, evidence)) => {
-                run.progress.snapshot_reads = MAX_SNAPSHOT_READ_ATTEMPTS;
-                self.save_run(run, None).await?;
-                Ok(evidence)
+                if reason == RenewalReason::ReconcileMismatch {
+                    run.progress.snapshot_reads = MAX_SNAPSHOT_READ_ATTEMPTS;
+                    self.save_run(run, None).await?;
+                }
+                Ok(Some(evidence))
             }
             Err(failure) => {
                 let now = (self.now)();
                 self.apply_backoff(run, failure, now).await?;
                 run.progress.retry_at = Some(now + READ_RETRY_DELAY);
                 self.save_run(run, None).await?;
-                Ok(SvipEvidence::Unknown)
+                Ok(None)
             }
         }
     }
@@ -326,6 +325,7 @@ impl EntitlementService {
         // Save today's evidence before closing yesterday. A restart between these writes still
         // sees either the evidence or the older unresolved request.
         self.save_run(run, propagating_until).await?;
+        let mut safe_after = run.progress.uncertain_until.unwrap_or_default();
         for (day, mut progress) in older {
             let entry = record.entry(day);
             let upgraded = observe_record(&mut progress, &entry);
@@ -341,13 +341,13 @@ impl EntitlementService {
                 propagating_until = propagating_until.or(propagate);
             } else {
                 may_continue = false;
+                safe_after = safe_after.max(progress.uncertain_until.unwrap_or_default());
             }
         }
         if let Some(until) = propagating_until {
             run.settings.propagating_until = Some(until);
         }
         let outcome = if !may_continue {
-            let safe_after = run.progress.uncertain_until.unwrap_or_default();
             run.progress.retry_at = Some((now + READ_RETRY_DELAY).max(safe_after));
             RenewalOutcome::Deferred
         } else if confirmed || (pending.is_some() && run.progress.next_step() != pending) {
@@ -393,6 +393,7 @@ impl EntitlementService {
         let sent_at = (self.now)();
         if upstream_day(sent_at) != run.day || sent_at >= midnight - MIDNIGHT_MARGIN {
             restore_unsent(&mut run.progress, step);
+            run.progress.retry_at = Some(midnight);
             self.save_run(run, None).await?;
             return Ok(false);
         }

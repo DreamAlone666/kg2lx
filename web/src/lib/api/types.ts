@@ -1,6 +1,6 @@
 export type ProviderKind = 'kugou_lite';
 
-export type AccountStatus = 'active' | 'pending' | 'disabled' | 'login_failed';
+export type AccountStatus = 'active' | 'login_failed';
 
 export type LoginSessionStatus =
   | 'pending'
@@ -55,6 +55,7 @@ export type RenewalReason =
 export type RenewalState =
   | 'ready'
   | 'waiting_for_reconciliation'
+  | 'reconciliation_exhausted'
   | 'verification_paused'
   | 'upstream_unavailable'
   | 'rate_limited'
@@ -82,32 +83,12 @@ export type AccountItem = EntitlementSnapshot & {
   account_id: string;
   provider: ProviderKind;
   userid: string;
-  display_name: string | null;
   status: AccountStatus;
   last_refresh_at: number | null;
   last_error: string | null;
   last_error_code: string | null;
   renewal: RenewalStatus;
   sources: AccountSourceItem[];
-};
-
-export type SourceDetail = {
-  source_id: string;
-  account_id: string;
-  provider: ProviderKind;
-  script_url: string;
-  name: string;
-  default_name: string;
-  name_advisory_chars: number;
-  quality_fallback: boolean;
-  runtime_token_preview: string;
-  account: EntitlementSnapshot & {
-    userid: string;
-    status: AccountStatus;
-    last_refresh_at: number | null;
-    last_error_code: string | null;
-    last_error: string | null;
-  };
 };
 
 export type UpdateSourceResponse = {

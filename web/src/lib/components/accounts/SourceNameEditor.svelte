@@ -29,9 +29,11 @@
 	let inputEl = $state<HTMLInputElement | null>(null);
 	let renameButton = $state<HTMLButtonElement | HTMLAnchorElement | null>(null);
 
-	const hintId = $derived(`source-name-hint-${source.source_id}`);
+	const uid = $props.id();
+	const hintId = `source-name-hint-${uid}`;
 	const count = $derived([...draft].length);
 	const overAdvisory = $derived(count > source.name_advisory_chars);
+	const overLimit = $derived(new TextEncoder().encode(draft.trim()).byteLength > 256);
 	const isEmptyDraft = $derived(draft.trim() === '');
 	const saving = $derived(Boolean(accountsController.savingSourceName[source.source_id]));
 
@@ -58,28 +60,35 @@
 
 	async function save() {
 		const submitted = draft.trim();
+		const previousName = source.name;
+		if ((submitted || source.default_name) === previousName) {
+			await exitEdit();
+			return;
+		}
 		const res = await accountsController.renameSource(
 			source.source_id,
 			submitted === '' ? null : submitted
 		);
 
 		if (res.status === 'failed') {
-			toast.error(accountsController.error ?? '保存失败，请重试。');
+			toast.error(res.message);
 			return;
 		}
 
+		if (res.status !== 'ok') return;
+		const { name } = res.value;
 		if (submitted === '') {
-			toast.success(`已恢复默认标题「${res.name}」。`);
-		} else if (submitted !== res.name) {
+			toast.success(`已恢复默认标题「${name}」。`);
+		} else if (submitted !== name) {
 			toast.push({
 				tone: 'warning',
-				message: `已保存为「${res.name}」。脚本头部只能容纳单行纯文本，标题中的空白与特殊字符已由服务端规范化。`
+				message: `已保存为「${name}」。脚本头部只能容纳单行纯文本，标题中的空白与特殊字符已由服务端规范化。`
 			});
 		} else {
 			toast.success('标题已保存。');
 		}
 
-		onRenamed?.(source.source_id);
+		if (name !== previousName) onRenamed?.(source.source_id);
 		await exitEdit();
 	}
 </script>
@@ -102,8 +111,10 @@
 			/>
 
 			<div id={hintId} class="flex flex-wrap gap-x-2 text-xs">
-				<span class={cn('tabular', overAdvisory ? 'text-warning' : 'text-muted-foreground')}>
-					{#if overAdvisory}
+				<span class={cn('tabular', (overLimit || overAdvisory) ? 'text-warning' : 'text-muted-foreground')}>
+					{#if overLimit}
+						当前输入超过 256 字节，净化后仍超出会被拒绝。
+					{:else if overAdvisory}
 						已输入 {count} 个字符（超出官方建议的 {source.name_advisory_chars} 个，不影响导入）
 					{:else}
 						已输入 {count} 个字符（官方建议不超过 {source.name_advisory_chars} 个）
@@ -120,7 +131,7 @@
 				<Button
 					type="submit"
 					size="sm"
-					disabled={draft.trim() === source.name}
+					disabled={(draft.trim() || source.default_name) === source.name}
 					pending={saving}
 					pendingLabel="保存中…"
 				>

@@ -1,10 +1,8 @@
 use async_trait::async_trait;
-use rusqlite::{Connection, ToSql, params};
+use rusqlite::{Connection, ToSql, TransactionBehavior, params};
 
 use super::{Sqlite, decode, encode};
-use crate::domain::event_log::{
-    EventLog, EventType, ListEvents, ListGlobalEvents, LogView, StoredEventLog,
-};
+use crate::domain::event_log::{EventLog, EventType, ListGlobalEvents, LogView, StoredEventLog};
 use crate::error::AppError;
 use crate::repos::event_log::EventLogRepo;
 
@@ -18,7 +16,7 @@ fn retention_limit(kind: EventType, configured: i64) -> i64 {
 }
 
 pub(super) fn prune_all(conn: &mut Connection, configured: i64) -> rusqlite::Result<()> {
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     for kind in [
         EventType::MusicUrl,
         EventType::TokenRefresh,
@@ -47,7 +45,7 @@ fn list_global_sql_and_params(query: &ListGlobalEvents) -> (String, Vec<Box<dyn 
     let mut params: Vec<Box<dyn ToSql>> = Vec::new();
 
     if let Some(ref correlation_id) = query.correlation_id {
-        clauses.push("json_extract(payload_json, '$.correlation_id') = ?");
+        clauses.push("correlation_id = ?");
         params.push(Box::new(correlation_id.clone()));
     }
     if let Some(ref source_id) = query.source_id {
@@ -64,11 +62,6 @@ fn list_global_sql_and_params(query: &ListGlobalEvents) -> (String, Vec<Box<dyn 
     }
     if query.view == LogView::Errors {
         clauses.push("NOT ok");
-    }
-    if !query.include_renewal {
-        clauses.push(
-            "(event_type <> 'entitlement' OR json_extract(payload_json, '$.detail.action') = 'sync')",
-        );
     }
     if let Some(before_seq) = query.before_seq {
         clauses.push("seq < ?");
@@ -97,50 +90,24 @@ fn list_global_sql_and_params(query: &ListGlobalEvents) -> (String, Vec<Box<dyn 
     (sql, params)
 }
 
-fn list_sql(filtered: bool, include_renewal: bool) -> String {
-    // The two branches are disjoint. A concrete type predicate lets each index seek to the
-    // selected category and supply seq order directly to UNION ALL's merge.
-    let type_filter = if filtered { "AND event_type = ?5" } else { "" };
-    let account_index = if filtered {
-        "INDEXED BY event_logs_by_account_type"
-    } else {
-        "INDEXED BY event_logs_by_account"
-    };
-    let renewal_filter = if include_renewal {
-        ""
-    } else {
-        // The existing web client only labels snapshot syncs.
-        "AND (event_type <> 'entitlement' OR json_extract(payload_json, '$.detail.action') = 'sync')"
-    };
-    format!(
-        "SELECT payload_json FROM (
-            SELECT seq, payload_json FROM event_logs WHERE source_id = ?1 AND (NOT ?3 OR NOT ok)
-                {type_filter} {renewal_filter}
-            UNION ALL
-            SELECT seq, payload_json FROM event_logs {account_index} WHERE source_id IS NULL AND account_id = ?2
-                AND (NOT ?3 OR NOT ok) {type_filter} {renewal_filter}
-            ORDER BY seq DESC LIMIT ?4
-        )"
-    )
-}
-
 #[async_trait]
 impl EventLogRepo for Sqlite {
     async fn append(&self, log: &EventLog) -> Result<(), AppError> {
         let log = log.clone();
         let configured = self.event_log_limit;
         self.run(move |conn| {
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let kind = log.event.event_type();
             tx.prepare_cached(
-                "INSERT INTO event_logs (source_id, account_id, event_type, ok, payload_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO event_logs (source_id, account_id, event_type, ok, correlation_id, payload_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )?
             .execute(params![
                 log.context.source_id,
                 log.context.account_id,
                 kind.as_str(),
                 log.ok,
+                log.context.correlation_id,
                 encode(&log)?
             ])?;
             prune(&tx, kind, configured)?;
@@ -149,34 +116,19 @@ impl EventLogRepo for Sqlite {
         .await
     }
 
-    async fn list(&self, query: &ListEvents) -> Result<Vec<EventLog>, AppError> {
-        let source_id = query.source_id.clone();
-        let account_id = query.account_id.clone();
-        let event_type = query.event_type.map(EventType::as_str);
-        let errors_only = query.view == LogView::Errors;
-        let include_renewal = query.include_renewal;
-        let limit = query.limit as i64;
-        self.run(move |conn| {
-            let mut stmt = conn.prepare_cached(&list_sql(event_type.is_some(), include_renewal))?;
-            let params: [&dyn ToSql; 5] =
-                [&source_id, &account_id, &errors_only, &limit, &event_type];
-            let count = if event_type.is_some() { 5 } else { 4 };
-            stmt.query_map(&params[..count], |row| decode(row.get_ref(0)?.as_str()?, 0))?
-                .collect()
-        })
-        .await
-    }
-
     async fn list_global(&self, query: &ListGlobalEvents) -> Result<Vec<StoredEventLog>, AppError> {
         let query = query.clone();
         self.run(move |conn| {
             let (sql, params) = list_global_sql_and_params(&query);
-            let mut stmt = conn.prepare_cached(&sql)?;
-            stmt.query_map(rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())), |row| {
-                let seq: i64 = row.get(0)?;
-                let log: EventLog = decode(row.get_ref(1)?.as_str()?, 1)?;
-                Ok(StoredEventLog { seq, log })
-            })?
+            let mut stmt = conn.prepare(&sql)?;
+            stmt.query_map(
+                rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+                |row| {
+                    let seq: i64 = row.get(0)?;
+                    let log: EventLog = decode(row.get_ref(1)?.as_str()?, 1)?;
+                    Ok(StoredEventLog { seq, log })
+                },
+            )?
             .collect()
         })
         .await
@@ -190,7 +142,6 @@ mod tests {
         EntitlementAction, Event, EventContext, EventTrigger, LoginOutcome, MusicUrlEvent,
         MusicUrlStage, RefreshReason,
     };
-    use rusqlite::StatementStatus;
 
     fn context(source: Option<&str>) -> EventContext {
         EventContext::new(
@@ -200,19 +151,21 @@ mod tests {
         )
     }
 
-    fn query(event_type: EventType) -> ListEvents {
-        ListEvents {
-            source_id: "src-test".into(),
-            account_id: "test-account".into(),
+    fn query(event_type: EventType) -> ListGlobalEvents {
+        ListGlobalEvents {
+            source_id: None,
+            account_id: Some("test-account".into()),
+            correlation_id: None,
+            before_seq: None,
+            after_seq: None,
             limit: 20,
             view: LogView::All,
             event_type: Some(event_type),
-            include_renewal: false,
         }
     }
 
     #[tokio::test]
-    async fn busy_music_pool_preserves_each_low_frequency_type_and_uses_a_type_seek() {
+    async fn busy_music_pool_preserves_each_low_frequency_type() {
         let dir = tempfile::tempdir().unwrap();
         let db = Sqlite::open(dir.path(), 10_000).unwrap();
         let sync = || Event::Entitlement {
@@ -244,15 +197,6 @@ mod tests {
         for event in &low_frequency {
             db.append(event).await.unwrap();
         }
-        db.append(&EventLog::new(
-            context(Some("src-other")),
-            sync(),
-            None,
-            None,
-        ))
-        .await
-        .unwrap();
-
         let music = EventLog::new(
             context(Some("src-test")),
             Event::MusicUrl(Box::new(MusicUrlEvent {
@@ -286,15 +230,21 @@ mod tests {
             db.append(&music).await.unwrap();
         }
 
-        let rows = db.list(&query(EventType::Entitlement)).await.unwrap();
+        let rows = db
+            .list_global(&query(EventType::Entitlement))
+            .await
+            .unwrap();
         assert_eq!(
-            rows.iter().map(|row| &row.log_id).collect::<Vec<_>>(),
+            rows.iter().map(|row| &row.log.log_id).collect::<Vec<_>>(),
             [&low_frequency[3].log_id, &low_frequency[2].log_id]
         );
         for log in &low_frequency[..2] {
-            let rows = db.list(&query(log.event.event_type())).await.unwrap();
+            let rows = db
+                .list_global(&query(log.event.event_type()))
+                .await
+                .unwrap();
             assert_eq!(rows.len(), 1);
-            assert_eq!(rows[0].log_id, log.log_id);
+            assert_eq!(rows[0].log.log_id, log.log_id);
         }
 
         db.run(|conn| {
@@ -304,25 +254,6 @@ mod tests {
                 |row| row.get(0),
             )?;
             assert_eq!(log_total, 10_000);
-            let sql = list_sql(true, false);
-            let parameters = params!["src-test", "test-account", false, 20, "entitlement"];
-            let mut plan = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
-            let details = plan
-                .query_map(parameters, |row| row.get::<_, String>(3))?
-                .collect::<rusqlite::Result<Vec<_>>>()?
-                .join("\n");
-            assert!(
-                details.contains("event_logs_by_source_type (source_id=? AND event_type=?)"),
-                "{details}"
-            );
-            assert!(
-                details.contains("event_logs_by_account_type (account_id=? AND event_type=?)"),
-                "{details}"
-            );
-
-            let mut statement = conn.prepare(&sql)?;
-            assert_eq!(statement.query_map(parameters, |_| Ok(()))?.count(), 2);
-            assert!(statement.get_status(StatementStatus::VmStep) < 1_000);
             Ok(())
         })
         .await
@@ -374,13 +305,7 @@ mod tests {
                 Some(crate::error::ErrorCode::UpstreamLoginFailed),
             ),
             make_log(Some("acc_1"), None, "corr_chain", refresh_ev.clone(), None),
-            make_log(
-                Some("acc_1"),
-                Some("src_1"),
-                "corr_chain",
-                sync_ev(),
-                None,
-            ),
+            make_log(Some("acc_1"), Some("src_1"), "corr_chain", sync_ev(), None),
             make_log(
                 Some("acc_1"),
                 Some("src_1"),
@@ -407,7 +332,6 @@ mod tests {
                         before_seq: None,
                         after_seq: None,
                         limit: 10,
-                        include_renewal: true,
                     },
                     "event_logs_by_account_all (account_id=?)",
                 ),
@@ -421,7 +345,6 @@ mod tests {
                         before_seq: None,
                         after_seq: Some(1),
                         limit: 10,
-                        include_renewal: true,
                     },
                     "event_logs_by_account_all (account_id=? AND seq>?)",
                 ),
@@ -435,7 +358,6 @@ mod tests {
                         before_seq: Some(100),
                         after_seq: None,
                         limit: 10,
-                        include_renewal: false,
                     },
                     "event_logs_by_account_all_type (account_id=? AND event_type=? AND seq<?)",
                 ),
@@ -449,7 +371,6 @@ mod tests {
                         before_seq: None,
                         after_seq: Some(1),
                         limit: 10,
-                        include_renewal: false,
                     },
                     "event_logs_by_account_all_type (account_id=? AND event_type=? AND seq>?)",
                 ),
@@ -463,7 +384,6 @@ mod tests {
                         before_seq: None,
                         after_seq: None,
                         limit: 10,
-                        include_renewal: true,
                     },
                     "event_logs_by_type (event_type=?)",
                 ),
@@ -477,7 +397,6 @@ mod tests {
                         before_seq: None,
                         after_seq: None,
                         limit: 10,
-                        include_renewal: true,
                     },
                     "event_logs_by_source_type (source_id=? AND event_type=?)",
                 ),
@@ -491,7 +410,6 @@ mod tests {
                         before_seq: None,
                         after_seq: None,
                         limit: 10,
-                        include_renewal: true,
                     },
                     "event_logs_by_source (source_id=?)",
                 ),
@@ -505,9 +423,8 @@ mod tests {
                         before_seq: None,
                         after_seq: None,
                         limit: 10,
-                        include_renewal: true,
                     },
-                    "event_logs_by_correlation (<expr>=?)",
+                    "event_logs_by_correlation (correlation_id=?)",
                 ),
                 (
                     ListGlobalEvents {
@@ -519,9 +436,8 @@ mod tests {
                         before_seq: None,
                         after_seq: None,
                         limit: 10,
-                        include_renewal: false,
                     },
-                    "event_logs_by_correlation (<expr>=?)",
+                    "event_logs_by_correlation (correlation_id=?)",
                 ),
                 (
                     ListGlobalEvents {
@@ -533,7 +449,6 @@ mod tests {
                         before_seq: Some(10),
                         after_seq: None,
                         limit: 10,
-                        include_renewal: true,
                     },
                     "INTEGER PRIMARY KEY (rowid<?)",
                 ),
@@ -547,7 +462,6 @@ mod tests {
                         before_seq: None,
                         after_seq: Some(1),
                         limit: 10,
-                        include_renewal: true,
                     },
                     "INTEGER PRIMARY KEY (rowid>?)",
                 ),
@@ -562,8 +476,7 @@ mod tests {
                         |row| row.get::<_, String>(3),
                     )?
                     .collect::<rusqlite::Result<Vec<_>>>()?
-                    .join("
-");
+                    .join("\n");
                 assert!(
                     details.contains(expected_plan),
                     "expected `{expected_plan}` in plan for {q:?}, got:
@@ -591,7 +504,6 @@ mod tests {
                 before_seq: None,
                 after_seq: None,
                 limit: 10,
-                include_renewal: true,
             })
             .await
             .unwrap();
@@ -610,7 +522,6 @@ mod tests {
                 before_seq: None,
                 after_seq: None,
                 limit: 10,
-                include_renewal: true,
             })
             .await
             .unwrap();

@@ -1,3 +1,4 @@
+import { AdminApiError } from "../../api/errors";
 import { adminSession, handleAuthError } from '../../state/admin-session.svelte';
 import { createVisibilityAwareTimer } from '../../utils/polling';
 import { describeApiError } from '../../domain';
@@ -8,6 +9,7 @@ import type {
 } from '../../api/types';
 
 const POLL_INTERVAL_MS = 2000;
+const MAX_POLL_FAILURES = 3;
 
 /** 倒计时心跳。与轮询分开，因为轮询 2 秒一次会让秒数跳着走。 */
 const COUNTDOWN_TICK_MS = 1000;
@@ -46,6 +48,8 @@ class QrLoginController {
 
 	private lastProgress: LoginSessionStatus = 'pending';
 	private pollInflight = false;
+	private generation = 0;
+	private pollFailures = 0;
 	private abortController: AbortController | null = null;
 	private countdownTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -71,36 +75,36 @@ class QrLoginController {
 	}
 
 	async start() {
-		this.stop();
-		this.sessionId = null;
+		this.reset();
+		const generation = this.generation;
 		this.abortController = new AbortController();
-		this.resetProgress();
 		this.starting = true;
 
 		try {
 			const res = await adminSession.api.startQrLogin(this.abortController.signal);
+			if (generation !== this.generation) return;
 			this.applyStart(res);
 			this.beginPolling();
-		} catch (e: any) {
-			if (e.name === 'AbortError') return;
+		} catch (e: unknown) {
+			if (generation !== this.generation) return;
 			if (handleAuthError(e)) return;
 			this.status = 'failed';
 			this.stalledAt = 'pending';
 			this.message = describeApiError(e);
 		} finally {
-			this.starting = false;
+			if (generation === this.generation) this.starting = false;
 		}
 	}
 
 	resume(sessionId: string) {
-		if (this.sessionId === sessionId) return;
-		this.stop();
+		this.reset();
 		this.sessionId = sessionId;
-		this.status = 'pending';
 		this.beginPolling();
 	}
 
 	stop() {
+		this.generation++;
+		this.pollFailures = 0;
 		this.pollTimer.stop();
 		this.stopCountdown();
 		if (this.abortController) {
@@ -173,13 +177,14 @@ class QrLoginController {
 		if (!this.sessionId || this.pollInflight) return;
 
 		const sessionId = this.sessionId;
+		const generation = this.generation;
 		this.pollInflight = true;
 		if (!this.abortController) this.abortController = new AbortController();
 
 		try {
 			const res = await adminSession.api.pollQrLogin(sessionId, this.abortController.signal);
-			// 会话已被切换（重置 / 重新获取）时丢弃回包
-			if (this.sessionId !== sessionId) return;
+			if (generation !== this.generation) return;
+			this.pollFailures = 0;
 
 			this.status = res.status;
 
@@ -197,17 +202,22 @@ class QrLoginController {
 			} else {
 				this.lastProgress = res.status;
 			}
-		} catch (e: any) {
-			if (e.name === 'AbortError') return;
-			if (handleAuthError(e)) return;
-			if (e.status === 404) {
+		} catch (e: unknown) {
+			if (generation !== this.generation || handleAuthError(e)) return;
+			const terminal = e instanceof AdminApiError && (
+				(e.status >= 400 && e.status < 500 && e.status !== 429) ||
+				e.code === 'UPSTREAM_LOGIN_FAILED' ||
+				e.code === 'ACCOUNT_NOT_FOUND' ||
+				e.code === 'SOURCE_NOT_FOUND'
+			);
+			if (terminal || ++this.pollFailures >= MAX_POLL_FAILURES) {
 				this.status = 'failed';
 				this.stalledAt = this.lastProgress;
-				this.message = '会话未找到，可能是服务重启过，请重新获取二维码。';
+				this.message = describeApiError(e);
 				this.finish();
 			}
 		} finally {
-			this.pollInflight = false;
+			if (generation === this.generation) this.pollInflight = false;
 		}
 	}
 
@@ -218,3 +228,4 @@ class QrLoginController {
 }
 
 export const qrLoginController = new QrLoginController();
+adminSession.onReset(() => qrLoginController.reset());

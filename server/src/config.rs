@@ -10,22 +10,11 @@ pub struct Config {
     pub kugou_api_base_url: String,
     pub data_dir: PathBuf,
     pub upstream_timeout_ms: u64,
-    /// 账号登录态的**惰性保鲜阈值**（秒）。仅在收到取链请求时按需判断，服务内没有定时
-    /// 任务；单位写在这里而不是写进名字——见 `refresh_ttl_from_env`。
     pub account_refresh_ttl: u64,
     pub web_dist_dir: Option<PathBuf>,
     pub event_log_limit: u32,
 }
 
-/// 账号登录态的**惰性保鲜阈值**（秒），由环境变量 `ACCOUNT_REFRESH_TTL` 给出。
-///
-/// **它不是刷新周期，服务里也没有任何定时任务。** 这个值只在一次取链请求到达时被读一次：
-/// 距上次成功刷新超过它，就先刷新登录再取链；没超过就直接取链。没有取链流量时，服务不会
-/// 去打扰上游。「惰性」与「TTL」说的都是这件事——它回答的是「一份登录态最多被信多久」，
-/// 而不是「每多久去看一眼」。
-///
-/// 旧名 `REFRESH_INTERVAL_SECS` 仍然读，但只作回退、且会打一条 warn。`INTERVAL` 与
-/// 「自动刷新间隔」会让人脑补出一个定时轮询任务，而那个任务从来不存在——这正是改名的原因。
 fn optional_non_empty_env(key: &str) -> Option<String> {
     optional_non_empty(env::var(key).ok())
 }
@@ -38,11 +27,11 @@ fn optional_non_empty(raw: Option<String>) -> Option<String> {
 }
 
 fn parse_admin_token(raw: Option<String>) -> Result<String, &'static str> {
-    let raw = raw.ok_or("ADMIN_TOKEN is required")?;
-    if raw.trim().is_empty() {
+    let raw = raw.as_deref().ok_or("ADMIN_TOKEN is required")?.trim();
+    if raw.is_empty() {
         return Err("ADMIN_TOKEN must not be empty");
     }
-    Ok(raw)
+    Ok(raw.to_owned())
 }
 
 fn parse_positive_u64(key: &str, raw: Option<String>, default: u64) -> u64 {
@@ -52,9 +41,7 @@ fn parse_positive_u64(key: &str, raw: Option<String>, default: u64) -> u64 {
     match value.parse::<u64>() {
         Ok(n) if n > 0 => n,
         _ => {
-            tracing::warn!(
-                "{key} must be a positive integer, using the default ({default})"
-            );
+            tracing::warn!("{key} must be a positive integer, using the default ({default})");
             default
         }
     }
@@ -73,45 +60,21 @@ fn parse_event_log_limit(raw: Option<String>) -> u32 {
     }
 }
 
-fn refresh_ttl_from_env() -> u64 {
-    // 6 小时。只在这里出现一次。
-    const DEFAULT_TTL: u64 = 6 * 3600;
-
-    let new = optional_non_empty_env("ACCOUNT_REFRESH_TTL");
-    let old = optional_non_empty_env("REFRESH_INTERVAL_SECS");
-    if old.is_some() {
-        // 两个名字都在时也要报：一个躺在 .env 里的旧值被静默忽略，是这条改名最容易留下的
-        // 隐患——它会让人以为生效的仍是那个值。
-        if new.is_some() {
+impl Config {
+    pub fn from_env() -> Result<Self, String> {
+        if env::var_os("REFRESH_INTERVAL_SECS").is_some()
+            && optional_non_empty_env("ACCOUNT_REFRESH_TTL").is_none()
+        {
             tracing::warn!(
-                "REFRESH_INTERVAL_SECS is set but ignored: ACCOUNT_REFRESH_TTL takes precedence. \
-                 Remove the old variable — it names a periodic refresh task that does not exist."
-            );
-        } else {
-            tracing::warn!(
-                "REFRESH_INTERVAL_SECS is deprecated; rename it to ACCOUNT_REFRESH_TTL. The old \
-                 name read as a periodic refresh interval, but the value is only consulted when a \
-                 client asks for a play URL — there is no scheduled task to configure."
+                "REFRESH_INTERVAL_SECS has been removed. Set ACCOUNT_REFRESH_TTL to configure login refresh."
             );
         }
-    }
-    if new.is_some() {
-        parse_positive_u64("ACCOUNT_REFRESH_TTL", new, DEFAULT_TTL)
-    } else {
-        parse_positive_u64("REFRESH_INTERVAL_SECS", old, DEFAULT_TTL)
-    }
-}
-
-impl Config {
-    pub fn from_env() -> Self {
-        warn_if_source_name_prefix_present();
-        Self {
+        Ok(Self {
             listen_addr: optional_non_empty_env("LISTEN_ADDR")
                 .unwrap_or_else(|| "127.0.0.1:8787".into()),
-            public_base_url: require_http_base_url("PUBLIC_BASE_URL"),
-            admin_token: parse_admin_token(env::var("ADMIN_TOKEN").ok())
-                .unwrap_or_else(|err| panic!("{err}")),
-            kugou_api_base_url: require_http_base_url("KUGOU_API_BASE_URL"),
+            public_base_url: require_http_base_url("PUBLIC_BASE_URL")?,
+            admin_token: parse_admin_token(env::var("ADMIN_TOKEN").ok())?,
+            kugou_api_base_url: require_http_base_url("KUGOU_API_BASE_URL")?,
             data_dir: optional_non_empty_env("DATA_DIR")
                 .unwrap_or_else(|| "./data".into())
                 .into(),
@@ -120,10 +83,14 @@ impl Config {
                 env::var("UPSTREAM_TIMEOUT_MS").ok(),
                 10_000,
             ),
-            account_refresh_ttl: refresh_ttl_from_env(),
+            account_refresh_ttl: parse_positive_u64(
+                "ACCOUNT_REFRESH_TTL",
+                env::var("ACCOUNT_REFRESH_TTL").ok(),
+                6 * 3600,
+            ),
             web_dist_dir: optional_non_empty_env("WEB_DIST_DIR").map(PathBuf::from),
             event_log_limit: parse_event_log_limit(env::var("EVENT_LOG_LIMIT").ok()),
-        }
+        })
     }
 
     /// 当前实例的 authority（`host[:port]`），用于脚本 `@description`。
@@ -133,26 +100,6 @@ impl Config {
     /// 不值得花在重复信息上。
     pub fn public_authority(&self) -> String {
         authority_of(&self.public_base_url)
-    }
-}
-
-/// `SOURCE_NAME_PREFIX` 已不再被读取，仅在启动时提示一次。
-///
-/// 该变量过去决定「默认标题」的前缀。现在标题由用户在后台按音源逐个编辑并
-/// 持久化，默认标题是实例内的固定值，不再随部署变化——正是这次改动的目的：
-/// 从环境变量重算默认标题，会让运维改一次变量后所有历史音源的标题都与其
-/// 「默认值」对不上。
-///
-/// 刻意只警告、不拒绝启动：该变量对运行期已无任何影响，为它拦下整个服务，
-/// 代价远大于收益。已经创建的音源保留各自当前的标题，不会被改写；要把它们
-/// 改成新的固定默认值，在后台逐个「恢复默认」即可。
-fn warn_if_source_name_prefix_present() {
-    if env::var_os("SOURCE_NAME_PREFIX").is_some() {
-        tracing::warn!(
-            "SOURCE_NAME_PREFIX is no longer read; source titles are now edited per source in \
-             the admin UI. Existing sources keep their current title. This variable can be \
-             removed from the environment."
-        );
     }
 }
 
@@ -198,13 +145,9 @@ fn parse_http_base_url(raw: &str) -> Result<String, String> {
     Ok(parsed.as_str().trim_end_matches('/').to_string())
 }
 
-/// 读取必填的 `http(s)` 地址配置；缺失或非法都在启动期 panic。
-///
-/// 刻意不做降级：这些值都会被拼进脚本 URL，错误配置若被带到运行期，
-/// 表现是「音源导入后拿不到脚本」这类难排查的远端现象，而不是本机一条清晰的报错。
-fn require_http_base_url(key: &str) -> String {
-    let raw = env::var(key).unwrap_or_else(|_| panic!("{key} is required"));
-    parse_http_base_url(&raw).unwrap_or_else(|err| panic!("{key} is invalid ({raw:?}): {err}"))
+fn require_http_base_url(key: &str) -> Result<String, String> {
+    let raw = env::var(key).map_err(|_| format!("{key} is required"))?;
+    parse_http_base_url(&raw).map_err(|error| format!("{key} is invalid: {error}"))
 }
 
 /// 从绝对 URL 中提取 authority（`host[:port]`）。
@@ -346,7 +289,10 @@ mod tests {
         assert!(parse_admin_token(None).is_err());
         assert!(parse_admin_token(Some(String::new())).is_err());
         assert!(parse_admin_token(Some("   \t ".into())).is_err());
-        assert_eq!(parse_admin_token(Some("secret".into())).unwrap(), "secret");
+        assert_eq!(
+            parse_admin_token(Some(" secret ".into())).unwrap(),
+            "secret"
+        );
     }
 
     #[test]
@@ -354,21 +300,48 @@ mod tests {
         assert_eq!(optional_non_empty(None), None);
         assert_eq!(optional_non_empty(Some(String::new())), None);
         assert_eq!(optional_non_empty(Some("   ".into())), None);
-        assert_eq!(optional_non_empty(Some(" /app/web ".into())), Some("/app/web".into()));
+        assert_eq!(
+            optional_non_empty(Some(" /app/web ".into())),
+            Some("/app/web".into())
+        );
     }
 
     #[test]
     fn numeric_env_parsers_reject_zero_and_invalid_values() {
-        assert_eq!(parse_positive_u64("UPSTREAM_TIMEOUT_MS", None, 10_000), 10_000);
-        assert_eq!(parse_positive_u64("UPSTREAM_TIMEOUT_MS", Some(String::new()), 10_000), 10_000);
-        assert_eq!(parse_positive_u64("UPSTREAM_TIMEOUT_MS", Some("0".into()), 10_000), 10_000);
-        assert_eq!(parse_positive_u64("UPSTREAM_TIMEOUT_MS", Some("abc".into()), 10_000), 10_000);
-        assert_eq!(parse_positive_u64("UPSTREAM_TIMEOUT_MS", Some("5000".into()), 10_000), 5_000);
+        assert_eq!(
+            parse_positive_u64("UPSTREAM_TIMEOUT_MS", None, 10_000),
+            10_000
+        );
+        assert_eq!(
+            parse_positive_u64("UPSTREAM_TIMEOUT_MS", Some(String::new()), 10_000),
+            10_000
+        );
+        assert_eq!(
+            parse_positive_u64("UPSTREAM_TIMEOUT_MS", Some("0".into()), 10_000),
+            10_000
+        );
+        assert_eq!(
+            parse_positive_u64("UPSTREAM_TIMEOUT_MS", Some("abc".into()), 10_000),
+            10_000
+        );
+        assert_eq!(
+            parse_positive_u64("UPSTREAM_TIMEOUT_MS", Some("5000".into()), 10_000),
+            5_000
+        );
 
         assert_eq!(parse_event_log_limit(None), DEFAULT_EVENT_LOG_LIMIT);
-        assert_eq!(parse_event_log_limit(Some(String::new())), DEFAULT_EVENT_LOG_LIMIT);
-        assert_eq!(parse_event_log_limit(Some("0".into())), DEFAULT_EVENT_LOG_LIMIT);
-        assert_eq!(parse_event_log_limit(Some("100001".into())), DEFAULT_EVENT_LOG_LIMIT);
+        assert_eq!(
+            parse_event_log_limit(Some(String::new())),
+            DEFAULT_EVENT_LOG_LIMIT
+        );
+        assert_eq!(
+            parse_event_log_limit(Some("0".into())),
+            DEFAULT_EVENT_LOG_LIMIT
+        );
+        assert_eq!(
+            parse_event_log_limit(Some("100001".into())),
+            DEFAULT_EVENT_LOG_LIMIT
+        );
         assert_eq!(parse_event_log_limit(Some("2500".into())), 2_500);
     }
 }

@@ -4,7 +4,7 @@
 	import { adminSession } from '$lib/state/admin-session.svelte';
 
 	onMount(() => {
-		if (adminSession.serverBaseUrl && adminSession.adminToken) {
+		if (adminSession.adminToken) {
 			goto('/accounts', { replaceState: true });
 		} else {
 			goto('/connect', { replaceState: true });

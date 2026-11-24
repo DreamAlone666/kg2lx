@@ -9,6 +9,12 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [tailwindcss(), sveltekit()],
+    build: {
+      rolldownOptions: {
+        // The SSR writeBundle timing includes SvelteKit's entire client build.
+        checks: { pluginTimings: false },
+      },
+    },
     server: {
       // 原样转发浏览器实际调用的那组后端路径。开发期没有独立的「后端前缀」——
       // 连接页留空即当前域名，与生产同源部署的口径一致，故这里不能改写路径。

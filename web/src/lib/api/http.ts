@@ -33,7 +33,9 @@ export class HttpClient {
     const response = await fetch(url, {
       ...options,
       headers,
-      signal: options.signal || this.signal,
+      signal: options.signal && this.signal
+        ? AbortSignal.any([options.signal, this.signal])
+        : options.signal ?? this.signal,
     });
 
     if (!response.ok) {

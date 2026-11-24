@@ -1,5 +1,3 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use super::cookie_store::CookieStore;
 use super::provider::ProviderKind;
 
@@ -7,8 +5,6 @@ use super::provider::ProviderKind;
 #[serde(rename_all = "snake_case")]
 pub enum AccountStatus {
     Active,
-    Pending,
-    Disabled,
     LoginFailed,
 }
 
@@ -22,8 +18,6 @@ impl AccountStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Active => "active",
-            Self::Pending => "pending",
-            Self::Disabled => "disabled",
             Self::LoginFailed => "login_failed",
         }
     }
@@ -34,7 +28,6 @@ pub struct ProviderAccount {
     pub account_id: String,
     pub provider: ProviderKind,
     pub upstream_userid: String,
-    pub display_name: Option<String>,
     pub status: AccountStatus,
     pub cookies: CookieStore,
     pub credential_version: i64,
@@ -45,32 +38,13 @@ pub struct ProviderAccount {
     pub updated_at: i64,
 }
 
-pub fn now_ts() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64
-}
-
-pub fn now_ts_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as i64
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn as_str_matches_serde() {
-        for status in [
-            AccountStatus::Active,
-            AccountStatus::Pending,
-            AccountStatus::Disabled,
-            AccountStatus::LoginFailed,
-        ] {
+        for status in [AccountStatus::Active, AccountStatus::LoginFailed] {
             assert_eq!(serde_json::to_value(status).unwrap(), status.as_str());
         }
     }

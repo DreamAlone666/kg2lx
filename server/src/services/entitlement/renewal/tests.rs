@@ -8,9 +8,10 @@ use tempfile::TempDir;
 use tokio::sync::Notify;
 
 use super::*;
+use crate::domain::account::AccountStatus;
 use crate::domain::cookie_store::CookieStore;
 use crate::domain::entitlement::{EntitlementObservation, VipEntitlement};
-use crate::domain::event_log::{ListEvents, LogView};
+use crate::domain::event_log::{ListGlobalEvents, LogView};
 use crate::domain::renewal::upstream_svip_timestamp;
 use crate::repos::account::AccountRepo;
 use crate::repos::entitlement::EntitlementRepo;
@@ -280,13 +281,15 @@ impl Fixture {
 
     async fn events(&self, view: LogView) -> Vec<serde_json::Value> {
         self.db
-            .list(&ListEvents {
-                source_id: "src_test".into(),
-                account_id: ACCOUNT.into(),
+            .list_global(&ListGlobalEvents {
+                source_id: None,
+                account_id: Some(ACCOUNT.into()),
+                correlation_id: None,
+                before_seq: None,
+                after_seq: None,
                 limit: 100,
                 view,
                 event_type: Some(crate::domain::event_log::EventType::Entitlement),
-                include_renewal: true,
             })
             .await
             .unwrap()
@@ -298,6 +301,97 @@ impl Fixture {
 
 fn write(step: GrantStep, day: NaiveDate, timeout: u64) -> Call {
     Call::Grant(step, day, timeout, "original".into())
+}
+
+#[tokio::test]
+async fn a_confirmed_snapshot_leaves_room_to_reconcile_a_later_refusal() {
+    let f = Fixture::new();
+    f.enable().await;
+    f.snapshots([SvipEvidence::ActiveUntil {
+        end_at: f.now() + RENEWAL_THRESHOLD + 3600,
+    }]);
+    f.auto(PlaybackSignal::Link).await;
+    assert_eq!(f.take_calls(), [Call::Snapshot]);
+
+    f.snapshots([SvipEvidence::Inactive]);
+    f.writes([Grant::confirmed(), Grant::confirmed()]);
+    f.auto(PlaybackSignal::TargetRefused).await;
+    assert_eq!(
+        f.take_calls(),
+        [
+            Call::Snapshot,
+            write(GrantStep::Claim, f.day(), WRITE_TIMEOUTS[0]),
+            write(GrantStep::Upgrade, f.day(), WRITE_TIMEOUTS[0]),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn failed_post_upgrade_read_can_retry_after_the_backoff() {
+    let f = Fixture::new();
+    f.enable().await;
+    f.writes([Grant::confirmed(), Grant::confirmed()]);
+    assert_eq!(f.manual().await["state"], "propagating");
+    f.take_calls();
+    f.advance(PROPAGATION_WINDOW);
+    f.upstream
+        .snapshots
+        .lock()
+        .unwrap()
+        .push_back(Err(failure(FailureKind::Unknown, None)));
+    f.auto(PlaybackSignal::Link).await;
+    assert_eq!(f.take_calls(), [Call::Snapshot]);
+    assert!(
+        !f.db
+            .daily(ACCOUNT, f.day())
+            .await
+            .unwrap()
+            .post_upgrade_read
+    );
+
+    f.advance(READ_RETRY_DELAY);
+    f.snapshots([SvipEvidence::Inactive]);
+    f.auto(PlaybackSignal::Link).await;
+    assert_eq!(f.take_calls(), [Call::Snapshot]);
+    assert!(
+        f.db.daily(ACCOUNT, f.day())
+            .await
+            .unwrap()
+            .post_upgrade_read
+    );
+}
+
+#[tokio::test]
+async fn reconciliation_respects_the_previous_day_wait_and_reports_exhaustion() {
+    let f = Fixture::new();
+    let yesterday = f.day().pred_opt().unwrap();
+    let wait = f.now() + 90;
+    let mut progress = DailyProgress {
+        uncertain_until: Some(wait),
+        ..Default::default()
+    };
+    progress.claim.state = StepState::Uncertain;
+    f.db.save_daily(ACCOUNT, yesterday, &progress, None)
+        .await
+        .unwrap();
+    f.records([]);
+    let result = f.manual().await;
+    assert_eq!(result["state"], "waiting_for_reconciliation");
+    assert_eq!(result["retry_at"], wait);
+    assert_eq!(f.take_calls(), [Call::Record]);
+
+    f.advance(READ_RETRY_DELAY);
+    f.manual().await;
+    assert!(f.take_calls().is_empty());
+    let progress = DailyProgress {
+        record_reads: MAX_RECORD_READS,
+        ..Default::default()
+    };
+    f.db.save_daily(ACCOUNT, f.day(), &progress, None)
+        .await
+        .unwrap();
+    assert_eq!(f.manual().await["state"], "reconciliation_exhausted");
+    assert!(f.take_calls().is_empty());
 }
 
 #[tokio::test]
@@ -316,8 +410,8 @@ async fn a_rejected_upgrade_resumes_without_claim_and_keeps_the_snapshot() {
     assert_eq!(
         f.take_calls(),
         [
-            write(GrantStep::Claim, day, 1),
-            write(GrantStep::Upgrade, day, 1)
+            write(GrantStep::Claim, day, 5),
+            write(GrantStep::Upgrade, day, 5)
         ]
     );
     let state = f.manual().await;
@@ -329,7 +423,7 @@ async fn a_rejected_upgrade_resumes_without_claim_and_keeps_the_snapshot() {
     f.advance(REJECTED_RETRY_DELAY);
     f.writes([Grant::confirmed()]);
     let state = f.manual().await;
-    assert_eq!(f.take_calls(), [write(GrantStep::Upgrade, day, 5)]);
+    assert_eq!(f.take_calls(), [write(GrantStep::Upgrade, day, 10)]);
     assert_eq!(state["state"], "propagating");
     assert_eq!(state["estimated_end_at"], end_at + 86_400);
     assert_eq!(state["propagating_until"], f.now() + PROPAGATION_WINDOW);
@@ -372,7 +466,7 @@ async fn missing_records_wait_before_retrying_each_timeout_with_its_own_budget()
 
     let day = f.day();
     assert_eq!(f.manual().await["state"], "waiting_for_reconciliation");
-    assert_eq!(f.take_calls(), [write(GrantStep::Claim, day, 1)]);
+    assert_eq!(f.take_calls(), [write(GrantStep::Claim, day, 5)]);
 
     f.records([]);
     assert_eq!(f.manual().await["state"], "waiting_for_reconciliation");
@@ -384,15 +478,15 @@ async fn missing_records_wait_before_retrying_each_timeout_with_its_own_budget()
         "an early missing record is inconclusive"
     );
 
-    f.advance(1);
+    f.advance(5);
     f.records([]);
     assert_eq!(f.manual().await["state"], "waiting_for_reconciliation");
     assert_eq!(
         f.take_calls(),
-        [Call::Record, write(GrantStep::Claim, day, 5)]
+        [Call::Record, write(GrantStep::Claim, day, 10)]
     );
 
-    f.advance(PROPAGATION_WINDOW + 5);
+    f.advance(PROPAGATION_WINDOW + 10);
     f.records([]);
     assert_eq!(f.manual().await["state"], "propagating");
     assert_eq!(
@@ -400,7 +494,7 @@ async fn missing_records_wait_before_retrying_each_timeout_with_its_own_budget()
         [
             Call::Record,
             write(GrantStep::Claim, day, 30),
-            write(GrantStep::Upgrade, day, 1)
+            write(GrantStep::Upgrade, day, 5)
         ]
     );
 }
@@ -437,9 +531,9 @@ async fn process_interruption_preserves_uncertain_claim_and_uses_the_record_afte
     assert_eq!(
         f.take_calls(),
         [
-            write(GrantStep::Claim, day, 1),
+            write(GrantStep::Claim, day, 5),
             Call::Record,
-            write(GrantStep::Upgrade, day, 1)
+            write(GrantStep::Upgrade, day, 5)
         ]
     );
 }
@@ -497,8 +591,8 @@ async fn idempotent_codes_complete_only_their_own_step_and_are_successes_in_logs
     assert_eq!(
         f.take_calls(),
         [
-            write(GrantStep::Claim, day, 1),
-            write(GrantStep::Upgrade, day, 1)
+            write(GrantStep::Claim, day, 5),
+            write(GrantStep::Upgrade, day, 5)
         ]
     );
     let events = f.events(LogView::All).await;
@@ -526,7 +620,7 @@ async fn verification_pauses_only_its_day_and_rate_limit_exponent_survives_midni
     assert_eq!(f.manual().await["state"], "verification_paused");
     f.reopen();
     assert_eq!(f.manual().await["state"], "verification_paused");
-    assert_eq!(f.take_calls(), [write(GrantStep::Claim, day, 1)]);
+    assert_eq!(f.take_calls(), [write(GrantStep::Claim, day, 5)]);
     let account = f.db.find_by_id(ACCOUNT).await.unwrap().unwrap();
     assert_eq!(account.status, AccountStatus::Active);
     assert_eq!(account.cookies.get("token"), Some("original"));
@@ -545,14 +639,14 @@ async fn verification_pauses_only_its_day_and_rate_limit_exponent_survives_midni
     let state = f.manual().await;
     assert_eq!(state["state"], "rate_limited");
     assert_eq!(state["rate_limit_until"], f.now() + 60);
-    assert_eq!(f.take_calls(), [write(GrantStep::Claim, day, 1)]);
+    assert_eq!(f.take_calls(), [write(GrantStep::Claim, day, 5)]);
     f.advance(41);
     f.reopen();
     assert_eq!(f.manual().await["state"], "rate_limited");
     assert!(f.take_calls().is_empty());
     f.advance(19);
     assert_eq!(f.manual().await["rate_limit_until"], f.now() + 120);
-    assert_eq!(f.take_calls(), [write(GrantStep::Claim, f.day(), 1)]);
+    assert_eq!(f.take_calls(), [write(GrantStep::Claim, f.day(), 5)]);
     f.advance(119);
     assert_eq!(f.manual().await["state"], "rate_limited");
     assert!(f.take_calls().is_empty());
@@ -574,15 +668,15 @@ async fn a_claim_close_to_midnight_never_sends_an_undated_upgrade() {
     let state = f.manual().await;
     assert_eq!(state["state"], "awaiting_upgrade");
     assert_eq!(state["retry_at"], midnight);
-    assert_eq!(f.take_calls(), [write(GrantStep::Claim, day, 1)]);
+    assert_eq!(f.take_calls(), [write(GrantStep::Claim, day, 5)]);
     f.advance(midnight - f.now());
     f.writes([Grant::confirmed(), Grant::confirmed()]);
     assert_eq!(f.manual().await["state"], "propagating");
     assert_eq!(
         f.take_calls(),
         [
-            write(GrantStep::Claim, f.day(), 1),
-            write(GrantStep::Upgrade, f.day(), 1)
+            write(GrantStep::Claim, f.day(), 5),
+            write(GrantStep::Upgrade, f.day(), 5)
         ]
     );
     assert_eq!(
@@ -608,8 +702,8 @@ async fn a_response_crossing_midnight_is_reconciled_against_both_days() {
     assert_eq!(
         f.take_calls(),
         [
-            write(GrantStep::Claim, day, 1),
-            write(GrantStep::Upgrade, day, 1)
+            write(GrantStep::Claim, day, 5),
+            write(GrantStep::Upgrade, day, 5)
         ]
     );
     assert_eq!(
@@ -664,8 +758,8 @@ async fn exact_threshold_and_free_playback_do_not_trigger_and_refusal_requires_e
     assert_eq!(
         f.take_calls(),
         [
-            write(GrantStep::Claim, f.day(), 1),
-            write(GrantStep::Upgrade, f.day(), 1)
+            write(GrantStep::Claim, f.day(), 5),
+            write(GrantStep::Upgrade, f.day(), 5)
         ]
     );
     let events = f.events(LogView::All).await;
@@ -723,8 +817,8 @@ async fn concurrent_playback_and_manual_share_a_run_and_late_reply_cannot_overwr
     assert_eq!(
         f.take_calls(),
         [
-            write(GrantStep::Claim, f.day(), 1),
-            Call::Grant(GrantStep::Upgrade, f.day(), 1, "new-version".into()),
+            write(GrantStep::Claim, f.day(), 5),
+            Call::Grant(GrantStep::Upgrade, f.day(), 5, "new-version".into()),
         ]
     );
     let events = f.events(LogView::All).await;
@@ -767,8 +861,8 @@ async fn simultaneous_link_and_refusal_keep_the_refusal_evidence_for_t2() {
     assert_eq!(
         f.take_calls(),
         [
-            write(GrantStep::Claim, f.day(), 1),
-            write(GrantStep::Upgrade, f.day(), 1)
+            write(GrantStep::Claim, f.day(), 5),
+            write(GrantStep::Upgrade, f.day(), 5)
         ]
     );
     let events = f.events(LogView::All).await;
@@ -793,7 +887,7 @@ async fn a_bare_gateway_failure_pauses_writes_and_preserves_uncertainty_across_d
     assert_eq!(state["paused_until"], next_upstream_day_start(day));
     assert_eq!(state["claim"], "uncertain");
     f.manual().await;
-    assert_eq!(f.take_calls(), [write(GrantStep::Claim, day, 1)]);
+    assert_eq!(f.take_calls(), [write(GrantStep::Claim, day, 5)]);
 
     f.advance(next_upstream_day_start(day) - f.now());
     f.records([(day, GrantStep::Claim)]);
@@ -803,8 +897,8 @@ async fn a_bare_gateway_failure_pauses_writes_and_preserves_uncertainty_across_d
         f.take_calls(),
         [
             Call::Record,
-            write(GrantStep::Claim, f.day(), 1),
-            write(GrantStep::Upgrade, f.day(), 1)
+            write(GrantStep::Claim, f.day(), 5),
+            write(GrantStep::Upgrade, f.day(), 5)
         ]
     );
     assert_eq!(
@@ -836,8 +930,8 @@ async fn a_rate_limited_snapshot_can_be_retried_within_its_read_budget() {
         f.take_calls(),
         [
             Call::Snapshot,
-            write(GrantStep::Claim, f.day(), 1),
-            write(GrantStep::Upgrade, f.day(), 1)
+            write(GrantStep::Claim, f.day(), 5),
+            write(GrantStep::Upgrade, f.day(), 5)
         ]
     );
 }

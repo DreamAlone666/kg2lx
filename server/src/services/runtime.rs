@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::domain::account::AccountStatus;
 use crate::domain::event_log::{
     Event, EventContext, EventLog, EventTrigger, MusicUrlEvent, MusicUrlStage, RefreshReason,
 };
@@ -94,9 +93,6 @@ impl RuntimeService {
                 .find_by_id(&source.account_id)
                 .await?
                 .ok_or_else(AppError::account_not_found)?;
-            if account.status == AccountStatus::Disabled {
-                return Err(AppError::account_disabled());
-            }
             self.auth.prepare_playback(account, &context).await
         }
         .await;
@@ -172,8 +168,7 @@ impl RuntimeService {
             }
             // A known refusal owns the fallback decision even when an auth heuristic also matches.
             if refused {
-                if retry_count == 0
-                    && source.quality_fallback
+                if source.quality_fallback
                     && let Some(lower) = next_lower_quality(&upstream_req.quality)
                 {
                     self.record(
@@ -187,7 +182,7 @@ impl RuntimeService {
                     fallback_index += 1;
                     continue;
                 }
-                let error = if fallback_index > 0 && retry_count == 0 {
+                let error = if fallback_index > 0 {
                     AppError::upstream_quality_exhausted()
                 } else {
                     AppError::upstream_quality_refused()
@@ -212,7 +207,14 @@ impl RuntimeService {
                 retry_count = 1;
                 continue;
             }
-            let error = AppError::upstream_play_url_empty();
+            let error = if response.status_code >= 500 {
+                AppError::upstream_request_failed(format!(
+                    "song url upstream HTTP {}",
+                    response.status_code
+                ))
+            } else {
+                AppError::upstream_play_url_empty()
+            };
             self.record(&context, &req, Some(attempt), Some(error.code))
                 .await;
             break Err(error);
@@ -250,7 +252,9 @@ impl RuntimeService {
             retry_count: attempt.as_ref().map_or(0, |attempt| attempt.retry_count),
             reported_types: req.types.clone(),
             upstream_endpoint: attempt.as_ref().map(|_| "song/url".into()),
-            status_code: response.map(|response| response.status_code),
+            status_code: response.map(|response| response.status_code).or_else(|| {
+                (attempt.is_some() && error == Some(ErrorCode::UpstreamRateLimited)).then_some(429)
+            }),
             human_verification: response.is_some_and(|response| response.human_verification),
             upstream_quality: quality.map(|quality| map_quality(quality).to_owned()),
             upstream_status: observed.and_then(|o| o.status),
@@ -292,9 +296,8 @@ mod tests {
     use async_trait::async_trait;
 
     use crate::config::Config;
-    use crate::domain::account::{self, ProviderAccount};
+    use crate::domain::account::{AccountStatus, ProviderAccount};
     use crate::domain::cookie_store::CookieStore;
-    use crate::domain::event_log::ListEvents;
     use crate::domain::provider::ProviderKind;
     use crate::domain::source::Source;
     use crate::services::kugou_lite_client::{KugouLiteClient, UpstreamObservation};
@@ -331,10 +334,6 @@ mod tests {
             Ok(None)
         }
 
-        async fn list_by_account_id(&self, _account_id: &str) -> Result<Vec<Source>, AppError> {
-            Ok(Vec::new())
-        }
-
         async fn update_settings(
             &self,
             _source_id: &str,
@@ -344,10 +343,6 @@ mod tests {
         ) -> Result<Source, AppError> {
             unreachable!("test did not update the source")
         }
-
-        async fn list_all(&self) -> Result<Vec<Source>, AppError> {
-            Ok(Vec::new())
-        }
     }
 
     struct FakeAccountRepo {
@@ -356,10 +351,6 @@ mod tests {
 
     #[async_trait]
     impl AccountRepo for FakeAccountRepo {
-        async fn list_all(&self) -> Result<Vec<ProviderAccount>, AppError> {
-            Ok(self.account.clone().into_iter().collect())
-        }
-
         async fn find_by_id(&self, _account_id: &str) -> Result<Option<ProviderAccount>, AppError> {
             Ok(self.account.clone())
         }
@@ -415,10 +406,6 @@ mod tests {
             Ok(())
         }
 
-        async fn list(&self, _query: &ListEvents) -> Result<Vec<EventLog>, AppError> {
-            Ok(Vec::new())
-        }
-
         async fn list_global(
             &self,
             _query: &crate::domain::event_log::ListGlobalEvents,
@@ -467,7 +454,6 @@ mod tests {
             account_id: "acc_test".into(),
             provider: ProviderKind::KugouLite,
             upstream_userid: "userid_test".into(),
-            display_name: None,
             status: AccountStatus::Active,
             cookies: CookieStore::new(),
             last_refresh_at: None,
@@ -494,7 +480,7 @@ mod tests {
     fn account_ready_for_fetch() -> ProviderAccount {
         let mut account = sample_account();
         account.cookies.insert("dfid", "dfid_test");
-        account.last_refresh_at = Some(account::now_ts());
+        account.last_refresh_at = Some(crate::domain::now_ts());
         account
     }
 
@@ -851,7 +837,7 @@ mod tests {
 
     /// 未知 runtime token 刻意不写日志行。
     ///
-    /// `RuntimeLog.source_id` 是必填字段、面板查询也按它过滤，而这里查不到音源，
+    /// 取链事件需要音源归属，而这里查不到音源，
     /// 写下的行必须凭空造一个 source_id，其结果是一个任何面板都查不出来的孤儿行。
     /// 这条把「不写」本身钉住，免得日后有人「顺手补齐」出一个查不到的日志。
     #[tokio::test]
@@ -899,12 +885,12 @@ mod tests {
     ///
     /// 这条测试原先钉的是 `ACCOUNT_NOT_VIP`（VIP 到期的预检行）。那个闸已随
     /// 「VIP 不是准入条件」一并删除，但这条要求对**还留着**的闸同样成立，因此把断言
-    /// 换成账号被禁用（另一条带账号对象的预检早退），而不是删掉整条测试。
+    /// 换成账号登录失败（另一条带账号对象的预检早退），而不是删掉整条测试。
     #[tokio::test]
     async fn precheck_early_exit_carries_the_account_id_and_an_exact_code() {
         let source = sample_source("tok_gate_removed");
         let mut account = sample_account();
-        account.status = AccountStatus::Disabled;
+        account.status = AccountStatus::LoginFailed;
         let (service, log_repo) = build_service(Some(source.clone()), Some(account.clone()));
 
         let err = expect_err(
@@ -912,15 +898,15 @@ mod tests {
                 .fetch_music_url("tok_gate_removed", sample_req())
                 .await,
         );
-        assert_eq!(err.code, ErrorCode::AccountDisabled);
+        assert_eq!(err.code, ErrorCode::UpstreamLoginFailed);
 
         let rows = log_repo.rows();
         assert_eq!(rows.len(), 1, "预检失败必须恰好写一行");
         assert_eq!(music(&rows[0]).stage, MusicUrlStage::Precheck);
-        assert_eq!(rows[0].error_code.as_deref(), Some("ACCOUNT_DISABLED"));
+        assert_eq!(rows[0].error_code.as_deref(), Some("UPSTREAM_LOGIN_FAILED"));
         assert_eq!(
             rows[0].error_code.as_deref(),
-            Some(ErrorCode::AccountDisabled.as_str()),
+            Some(ErrorCode::UpstreamLoginFailed.as_str()),
             "日志里的 code 必须与客户端拿到的 code 同源"
         );
         assert_eq!(
@@ -968,25 +954,25 @@ mod tests {
         assert!(rows[0].ok);
     }
 
-    /// 账号被禁用同样落在预检阶段，且用的是账号自身的 id。
+    /// 登录失败同样落在预检阶段，且用的是账号自身的 id。
     #[tokio::test]
-    async fn disabled_account_writes_a_precheck_row() {
-        let source = sample_source("tok_acc_disabled");
+    async fn login_failed_account_writes_a_precheck_row() {
+        let source = sample_source("tok_login_failed");
         let mut account = sample_account();
-        account.status = AccountStatus::Disabled;
+        account.status = AccountStatus::LoginFailed;
         let (service, log_repo) = build_service(Some(source.clone()), Some(account.clone()));
 
         let err = expect_err(
             service
-                .fetch_music_url("tok_acc_disabled", sample_req())
+                .fetch_music_url("tok_login_failed", sample_req())
                 .await,
         );
-        assert_eq!(err.code, ErrorCode::AccountDisabled);
+        assert_eq!(err.code, ErrorCode::UpstreamLoginFailed);
 
         let rows = log_repo.rows();
         assert_eq!(rows.len(), 1);
         assert_eq!(music(&rows[0]).stage, MusicUrlStage::Precheck);
-        assert_eq!(rows[0].error_code.as_deref(), Some("ACCOUNT_DISABLED"));
+        assert_eq!(rows[0].error_code.as_deref(), Some("UPSTREAM_LOGIN_FAILED"));
         assert_eq!(
             rows[0].context.account_id.as_deref(),
             Some(account.account_id.as_str())

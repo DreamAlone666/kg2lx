@@ -17,7 +17,7 @@
 **必填项：**
 
 - `PUBLIC_BASE_URL`：本服务的对外可访问地址。
-- `ADMIN_TOKEN`：管理后台接口的鉴权 Token（不能为空或纯空白）。
+- `ADMIN_TOKEN`：管理后台接口的鉴权 Token，启动时去除首尾空白并校验剩余内容非空。
 - `KUGOU_API_BASE_URL`：`KuGouMusicApi` 上游服务的地址。
 
 **选填项：**
@@ -25,9 +25,9 @@
 - `LISTEN_ADDR`：服务监听地址及端口，默认值为 `127.0.0.1:8787`。
 - `DATA_DIR`：数据存储目录，默认值为 `./data`。
 - `UPSTREAM_TIMEOUT_MS`：请求上游 API 的超时时间（毫秒），默认值为 `10000`。
-- `ACCOUNT_REFRESH_TTL`：账号登录态的保鲜阈值（秒），默认值为 `21600`。**它不是刷新周期：只在收到取链请求时才判断是否需要刷新登录，服务内没有定时任务，没有取链流量就不会打扰上游。** 旧名 `REFRESH_INTERVAL_SECS` 仍可读取，但会打一条弃用提示。
+- `ACCOUNT_REFRESH_TTL`：账号登录态的保鲜阈值，默认 `21600` 秒。取链时按需判断是否需要刷新登录。
 - `EVENT_LOG_LIMIT`：取链日志的保留上限，默认 `10000`，可设为 1–100,000。刷新 Token、账号登录和权益事件分别保留，单类最多取该设置和 1,000 的较小值。
-- `WEB_DIST_DIR`：可选，管理后台前端构建产物目录。配置后，服务端将同时提供 API 和前端静态文件服务，未匹配到 API 路由的请求将回退到 `index.html`（SPA 模式）。未配置时仅提供 API 服务。配置后目录不存在将在启动时直接报错退出。
+- `WEB_DIST_DIR`：管理后台构建产物目录。设置后，服务端同源托管 API 与前端，单页应用导航可回退到 `index.html`。缺失的 API、脚本及静态资源地址返回 `404`。目录在启动时校验，留空时仅启用 API 和脚本分发。
 
 **启动示例：**
 
@@ -41,7 +41,7 @@ cargo run
 
 ## 健康检查
 
-你可以通过以下命令检查服务是否正常运行：
+`GET /healthz` 检查服务与 SQLite 连接。数据库探活失败时返回 `503`。
 
 ```bash
 curl http://127.0.0.1:8787/healthz
@@ -71,44 +71,37 @@ curl \
 
 当响应状态变为 `bound` 时，表示账号已成功绑定，请将返回结果中的 `source.script_url` 复制到洛雪音乐中作为自定义音源导入。
 
-**3. 获取所有音源列表**
+**3. 查询和维护账号**
 
-```bash
-curl \
-  -H "Authorization: Bearer change-me" \
-  http://127.0.0.1:8787/api/v1/admin/sources
-```
-
-**4. 查询单个音源信息**
-
-```bash
-curl \
-  -H "Authorization: Bearer change-me" \
-  http://127.0.0.1:8787/api/v1/admin/sources/<source_id>
-```
-
-**5. 账号查询、刷新登录与同步权益**
-
-- **查询账号**。`GET /api/v1/admin/accounts` 与 `GET /api/v1/admin/accounts/{account_id}` 返回账号会话、权益快照、自动领取 VIP 调度状态及关联音源列表（`sources` 数组）。
+- **查询账号**。`GET /api/v1/admin/accounts` 与 `GET /api/v1/admin/accounts/{account_id}` 返回登录状态、权益快照、自动领取 VIP 调度状态及关联音源列表（`sources` 数组）。
 - **刷新 Token**。发送 `POST /api/v1/admin/accounts/{account_id}/refresh-token` 更新登录凭据。
 - **同步权益**。发送 `POST /api/v1/admin/accounts/{account_id}/entitlements/sync` 读取上游快照，失败时保留上次成功记录。
-- **旧刷新地址**。`POST /api/v1/admin/sources/{source_id}/refresh` 保留原回执，刷新 Token 成功后在后台同步权益。
-- **全站事件日志**。`GET /api/v1/admin/logs` 默认包含每日领取与升级事件，支持 `event_type`、`view`、`account_id`、`source_id`、`correlation_id`（按时间正序返回因果链路）、`before_seq` 游标分页及 `after_seq` 增量拉取（仅返回 `seq > after_seq` 的新事件，与 `before_seq` 互斥；若超过 `limit` 仅设置 `has_more=true` 且 `next_before_seq=null`）；事件日志以 `created_at_ms`（Unix 毫秒）记录创建时间，旧 `GET /api/v1/admin/sources/{source_id}/logs` 仍保留。
+- **更新音源设置**。发送 `PATCH /api/v1/admin/sources/{source_id}`，通过 `name` 修改标题，通过 `quality_fallback` 设置音质自动降级。
 
-### 每日领取与升级（自动领取 VIP）
+### 全站事件日志
+
+`GET /api/v1/admin/logs` 查询取链、Token 刷新、扫码登录与权益事件。支持 `event_type`、`view=all|errors`、`account_id` 和 `source_id` 筛选。`limit` 默认为 30，可取 1–100。事件时间由 `created_at_ms` 返回，单位为 Unix 毫秒。
+
+- `before_seq` 向前翻页，有更早的记录时返回 `next_before_seq`。
+- `after_seq` 查询更新的记录，按 `seq` 降序返回。`has_more=true` 时用该批次最小的 `seq` 作 `before_seq` 继续翻页，直到补齐原游标之后的记录。
+- `correlation_id` 按 `seq` 升序读取同一请求链路。两个游标和 `correlation_id` 每次只能使用其中一个。
+
+### 自动领取 VIP
 
 - `PATCH /api/v1/admin/accounts/{account_id}/entitlements/renewal` 接收 `{"enabled":true}` 或 `{"enabled":false}`。开关按账号生效，存量和新绑定账号默认为关闭。
 - `POST /api/v1/admin/accounts/{account_id}/entitlements/renewal/claim` 手动领取或继续升级。手动操作在自动领取 VIP 关闭时仍可用，共用每日进度、互斥和退避。响应返回当前调度状态，业务结果见 `last_outcome`。例如，`awaiting_upgrade` 表示已领待升级，`waiting_for_reconciliation` 表示要先核对日记录。
-- 音源列表的 `renewal` 和详情的 `account.renewal` 回显调度状态，两个自动领取 VIP 接口也返回该结构。它包含每日领取与升级进度、上游日、是否需要确认 `svip`、退避截止及传播等待。账号、权益快照与自动领取 VIP 调度中的时间戳单位为 Unix 秒，事件日志时间戳字段为 `created_at_ms`（Unix 毫秒）。`estimated_end_at` 是本地推算，确认的到期信息由 `entitlements` 和 `entitlements_synced_at` 提供。
-- 日志查询加 `include_renewal=true` 可查看领取、升级与日记录对账。后台自动领取 VIP 沿用触发它的播放请求 ID。业务码 `131001` 和 `297002` 分别作为领取和升级的幂等完成记录。
+- 账号列表与详情通过 `renewal` 字段返回调度状态。两个自动领取 VIP 接口直接返回该结构，其中包含每日领取与升级进度、上游日、`svip` 确认状态、退避截止及生效等待。账号和权益相关时间戳使用 Unix 秒。`estimated_end_at` 是本地推算，确认的到期信息见 `entitlements` 与 `entitlements_synced_at`。
+- 全站日志包含领取、升级与日记录对账。自动领取沿用触发它的播放请求 ID。业务码 `131001` 代表已领取，`297002` 代表已升级。
 
 自动领取在目标档返回可用链接且已确认的 `svip` 剩余不足 48 小时但仍在期时触发。权益确认已过期时，只有目标档明确返回 `status: 2` 才触发。两种情况均由后续后台任务处理，本次取链照常返回链接、执行降档或返回拒绝。升级确认后有约 120 秒传播等待。
 
-写入发出前先保存当天对应步骤的进度。请求结果不明确时，后续播放或手动触发先读取日记录。当天的 `tvip` 确认领取，`svip` 确认两个步骤。超时尝试的单次预算依次为 1 秒、5 秒和 30 秒。缺失记录需等候传播预算后再确认，无法解析或未覆盖所需日期的记录会保留待对账状态。遇到人机验证或结果不明的 HTTP 502 时暂停到次日，502 中对应步骤的幂等码仍确认该步骤完成。限流的指数退避从 60 秒起，最多 1 小时，重启和跨日后继续生效。
+写入发出前先保存当天对应步骤的进度。结果不明确时，下一次触发先查询日记录。当天的 `tvip` 记录确认领取，`svip` 记录确认两个步骤。写入尝试的单次预算依次为 5 秒、10 秒和 30 秒。记录未覆盖目标日期或无法解析时继续等待核对，读次数用尽时后台会提示。
 
-权益快照、领取、升级和日记录请求带有 `X-Apicache-Bypass: 1`，以绕过 KuGouMusicApi 按 URL 共享的缓存。
+人机验证或缺少明确业务结果的 HTTP 502 会暂停到次日。HTTP 502 中的明确业务拒绝按拒绝处理，幂等完成码仍确认对应步骤。限流的指数退避从 60 秒起，最多 1 小时，重启和跨日后继续生效。
 
-当前按 UTC+8 划分上游日和解释无偏移的 `svip` 时间。切日前 35 秒暂缓写入，跨日收到的结果通过日记录核对。切日、跨日升级归属及实际日记录响应格式与可见延迟仍需上游实测。
+发给 KuGouMusicApi 的扫码、刷新、设备注册、取链和权益请求都带有 `X-Apicache-Bypass: 1`，按当前会话获取响应。
+
+当前按 UTC+8 划分上游日并解释没有时区的权益时间，带时区的 RFC3339 时间保留其偏移。切日前 35 秒暂缓写入，跨日收到的结果通过日记录核对。上游切日、跨日升级归属、实际日记录响应格式与可见延迟仍需实测。
 
 ## 洛雪运行流程 (LX Runtime Flow)
 
@@ -142,7 +135,13 @@ curl -X POST \
 ## 数据存储
 
 - **数据库**。状态保存在 `DATA_DIR/kg2lx.db`，请使用服务进程可写的本地数据卷。
-- **数据库升级**。启动时依次应用 SQLite 迁移，失败的步骤回滚，高于当前服务支持的库版本会拒绝启动。
-- **首次启动**。旧 `accounts/` 和 `sources/` 一次性导入，遇到损坏文件或引用冲突时启动报错并指出文件。
+- **首次启动**。新建 SQLite 基线的 `user_version` 为 1。同次事务从 v0.2.0 的 `accounts/` 和 `sources/` 导入账号、音源、令牌和已有权益快照。遇到损坏文件或引用冲突时，导入回滚并指出文件。
 - **历史记录**。旧扫码会话与 JSONL 日志留在原目录，新会话和日志进入 SQLite。
 - **备份与回退**。停服务后备份整个数据卷，切回 v0.2.0 时读取切换前的旧文件。
+
+## 升级适配
+
+- **开发 SQLite 库**。来自未发布开发版的库会被拒绝。停服备份后使用新的 `DATA_DIR` 创建基线；需要导入 v0.2.0 数据时，先把备份中的旧 `accounts/` 和 `sources/` 放进去。
+- **管理 API 与页面**。音源列表和详情的旧读接口及 `/sources` 页面已下线。通过 `GET /api/v1/admin/accounts` 或 `GET /api/v1/admin/accounts/{account_id}` 读取账号及关联音源。旧音源刷新与日志接口分别改用账号的 `refresh-token` 和全站 `/api/v1/admin/logs?source_id=…`。按账号刷新返回 `ok` 和 `updated_at`，原音源设置 `PATCH` 地址仍可用。
+- **配置与数据字段**。使用 `ACCOUNT_REFRESH_TTL` 配置登录态保鲜时间。账号响应移除了 `display_name`，旧 JSON 中的 `pending`、`disabled` 和 `expired` 在导入时归为 `active`。
+- **洛雪脚本**。原 `/s/<script_token>.js` 地址和运行时令牌可继续使用，运行时接口兼容旧客户端包装为字符串的 JSON 请求体。要应用脚本端修复，请重新导入 `0.1.3`。

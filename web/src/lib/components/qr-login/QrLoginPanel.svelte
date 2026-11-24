@@ -5,7 +5,6 @@
 		Card,
 		CardContent,
 		CardHeader,
-		Skeleton,
 		StatusBadge
 	} from '$lib/components/ui';
 	import LoginStepTimeline from './LoginStepTimeline.svelte';
@@ -106,7 +105,9 @@
 							{qrLoginController.qrUrl}
 						</div>
 					{:else}
-						<Skeleton class="size-56" />
+						<p class="max-w-56 p-4 text-center text-sm text-muted-foreground">
+							{qrLoginController.isTerminal ? '当前会话已结束。' : '正在恢复扫码会话。若尚未扫描，请重新获取二维码。'}
+						</p>
 					{/if}
 				</div>
 			</div>
@@ -165,16 +166,18 @@
 				<Alert>{qrLoginController.message}</Alert>
 			{/if}
 
-			<div class="text-center">
-				<Button
-					variant="ghost"
-					size="sm"
-					disabled={qrLoginController.starting}
-					onclick={onRestart}
-				>
-					重置并重试
-				</Button>
-			</div>
+			{#if qrLoginController.status !== 'bound'}
+				<div class="text-center">
+					<Button
+						variant="ghost"
+						size="sm"
+						disabled={qrLoginController.starting}
+						onclick={onRestart}
+					>
+						重置并重试
+					</Button>
+				</div>
+			{/if}
 		{/if}
 	</CardContent>
 </Card>

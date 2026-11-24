@@ -57,6 +57,10 @@ impl EntitlementService {
         }
     }
 
+    pub(super) fn current_time(&self) -> i64 {
+        (self.now)()
+    }
+
     pub async fn sync(
         self: &Arc<Self>,
         account_id: String,

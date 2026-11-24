@@ -1,61 +1,31 @@
-# sv
+# kg2lx 管理后台
 
-Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
+SvelteKit 管理后台提供酷狗概念版扫码登录、账号与会员权益管理、洛雪脚本接入和全站事件日志。账号列表及详情位于 `/accounts`，全站日志位于 `/logs`。
 
-## Creating a project
+在账号详情页可以同步快照、开启按需自动领取 VIP、手动领取或核对当日记录。全站日志可按账号和事件类型筛选，并查看同一请求的事件链。
 
-If you're seeing this, you've probably already done this step. Congrats!
+## 本地开发
 
-```sh
-# create a new project
-npx sv create my-app
-```
-
-To recreate this project with the same configuration:
+启动 Rust 后端后，在本目录执行以下命令。
 
 ```sh
-# recreate this project
-pnpm dlx sv@0.15.1 create --template minimal --types ts --add tailwindcss="plugins:none" mcp="ide:opencode" --install pnpm ./web
+pnpm install --frozen-lockfile
+pnpm dev
 ```
 
-## Developing
-
-Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
-
-```sh
-npm run dev
-
-# or start the server and open the app in a new browser tab
-npm run dev -- --open
-```
-
-The Rust server sends no CORS headers, so the browser cannot call it from the Vite
-dev server origin directly. The dev server therefore forwards the paths the app
-actually calls (`/healthz` and `/api/*`) to the Rust server, leaving the paths
-unchanged. That way an empty backend URL means "current origin" in development
-exactly as it does in production, where the Rust server serves both the built app
-and the API from one origin.
-
-Default proxy target:
-
-```sh
-http://127.0.0.1:8787
-```
-
-Override it if your backend listens elsewhere:
+连接页可以将后端地址留空。Vite 将 `/healthz` 和 `/api/*` 原样代理给 Rust 后端，默认目标为 `http://127.0.0.1:8787`。后端监听其他端口时可指定代理目标。
 
 ```sh
 VITE_BACKEND_TARGET=http://127.0.0.1:9000 pnpm dev
 ```
 
-## Building
-
-To create a production version of your app:
+## 检查与部署
 
 ```sh
-npm run build
+pnpm check
+pnpm build
 ```
 
-You can preview the production build with `npm run preview`.
+构建产物在 `build/`。将服务端的 `WEB_DIST_DIR` 指向该目录即可同源托管。部署后在连接页输入 `ADMIN_TOKEN`，后端地址留空。
 
-> To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
+旧 `/sources` 页面已由账号列表和详情页接替。现有洛雪脚本升级及后端接口、数据卷变化见服务端说明。 [升级适配](../server/README.md#升级适配)

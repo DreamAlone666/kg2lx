@@ -1,3 +1,5 @@
+use super::renewal::SvipEvidence;
+
 /// 上游会员权益的本地副本，一条对应上游 `busi_vip[]` 里的一项。
 ///
 /// 保留上游「**并列多条**」的形状，不做「只留最晚到期的那条」之类的合并：同一个
@@ -28,8 +30,6 @@ pub struct EntitlementSnapshot {
     #[serde(rename = "entitlements_sync_failed")]
     pub sync_failed: bool,
 }
-use crate::domain::renewal::SvipEvidence;
-
 pub struct EntitlementObservation {
     pub items: Vec<VipEntitlement>,
     pub svip: SvipEvidence,

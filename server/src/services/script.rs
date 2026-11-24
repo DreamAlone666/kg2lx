@@ -36,7 +36,7 @@ use crate::repos::source::SourceRepo;
 ///
 /// 任一版都必须靠**删除音源后重新导入**才能在用户侧生效——洛雪音乐从不自动更新
 /// 已导入的脚本。服务端无法代劳。
-const SCRIPT_VERSION: &str = "0.1.2";
+const SCRIPT_VERSION: &str = "0.1.3";
 
 /// 脚本自研错误的前缀，与字典一起构成用户在播放条上能看到的那一行。
 ///
@@ -66,7 +66,6 @@ const SCRIPT_ERROR_MESSAGES: &[(ErrorCode, &str)] = &[
     (ErrorCode::AdminUnauthorized, "脚本令牌无效，请重新导入"),
     (ErrorCode::SourceNotFound, "音源不存在，请重新导入音源"),
     (ErrorCode::AccountNotFound, "账号不存在，请重新绑定"),
-    (ErrorCode::AccountDisabled, "账号已停用，请在后台启用"),
     (ErrorCode::LoginSessionNotFound, "登录已过期，请重新扫码"),
     (ErrorCode::UpstreamRequestFailed, "连接酷狗失败，请稍后重试"),
     (ErrorCode::UpstreamLoginFailed, "登录态失效，请在后台刷新"),
@@ -146,16 +145,19 @@ const SCRIPT_UPDATE_TIMEOUT_MS: u64 = 5_000;
 /// **顺序是语义，不是格式**：`check_script_update` 直接按这里的次序过滤输出，
 /// 不做排序。排序会把「表里放错位置」这件事掩盖掉，而用户读这段文字时正是按
 /// 新 → 旧理解的。
-const SCRIPT_RELEASE_NOTES: &[(&str, &[&str])] = &[(
-    "0.1.2",
-    &[
-        "错误提示改为脚本自带的中文短句，播放条上不再出现英文诊断",
-        "取链失败分得更细：音质不可用 / 全部不可用 / 没取到地址",
-        "请求超时由脚本自己控制在 15 秒",
-        "请求体带上歌名 / 歌手 / 专辑，日志能看出是哪首歌",
-        "新增本弹窗",
-    ],
-)];
+const SCRIPT_RELEASE_NOTES: &[(&str, &[&str])] = &[
+    ("0.1.3", &["修复限流冷却后无法重试", "更新入口指向账号详情"]),
+    (
+        "0.1.2",
+        &[
+            "错误提示改为脚本自带的中文短句，播放条上不再出现英文诊断",
+            "取链失败分得更细：音质不可用 / 全部不可用 / 没取到地址",
+            "请求超时由脚本自己控制在 15 秒",
+            "请求体带上歌名 / 歌手 / 专辑，日志能看出是哪首歌",
+            "新增本弹窗",
+        ],
+    ),
+];
 
 /// 单条发行说明的长度上限（字符数）。
 ///
@@ -520,8 +522,7 @@ impl ScriptService {
     ///
     /// 1. **不查账号。** 版本判定只用脚本版本，账号状态、登录态、权益都不参与——
     ///    它们各自有另外的失败面，掺进来只会让这条通知莫名其妙地消失。
-    /// 2. **不写运行时日志。** `RuntimeLog` 记的是取链事件，这条通知不是取链，
-    ///    强行落一行会让日志面板里混进一批既没有 hash 也没有音质的行。
+    /// 2. 全站日志中的取链事件对应播放请求，版本通知无需写入这些事件。
     ///
     /// 客户端版本解析不出来时按「无更新」处理：脚本头部被手改属于自找，
     /// 拿一个猜出来的版本去弹窗才是错的。
@@ -562,8 +563,8 @@ impl ScriptService {
         // 没有产物时它是 404，把用户送去一个 404 比不给按钮更糟。此时整个键不出现。
         let update_url = self.config.web_dist_dir.as_ref().map(|_| {
             format!(
-                "{}/sources/{}",
-                self.config.public_base_url, source.source_id
+                "{}/accounts/{}",
+                self.config.public_base_url, source.account_id
             )
         });
 
@@ -715,7 +716,7 @@ const httpPost = (url, body) => new Promise((resolve, reject) => {{
 let busyStreak = 0
 let busyCooldownUntil = 0
 on(EVENT_NAMES.request, ({{ source, action, info }}) => {{
-  if (source !== 'kg' || action !== 'musicUrl') return Promise.reject(fail(ERROR_MESSAGES.INVALID_REQUEST))
+  if (source !== 'kg' || action !== 'musicUrl' || !info) return Promise.reject(fail(ERROR_MESSAGES.INVALID_REQUEST))
   const musicInfo = info.musicInfo || {{}}
   const quality = qualityMap[info.type]
   if (!quality) return Promise.reject(fail(ERROR_MESSAGES.INVALID_REQUEST))
@@ -732,6 +733,10 @@ on(EVENT_NAMES.request, ({{ source, action, info }}) => {{
     artist_name: musicInfo.singer || null,
     album_name: musicInfo.albumName || null,
     types: musicInfo.types || null,
+  }}).then((url) => {{
+    busyStreak = 0
+    busyCooldownUntil = 0
+    return url
   }}).catch((err) => {{
     // 服务端没有说这是瞬时错误：清零计数（一次失败不代表后面都会失败）并原样抛出。
     if (!err || err.retryable !== true) {{
@@ -741,11 +746,15 @@ on(EVENT_NAMES.request, ({{ source, action, info }}) => {{
     // 只有服务端声明的瞬时错误才借宿主的重试信号，而且有上限。宿主收到信号后会等
     // 2~6 秒再发起一次请求（player/action.ts 的 delayRetry），每一次借用都意味着
     // 用户多等这么久，无限借用就成了一条永远不结束的重试环。
-    // 冷却窗口是第二道闸：计数可能被上面那次非瞬时失败清零，窗口内仍然不借。
-    if (Date.now() < busyCooldownUntil || busyStreak >= BUSY_RETRY_LIMIT) {{
-      busyStreak = BUSY_RETRY_LIMIT
-      busyCooldownUntil = Date.now() + BUSY_COOLDOWN_MS
-      throw fail(ERROR_MESSAGES.UPSTREAM_RATE_LIMITED)
+    const now = Date.now()
+    if (now < busyCooldownUntil) throw err
+    if (busyCooldownUntil !== 0) {{
+      busyCooldownUntil = 0
+      busyStreak = 0
+    }}
+    if (busyStreak >= BUSY_RETRY_LIMIT) {{
+      busyCooldownUntil = now + BUSY_COOLDOWN_MS
+      throw err
     }}
     busyStreak += 1
     // 逐字相等是必须的：宿主用 === 比较这个字符串，带上前缀就不再是它认得的那个
@@ -806,7 +815,7 @@ const alertScriptUpdate = (data) => {{
   // 此前读端误用了驼峰，条件恒假，于是地址从来没进过弹窗——一处死代码。
   // updateUrl 只在服务端真的给了非空字符串时才带上：宿主对不带 scheme 的地址会
   // 静默丢弃（点了没反应），我们只送合规的值。
-  if (typeof data.update_url === 'string' && data.update_url) payload.updateUrl = data.update_url
+  if (typeof data.update_url === 'string' && /^https?:\/\//.test(data.update_url)) payload.updateUrl = data.update_url
   // send 返回的 Promise 会被拒绝（额度已被用掉时是 'The update alert can only be
   // called once.'），必须接住，否则沙箱里会出现一个没人处理的 rejection。
   send(EVENT_NAMES.updateAlert, payload).catch(() => {{}})
@@ -885,7 +894,7 @@ mod tests {
             vec![
                 " * @name 酷狗概念版 12345678",
                 " * @description 127.0.0.1:8787 · 12345678",
-                " * @version 0.1.2",
+                " * @version 0.1.3",
             ],
             "header metadata layout changed; update this test deliberately"
         );
@@ -1171,6 +1180,70 @@ mod tests {
         assert!(guard.contains("BUSY_COOLDOWN_MS"), "缺少冷却窗口");
     }
 
+    #[test]
+    fn rendered_script_resets_retry_budget_and_preserves_upstream_error() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        let test = r#"
+const assert = require('node:assert/strict')
+const { readFileSync } = require('node:fs')
+const vm = require('node:vm')
+let now = 1000
+let handler
+let response
+vm.runInNewContext(readFileSync(0, 'utf8'), {
+  Date: { now: () => now },
+  lx: {
+    EVENT_NAMES: { request: 'request', inited: 'inited', updateAlert: 'updateAlert' },
+    on(_, callback) { handler = callback },
+    send() { return Promise.resolve() },
+    request(_url, _options, callback) { callback(null, response) }
+  }
+})
+const request = () => handler({
+  source: 'kg', action: 'musicUrl', info: { type: '128k', musicInfo: { hash: 'fixture' } }
+})
+const upstreamError = { statusCode: 502, body: { code: 'UPSTREAM_REQUEST_FAILED', retryable: true } }
+const playable = { statusCode: 200, body: { url: 'https://example.test/song.mp3' } }
+const busy = () => assert.rejects(request(), { message: '服务器繁忙' })
+const exhausted = () => assert.rejects(request(), error =>
+  error.retryable === true && error.message.startsWith('kg2lx：') && !error.message.includes('酷狗繁忙'))
+
+async function run() {
+  response = upstreamError
+  for (let i = 0; i < 3; i++) await busy()
+  response = playable
+  assert.equal(await request(), playable.body.url)
+  response = upstreamError
+  for (let i = 0; i < 3; i++) await busy()
+  await exhausted()
+  await exhausted()
+  now += 120000
+  await busy()
+  await assert.rejects(handler({ source: 'kg', action: 'musicUrl', info: null }))
+}
+run().catch(error => { console.error(error); process.exitCode = 1 })
+"#;
+        let mut node = Command::new("node")
+            .args(["-e", test])
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("Node is required for the rendered-script regression test");
+        node.stdin
+            .take()
+            .unwrap()
+            .write_all(sample_script().as_bytes())
+            .unwrap();
+        let result = node.wait_with_output().unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
     /// 自己的超时必须早于宿主的 20 秒硬超时，否则用户看到的是那句未翻译的
     /// `Cancel request`。
     #[test]
@@ -1400,7 +1473,7 @@ mod tests {
         let resp = ScriptUpdateResponse {
             update: true,
             log: Some("有新版".into()),
-            update_url: Some("http://127.0.0.1:8787/sources/src_update".into()),
+            update_url: Some("http://127.0.0.1:8787/accounts/acc_update".into()),
         };
         let value = serde_json::to_value(&resp).expect("响应必须能序列化");
         let wire_key = value
@@ -1448,10 +1521,6 @@ mod tests {
             Ok(None)
         }
 
-        async fn list_by_account_id(&self, _account_id: &str) -> Result<Vec<Source>, AppError> {
-            Ok(Vec::new())
-        }
-
         async fn update_settings(
             &self,
             _source_id: &str,
@@ -1461,10 +1530,6 @@ mod tests {
         ) -> Result<Source, AppError> {
             unreachable!("test did not update the source")
         }
-
-        async fn list_all(&self) -> Result<Vec<Source>, AppError> {
-            Ok(Vec::new())
-        }
     }
 
     /// 更新检查**不该**碰账号仓库。全部方法返回空值：若哪天有人给版本判定加上账号
@@ -1473,10 +1538,6 @@ mod tests {
 
     #[async_trait]
     impl AccountRepo for FakeAccountRepo {
-        async fn list_all(&self) -> Result<Vec<ProviderAccount>, AppError> {
-            Ok(Vec::new())
-        }
-
         async fn find_by_id(&self, _account_id: &str) -> Result<Option<ProviderAccount>, AppError> {
             Ok(None)
         }
@@ -1943,11 +2004,11 @@ mod tests {
             .expect("旧版本应当正常返回");
         assert_eq!(
             resp.update_url.as_deref(),
-            Some("http://127.0.0.1:8787/sources/src_update")
+            Some("http://127.0.0.1:8787/accounts/acc_update")
         );
         assert_eq!(
             response_json(&resp)["update_url"],
-            "http://127.0.0.1:8787/sources/src_update"
+            "http://127.0.0.1:8787/accounts/acc_update"
         );
     }
 

@@ -1,5 +1,7 @@
+pub mod account;
 pub mod auth;
 pub mod entitlement;
+pub mod event_log;
 pub mod kugou_lite_client;
 pub mod login;
 pub mod runtime;

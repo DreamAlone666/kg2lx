@@ -10,7 +10,6 @@ pub enum ErrorCode {
     AdminUnauthorized,
     SourceNotFound,
     AccountNotFound,
-    AccountDisabled,
     LoginSessionNotFound,
     UpstreamRequestFailed,
     UpstreamLoginFailed,
@@ -50,7 +49,6 @@ impl ErrorCode {
             Self::AdminUnauthorized => "ADMIN_UNAUTHORIZED",
             Self::SourceNotFound => "SOURCE_NOT_FOUND",
             Self::AccountNotFound => "ACCOUNT_NOT_FOUND",
-            Self::AccountDisabled => "ACCOUNT_DISABLED",
             Self::LoginSessionNotFound => "LOGIN_SESSION_NOT_FOUND",
             Self::UpstreamRequestFailed => "UPSTREAM_REQUEST_FAILED",
             Self::UpstreamLoginFailed => "UPSTREAM_LOGIN_FAILED",
@@ -72,15 +70,11 @@ impl ErrorCode {
     /// 改动的只有 `as_str` 的穷尽 match。因此遍历 `ALL` 的测试是这里的安全网：
     /// 新变体若忘了加进来，测试覆盖不到它，而 `as_str` 的部分仍需人工保证。
     ///
-    /// `allow(dead_code)`：唯一的消费方是 `#[cfg(test)]` 的测试模块，而非测试的
-    /// bin target 看不到它，于是会报「从未被使用」。不要因为这条警告把它删掉——
-    /// 删了安全网就没了。
-    #[allow(dead_code)]
-    pub const ALL: [ErrorCode; 16] = [
+    #[cfg(test)]
+    pub const ALL: [ErrorCode; 15] = [
         ErrorCode::AdminUnauthorized,
         ErrorCode::SourceNotFound,
         ErrorCode::AccountNotFound,
-        ErrorCode::AccountDisabled,
         ErrorCode::LoginSessionNotFound,
         ErrorCode::UpstreamRequestFailed,
         ErrorCode::UpstreamLoginFailed,
@@ -114,7 +108,6 @@ pub struct AppError {
     pub code: ErrorCode,
     pub message: String,
     pub status: StatusCode,
-    pub is_admin: bool,
 }
 
 impl AppError {
@@ -123,7 +116,6 @@ impl AppError {
             code: ErrorCode::AdminUnauthorized,
             message: "unauthorized".into(),
             status: StatusCode::UNAUTHORIZED,
-            is_admin: false,
         }
     }
 
@@ -132,7 +124,6 @@ impl AppError {
             code: ErrorCode::SourceNotFound,
             message: "source not found".into(),
             status: StatusCode::NOT_FOUND,
-            is_admin: false,
         }
     }
 
@@ -141,16 +132,6 @@ impl AppError {
             code: ErrorCode::AccountNotFound,
             message: "account not found".into(),
             status: StatusCode::NOT_FOUND,
-            is_admin: false,
-        }
-    }
-
-    pub fn account_disabled() -> Self {
-        Self {
-            code: ErrorCode::AccountDisabled,
-            message: "account is disabled".into(),
-            status: StatusCode::FORBIDDEN,
-            is_admin: false,
         }
     }
 
@@ -159,7 +140,6 @@ impl AppError {
             code: ErrorCode::LoginSessionNotFound,
             message: "login session not found".into(),
             status: StatusCode::NOT_FOUND,
-            is_admin: true,
         }
     }
 
@@ -168,7 +148,6 @@ impl AppError {
             code: ErrorCode::UpstreamRequestFailed,
             message: msg.into(),
             status: StatusCode::BAD_GATEWAY,
-            is_admin: true,
         }
     }
 
@@ -177,7 +156,6 @@ impl AppError {
             code: ErrorCode::UpstreamLoginFailed,
             message: msg.into(),
             status: StatusCode::BAD_GATEWAY,
-            is_admin: true,
         }
     }
 
@@ -186,7 +164,6 @@ impl AppError {
             code: ErrorCode::UpstreamVipCheckFailed,
             message: msg.into(),
             status: StatusCode::BAD_GATEWAY,
-            is_admin: true,
         }
     }
 
@@ -195,43 +172,30 @@ impl AppError {
             code: ErrorCode::UpstreamPlayUrlEmpty,
             message: "play url unavailable".into(),
             status: StatusCode::NOT_FOUND,
-            is_admin: false,
         }
     }
 
-    /// `is_admin: false` 的理由与 `upstream_rate_limited()` 完全一致：运行时链路
-    /// 可达、面向客户端脚本，而脚本只分支 `>= 400`；`into_response` 的脱敏名单
-    /// 只覆盖四个诊断码，所以这个 message 无论取什么值都会原样穿过。选 false 是
-    /// 为了与相邻的运行时错误同档，不是为了把 message 藏起来。
     pub fn upstream_quality_refused() -> Self {
         Self {
             code: ErrorCode::UpstreamQualityRefused,
             message: "requested quality refused by upstream".into(),
             status: StatusCode::NOT_FOUND,
-            is_admin: false,
         }
     }
 
-    /// `is_admin: false` 的理由同 `upstream_quality_refused()`。
     pub fn upstream_quality_exhausted() -> Self {
         Self {
             code: ErrorCode::UpstreamQualityExhausted,
             message: "no quality available after fallback".into(),
             status: StatusCode::NOT_FOUND,
-            is_admin: false,
         }
     }
 
-    /// `is_admin: false`（与最近的邻居 `upstream_play_url_empty()` 一致）：它是运行
-    /// 时链路可达、面向客户端的错误，且 `into_response` 的脱敏名单只覆盖四个诊断码，
-    /// 这个 code 的 message 无论取哪个值都会原样穿过——所以这里选 false 不是为了让
-    /// message 被藏起来，而是为了跟同类保持一致；不要为此去动 `into_response`。
     pub fn upstream_rate_limited() -> Self {
         Self {
             code: ErrorCode::UpstreamRateLimited,
             message: "upstream rate limited".into(),
             status: StatusCode::TOO_MANY_REQUESTS,
-            is_admin: false,
         }
     }
 
@@ -240,18 +204,14 @@ impl AppError {
             code: ErrorCode::InvalidRequest,
             message: msg.into(),
             status: StatusCode::BAD_REQUEST,
-            is_admin: false,
         }
     }
 
-    /// `is_admin: false` 但 message 不被 `into_response` 脱敏——脱敏名单只有
-    /// 上游/内部错误，这里是用户可以自我修正的入参问题，报文要原样到客户端。
     pub fn source_name_empty() -> Self {
         Self {
             code: ErrorCode::SourceNameEmpty,
             message: "name is empty after removing characters that would break the script".into(),
             status: StatusCode::BAD_REQUEST,
-            is_admin: false,
         }
     }
 
@@ -260,8 +220,20 @@ impl AppError {
             code: ErrorCode::SourceNameTooLong,
             message: format!("name is too long: {} bytes (limit {} bytes)", len, limit),
             status: StatusCode::BAD_REQUEST,
-            is_admin: false,
         }
+    }
+
+    pub fn for_public_response(mut self) -> Self {
+        if matches!(
+            self.code,
+            ErrorCode::UpstreamRequestFailed
+                | ErrorCode::UpstreamLoginFailed
+                | ErrorCode::UpstreamVipCheckFailed
+                | ErrorCode::InternalError
+        ) {
+            self.message = "internal error".into();
+        }
+        self
     }
 
     pub fn internal(msg: impl Into<String>) -> Self {
@@ -269,7 +241,6 @@ impl AppError {
             code: ErrorCode::InternalError,
             message: msg.into(),
             status: StatusCode::INTERNAL_SERVER_ERROR,
-            is_admin: false,
         }
     }
 }
@@ -297,20 +268,9 @@ fn is_false(v: &bool) -> bool {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let msg = if self.is_admin {
-            self.message
-        } else {
-            match self.code {
-                ErrorCode::UpstreamRequestFailed
-                | ErrorCode::UpstreamLoginFailed
-                | ErrorCode::UpstreamVipCheckFailed
-                | ErrorCode::InternalError => "internal error".into(),
-                _ => self.message,
-            }
-        };
         let body = ErrorBody {
             code: self.code,
-            message: msg,
+            message: self.message,
             retryable: self.code.is_retryable(),
         };
         (self.status, Json(body)).into_response()
@@ -423,7 +383,6 @@ mod tests {
     /// （那才是运维当下的线索），而 `internal` 的报文要变成 "internal error"。
     #[tokio::test]
     async fn diagnostic_codes_keep_raw_message() {
-        // is_admin: true 的诊断码——报文原样送到客户端。
         let passthrough = [
             (
                 AppError::upstream_request_failed("raw request detail"),
@@ -450,9 +409,11 @@ mod tests {
             assert_eq!(value["message"], message);
         }
 
-        // is_admin: false 的 InternalError——报文被替换，不能泄露内部细节。
         let bytes = to_bytes(
-            AppError::internal("boom").into_response().into_body(),
+            AppError::internal("boom")
+                .for_public_response()
+                .into_response()
+                .into_body(),
             usize::MAX,
         )
         .await

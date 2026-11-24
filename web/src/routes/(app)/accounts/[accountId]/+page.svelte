@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
+	import { SvelteSet } from 'svelte/reactivity';
 	import { afterNavigate } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
@@ -15,8 +16,8 @@
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import RenewalCard from '$lib/components/accounts/RenewalCard.svelte';
 	import SourceNameEditor from '$lib/components/accounts/SourceNameEditor.svelte';
-	import CopyField from '$lib/components/sources/CopyField.svelte';
-	import QualityFallbackSetting from '$lib/components/sources/QualityFallbackSetting.svelte';
+	import CopyField from '$lib/components/ui/CopyField.svelte';
+	import QualityFallbackSetting from '$lib/components/accounts/QualityFallbackSetting.svelte';
 	import { accountsController, type AccountAction } from '$lib/features/accounts/controller.svelte';
 	import { adminSession, handleAuthError } from '$lib/state/admin-session.svelte';
 	import { toast } from '$lib/state/toast.svelte';
@@ -42,7 +43,7 @@
 	let account = $derived(
 		accountsController.currentAccount?.account_id === accountId
 			? accountsController.currentAccount
-			: null
+			: (accountsController.accounts.find(item => item.account_id === accountId) ?? null)
 	);
 	const pendingAction = $derived(account ? accountsController.accountActions[account.account_id] : undefined);
 	const savingAutoClaim = $derived(
@@ -51,48 +52,50 @@
 
 	const primaryTitle = $derived(
 		account
-			? account.sources[0]?.name || account.display_name || `账号 ${account.userid}`
+			? account.sources[0]?.name || `账号 ${account.userid}`
 			: '账号详情'
 	);
 	const pageTitle = $derived(account ? `${primaryTitle} | kg2lx` : '账号详情 | kg2lx');
 
-	let renamedSourceIds = $state<Set<string>>(new Set());
+	const renamedSourceIds = new SvelteSet<string>();
 
 	// 近期动态（底部通栏 6 条）
 	let recentEvents = $state<StoredEvent[]>([]);
 	let loadingRecent = $state(false);
 	let recentError = $state<string | null>(null);
 	let recentAbort: AbortController | null = null;
-	let recentRequestId = 0;
 
 	async function loadRecentLogs(targetAccountId: string, silent = false) {
-		const reqId = ++recentRequestId;
-		if (recentAbort) recentAbort.abort();
-		recentAbort = new AbortController();
+		const session = adminSession.signal;
+		recentAbort?.abort();
+		const request = new AbortController();
+		recentAbort = request;
 
 		if (!silent) loadingRecent = true;
 		try {
 			const res = await adminSession.api.listLogs(
 				{ accountId: targetAccountId, limit: 6 },
-				recentAbort.signal
+				request.signal
 			);
-			if (reqId !== recentRequestId || targetAccountId !== accountId) return;
+			if (session.aborted || request.signal.aborted || targetAccountId !== accountId) return;
 			recentEvents = res.items;
 			recentError = null;
 		} catch (e: unknown) {
-			if (e instanceof DOMException && e.name === 'AbortError') return;
+			if (session.aborted || request.signal.aborted || targetAccountId !== accountId) return;
 			if (handleAuthError(e)) return;
-			if (reqId !== recentRequestId || targetAccountId !== accountId) return;
 			recentError = describeApiError(e);
 		} finally {
-			if (!silent && reqId === recentRequestId) loadingRecent = false;
+			if (request === recentAbort) {
+				recentAbort = null;
+				loadingRecent = false;
+			}
 		}
 	}
 
 	afterNavigate(({ to }) => {
 		const id = to?.params?.accountId ?? accountId;
 		if (!id) return;
-		renamedSourceIds = new Set();
+		renamedSourceIds.clear();
 		recentEvents = [];
 		recentError = null;
 		void accountsController.loadAccount(id);
@@ -104,9 +107,7 @@
 	});
 
 	function markSourceRenamed(sourceId: string) {
-		const next = new Set(renamedSourceIds);
-		next.add(sourceId);
-		renamedSourceIds = next;
+		renamedSourceIds.add(sourceId);
 	}
 
 	async function handleAccountAction(action: AccountAction) {
@@ -142,19 +143,17 @@
 		if (!account) return;
 		const id = account.account_id;
 		const res = await accountsController.setRenewalEnabled(id, next);
-		if (res === 'ok') {
+		if (res.status === 'ok') {
 			toast.success(next ? '已开启自动领取 VIP。' : '已关闭自动领取 VIP。');
 			void loadRecentLogs(id, true);
-		} else {
-			toast.error(accountsController.error ?? '保存失败，请重试。');
+		} else if (res.status === 'failed') {
+			toast.error(res.message);
 		}
 	}
 
 	async function handleQualityFallbackChange(sourceId: string, next: boolean) {
 		const res = await accountsController.setQualityFallback(sourceId, next);
-		if (res === 'failed') {
-			toast.error(accountsController.error ?? '保存失败，请重试。');
-		}
+		if (res.status === 'failed') toast.error(res.message);
 	}
 </script>
 
@@ -204,7 +203,7 @@
 			style="view-transition-name: account-{account.account_id}"
 		>
 			<div class="min-w-0 flex-1">
-				{#if account.sources.length > 0}
+				{#if account.sources.length === 1}
 					{#key account.sources[0].source_id}
 						<SourceNameEditor
 							source={account.sources[0]}
@@ -307,7 +306,7 @@
 				{#if account.sources.length === 0}
 					<Card>
 						<CardHeader class="border-b border-border/70 pb-4">
-							<h2 class="text-subheading">洛雪音源接入</h2>
+							<h2 class="text-subheading">洛雪脚本接入</h2>
 						</CardHeader>
 						<CardContent class="p-6">
 							<p class="text-sm leading-relaxed text-muted-foreground">
@@ -449,9 +448,9 @@
 											{labelOf(eventTypeLabel, event.event_type)}
 										</StatusBadge>
 										<div class="min-w-0 flex-1">
-											<p class="truncate text-sm font-medium text-foreground">
-												{headline.title}
-											</p>
+											{#if headline.title !== labelOf(eventTypeLabel, event.event_type)}
+												<p class="truncate text-sm font-medium text-foreground">{headline.title}</p>
+											{/if}
 											{#if headline.subtitle}
 												<p class="truncate text-xs text-muted-foreground">
 													{headline.subtitle}

@@ -4,6 +4,11 @@ import { describeApiError } from '$lib/domain';
 
 export type AccountAction = 'refresh' | 'sync' | 'claim';
 
+type SaveResult<T> =
+	| { status: 'ok'; value: T }
+	| { status: 'failed'; message: string }
+	| { status: 'redirected' | 'busy' };
+
 class AccountsController {
 	accounts = $state<AccountItem[]>([]);
 	currentAccount = $state<AccountItem | null>(null);
@@ -37,12 +42,10 @@ class AccountsController {
 			this.lastLoadedAt = Math.floor(Date.now() / 1000);
 			this.error = null;
 		} catch (e: unknown) {
-			if (e instanceof DOMException && e.name === 'AbortError') return;
-			if (handleAuthError(e)) return;
-			if (requestId !== this.listRequestId) return;
+			if (requestId !== this.listRequestId || handleAuthError(e)) return;
 			if (!silent) this.error = describeApiError(e);
 		} finally {
-			if (!silent && requestId === this.listRequestId) this.loadingList = false;
+			if (requestId === this.listRequestId) this.loadingList = false;
 		}
 	}
 
@@ -63,124 +66,102 @@ class AccountsController {
 			this.syncAccountInList(merged);
 			this.error = null;
 		} catch (e: unknown) {
-			if (e instanceof DOMException && e.name === 'AbortError') return;
-			if (handleAuthError(e)) return;
-			if (requestId !== this.detailRequestId) return;
+			if (requestId !== this.detailRequestId || handleAuthError(e)) return;
 			if (!silent) this.error = describeApiError(e);
 		} finally {
-			if (!silent && requestId === this.detailRequestId) this.loadingDetail = false;
+			if (requestId === this.detailRequestId) this.loadingDetail = false;
 		}
 	}
 
 	async runAccountAction(accountId: string, action: AccountAction) {
-		if (this.accountActions[accountId]) return { status: 'busy' } as const;
-		this.accountActions = { ...this.accountActions, [accountId]: action };
+		const inFlight = this.accountActions;
+		if (inFlight[accountId]) return { status: 'busy' } as const;
+		inFlight[accountId] = action;
+		const { api, signal } = adminSession;
 
 		try {
 			let actionError: string | undefined;
 			let claimRenewal: RenewalStatus | undefined;
-
 			try {
 				if (action === 'refresh') {
-					await adminSession.api.refreshToken(accountId);
+					await api.refreshToken(accountId, signal);
 				} else if (action === 'sync') {
-					await adminSession.api.syncEntitlements(accountId);
+					await api.syncEntitlements(accountId, signal);
 				} else {
-					claimRenewal = await adminSession.api.claimRenewal(accountId);
-					this.patchAccountRenewal(accountId, claimRenewal);
+					claimRenewal = await api.claimRenewal(accountId, signal);
+					if (!signal.aborted) this.patchAccountRenewal(accountId, claimRenewal);
 				}
 			} catch (error) {
-				if (handleAuthError(error)) return { status: 'redirected' } as const;
+				if (signal.aborted || handleAuthError(error)) return { status: 'redirected' } as const;
 				actionError = describeApiError(error);
 			}
+			if (signal.aborted) return { status: 'redirected' } as const;
 
 			try {
-				const fresh = await adminSession.api.getAccount(accountId);
+				const fresh = await api.getAccount(accountId, signal);
+				if (signal.aborted) return { status: 'redirected' } as const;
 				const merged = this.mergePendingEdits(fresh);
-				if (this.currentAccount?.account_id === accountId) {
-					this.currentAccount = merged;
-				}
+				if (this.currentAccount?.account_id === accountId) this.currentAccount = merged;
 				this.syncAccountInList(merged);
 			} catch (error) {
-				if (handleAuthError(error)) return { status: 'redirected' } as const;
+				if (signal.aborted || handleAuthError(error)) return { status: 'redirected' } as const;
 				if (!actionError && !claimRenewal) return { status: 'unconfirmed' } as const;
 			}
 
-			if (actionError) {
-				return { status: 'failed', message: actionError } as const;
-			}
+			if (actionError) return { status: 'failed', message: actionError } as const;
 			return { status: 'ok', renewal: claimRenewal } as const;
 		} finally {
-			const next = { ...this.accountActions };
-			delete next[accountId];
-			this.accountActions = next;
+			if (!signal.aborted) delete inFlight[accountId];
 		}
 	}
 
-	async setRenewalEnabled(accountId: string, enabled: boolean): Promise<'ok' | 'failed'> {
-		if (this.savingAutoClaim[accountId]) return 'failed';
-		this.savingAutoClaim = { ...this.savingAutoClaim, [accountId]: true };
-		this.error = null;
-
-		try {
-			const renewal = await adminSession.api.updateRenewal(accountId, enabled);
-			this.patchAccountRenewal(accountId, renewal);
-			return 'ok';
-		} catch (e: unknown) {
-			if (!handleAuthError(e)) this.error = describeApiError(e);
-			return 'failed';
-		} finally {
-			const next = { ...this.savingAutoClaim };
-			delete next[accountId];
-			this.savingAutoClaim = next;
-		}
+	setRenewalEnabled(accountId: string, enabled: boolean) {
+		return this.save(
+			this.savingAutoClaim, accountId,
+			() => adminSession.api.updateRenewal(accountId, enabled),
+			renewal => this.patchAccountRenewal(accountId, renewal)
+		);
 	}
 
-	async renameSource(
-		sourceId: string,
-		name: string | null
-	): Promise<{ status: 'ok'; name: string; defaultName: string } | { status: 'failed' }> {
-		this.savingSourceName = { ...this.savingSourceName, [sourceId]: true };
-		this.error = null;
-
-		try {
-			const res = await adminSession.api.updateSource(sourceId, { name });
-			this.patchSource(sourceId, (src) => ({
-				...src,
-				name: res.name,
-				default_name: res.default_name,
-				updated_at: res.updated_at,
-			}));
-			return { status: 'ok', name: res.name, defaultName: res.default_name };
-		} catch (e: unknown) {
-			if (!handleAuthError(e)) this.error = describeApiError(e);
-			return { status: 'failed' };
-		} finally {
-			const next = { ...this.savingSourceName };
-			delete next[sourceId];
-			this.savingSourceName = next;
-		}
+	renameSource(sourceId: string, name: string | null) {
+		return this.save(
+			this.savingSourceName, sourceId,
+			() => adminSession.api.updateSource(sourceId, { name }),
+			res => this.patchSource(sourceId, src => ({
+				...src, name: res.name, default_name: res.default_name, updated_at: res.updated_at
+			}))
+		);
 	}
 
-	async setQualityFallback(sourceId: string, value: boolean): Promise<'ok' | 'failed'> {
-		this.savingQualityFallback = { ...this.savingQualityFallback, [sourceId]: true };
-		this.error = null;
+	setQualityFallback(sourceId: string, value: boolean) {
+		return this.save(
+			this.savingQualityFallback, sourceId,
+			() => adminSession.api.updateSource(sourceId, { quality_fallback: value }),
+			res => this.patchSource(sourceId, src => ({
+				...src, quality_fallback: res.quality_fallback, updated_at: res.updated_at
+			}))
+		);
+	}
 
+	private async save<T>(
+		pending: Partial<Record<string, boolean>>,
+		id: string,
+		request: () => Promise<T>,
+		apply: (value: T) => void
+	): Promise<SaveResult<T>> {
+		if (pending[id]) return { status: 'busy' };
+		const { signal } = adminSession;
+		pending[id] = true;
 		try {
-			const res = await adminSession.api.updateSource(sourceId, { quality_fallback: value });
-			this.patchSource(sourceId, (src) => ({
-				...src,
-				quality_fallback: res.quality_fallback,
-				updated_at: res.updated_at,
-			}));
-			return 'ok';
-		} catch (e: unknown) {
-			if (!handleAuthError(e)) this.error = describeApiError(e);
-			return 'failed';
+			const value = await request();
+			if (signal.aborted) return { status: 'redirected' };
+			apply(value);
+			return { status: 'ok', value };
+		} catch (error) {
+			if (signal.aborted || handleAuthError(error)) return { status: 'redirected' };
+			return { status: 'failed', message: describeApiError(error) };
 		} finally {
-			const next = { ...this.savingQualityFallback };
-			delete next[sourceId];
-			this.savingQualityFallback = next;
+			if (!signal.aborted) delete pending[id];
 		}
 	}
 
@@ -188,15 +169,23 @@ class AccountsController {
 		this.error = null;
 	}
 
-	stop() {
-		if (this.listAbort) {
-			this.listAbort.abort();
-			this.listAbort = null;
-		}
-		if (this.detailAbort) {
-			this.detailAbort.abort();
-			this.detailAbort = null;
-		}
+	reset() {
+		this.listRequestId++;
+		this.detailRequestId++;
+		this.listAbort?.abort();
+		this.detailAbort?.abort();
+		this.listAbort = null;
+		this.detailAbort = null;
+		this.accounts = [];
+		this.currentAccount = null;
+		this.loadingList = false;
+		this.loadingDetail = false;
+		this.error = null;
+		this.accountActions = {};
+		this.savingAutoClaim = {};
+		this.savingSourceName = {};
+		this.savingQualityFallback = {};
+		this.lastLoadedAt = null;
 	}
 
 	private syncAccountInList(account: AccountItem) {
@@ -272,3 +261,4 @@ class AccountsController {
 }
 
 export const accountsController = new AccountsController();
+adminSession.onReset(() => accountsController.reset());

@@ -1,9 +1,10 @@
 pub(crate) mod entitlement;
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use crate::domain::now_ts_ms;
+use std::time::Duration;
 
 use async_trait::async_trait;
-use chrono::{Local, NaiveDateTime, TimeZone};
+use reqwest::{RequestBuilder, Response};
 use serde_json::Value;
 
 use crate::config::Config;
@@ -11,6 +12,7 @@ use crate::domain::cookie_store::{
     CookieStore, merge_cookies_from_body_if_present, merge_cookies_from_headers,
 };
 use crate::domain::entitlement::VipEntitlement;
+use crate::domain::renewal::upstream_svip_timestamp;
 use crate::error::AppError;
 
 #[derive(Debug, serde::Deserialize)]
@@ -169,35 +171,8 @@ impl VipBusinessEntry {
     }
 }
 
-/// 权益时间字段的取值：先按观测字段的宽容度窄化成字符串（形状认不出就是「上游
-/// 没说」），再按本地时区解释成时间戳。两步都不允许失败，理由见
-/// `VipBusinessEntry`。
 fn observed_time(value: Option<&Value>) -> Option<i64> {
-    local_time_to_epoch(observed_string(value).as_deref())
-}
-
-/// 上游的权益时间串（`YYYY-MM-DD HH:MM:SS`）→ 秒级 Unix 时间戳。
-///
-/// **假设（必须写明）：上游这个串不带时区。** 酷狗只给本地时间文本，没有偏移量、
-/// 也没有 `Z` 后缀，因此唯一可用的解释是「它与本服务端所处时区一致」——即假定
-/// 服务端与用户在同一时区。**残留风险**：浏览器与服务器时区不同（出境、多机房、
-/// 或用户手动改过系统时区）时，后台按浏览器本地时区渲染这个时间戳会整体偏移一个
-/// 时差。这是解释层面的缺陷，不是解析缺陷，在上游补出时区之前无法消除；受影响的
-/// 只有展示的钟点，`active`（`is_vip`）这个判断不经过时间。
-///
-/// 任何读不出来的取值（空串、格式不同、不存在的本地时刻）一律 `None`，且**绝不
-/// 让整条响应解析失败**：权益时间只是附带信息，为此把一次成功的 VIP 查询变成
-/// `UPSTREAM_VIP_CHECK_FAILED`，等于把「拿到了权益、只是时间读不出来」说成
-/// 「上游请求失败」，指向完全错误的方向。
-fn local_time_to_epoch(value: Option<&str>) -> Option<i64> {
-    let naive = NaiveDateTime::parse_from_str(value?, "%Y-%m-%d %H:%M:%S").ok()?;
-    // 夏令时切换那一小时里的本地时刻不唯一，`single()` 此时返回 `None`。中国区没有
-    // 夏令时，取「不唯一即 None」比随手挑一个更诚实：宁可少一个时间戳，也不给出
-    // 一个可能错了一小时的值。
-    Local
-        .from_local_datetime(&naive)
-        .single()
-        .map(|dt| dt.timestamp())
+    upstream_svip_timestamp(value?.as_str()?)
 }
 
 /// `song/url` 响应里"上游到底说了什么"的观测结果。
@@ -230,7 +205,7 @@ pub struct UpstreamObservation {
     /// **只有 mp3 两档能用**：同一首歌四档实测里 128 / 320 分别是精确的 `128000` /
     /// `320000`，而 `flac` / `high` 两个无损档**恒为 0**——0 在这里是「上游没报这个
     /// 值」，不是「0 bps」。因此它不能单独支撑展示，展示侧要按 `file_size × 8 ÷
-    /// time_length` 回退（见 domain/runtime_log.rs 上 `upstream_bit_rate` 的说明）。
+    /// time_length` 回退（用于界面计算有效码率）。
     /// 落盘的理由正是另一面：mp3 两档上它是**精确值**，比回退算出来的近似值更可信。
     pub bit_rate: Option<i64>,
     /// 音频时长（秒）。
@@ -243,7 +218,7 @@ pub struct UpstreamObservation {
 
 /// `fail_process` 落盘前保留的最大条目数。
 ///
-/// 这个值会进入每一条运行时日志的 jsonl 行，而 `fail_process` 是上游给的长度不
+/// 这个值会进入每一条事件日志，而 `fail_process` 是上游给的长度不
 /// 可控的数组：不设上限的话，上游某天返回几百项（或有人构造一个）就会让**每一行**
 /// 日志都膨胀成几十 KB，把日志文件与列表接口一起拖垮。20 项足够覆盖实测出现过的
 /// 全部取值（最长 2 项），超出的部分对我们没有任何信息量。
@@ -429,7 +404,7 @@ pub struct AuthFailure {
 }
 
 impl AuthFailure {
-    fn new(error: AppError) -> Self {
+    pub(super) fn new(error: AppError) -> Self {
         Self {
             error,
             invalid_credentials: false,
@@ -516,39 +491,63 @@ impl KugouLiteClient {
         self.default_timeout
     }
 
-    pub async fn request_qr_key(&self, cookies: &CookieStore) -> Result<QrKeyResult, AppError> {
-        let mut merged = cookies.clone();
-        let url = format!(
-            "{}/login/qr/key?timestamp={}",
-            self.base_url,
-            timestamp_ms()
-        );
-        let resp = self
-            .client
-            .get(&url)
-            .timeout(self.default_timeout)
-            .header("Cookie", cookies.to_cookie_header())
+    fn get(&self, path: &str) -> RequestBuilder {
+        self.client.get(format!("{}{path}", self.base_url))
+    }
+
+    async fn qr_response(
+        &self,
+        request: RequestBuilder,
+        cookies: &CookieStore,
+        operation: &str,
+    ) -> Result<(CookieStore, String), AppError> {
+        let response = proxy_request(request.timeout(self.default_timeout), cookies)
             .send()
             .await
-            .map_err(|e| AppError::upstream_request_failed(format!("qr key: {}", e)))?;
-        merge_cookies_from_headers(&mut merged, resp.headers());
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| AppError::upstream_request_failed(format!("qr key body: {}", e)))?;
-        merge_cookies_from_body_if_present(&mut merged, &body);
+            .map_err(|error| AppError::upstream_request_failed(format!("{operation}: {error}")))?;
+        let status = response.status();
+        if status.as_u16() == 429 {
+            return Err(AppError::upstream_rate_limited());
+        }
+        let (merged, body) =
+            response_cookies(response, cookies.clone())
+                .await
+                .map_err(|error| {
+                    AppError::upstream_request_failed(format!("{operation} body: {error}"))
+                })?;
+        let json = serde_json::from_str::<Value>(&body).ok();
+        if requires_human_verification(json.as_ref(), &body) {
+            return Err(AppError::upstream_login_failed(
+                "upstream requires human verification",
+            ));
+        }
+        if !status.is_success() {
+            let detail = format!("{operation} returned HTTP {status}");
+            return Err(
+                if status.is_client_error() || is_auth_failure(status.as_u16(), json.as_ref()) {
+                    AppError::upstream_login_failed(detail)
+                } else {
+                    AppError::upstream_request_failed(detail)
+                },
+            );
+        }
+        Ok((merged, body))
+    }
 
+    pub async fn request_qr_key(&self, cookies: &CookieStore) -> Result<QrKeyResult, AppError> {
+        let request = self
+            .get("/login/qr/key")
+            .query(&[("timestamp", now_ts_ms())]);
+        let (cookies, body) = self.qr_response(request, cookies, "qr key").await?;
         let parsed: QrKeyResponse = serde_json::from_str(&body)
-            .map_err(|e| AppError::upstream_request_failed(format!("parse qr key: {}", e)))?;
+            .map_err(|e| AppError::upstream_request_failed(format!("parse qr key: {e}")))?;
         let qr_key = parsed
             .data
             .and_then(|d| d.key)
+            .filter(|key| !key.is_empty())
             .ok_or_else(|| AppError::upstream_login_failed("no qr key in response"))?;
 
-        Ok(QrKeyResult {
-            qr_key,
-            cookies: merged,
-        })
+        Ok(QrKeyResult { qr_key, cookies })
     }
 
     pub async fn create_qr_code(
@@ -556,38 +555,21 @@ impl KugouLiteClient {
         qr_key: &str,
         cookies: &CookieStore,
     ) -> Result<QrCreateResult, AppError> {
-        let mut merged = cookies.clone();
-        let url = format!(
-            "{}/login/qr/create?key={}&qrimg=1&timestamp={}",
-            self.base_url,
-            qr_key,
-            timestamp_ms()
-        );
-        let resp2 = self
-            .client
-            .get(&url)
-            .timeout(self.default_timeout)
-            .header("Cookie", cookies.to_cookie_header())
-            .send()
-            .await
-            .map_err(|e| AppError::upstream_request_failed(format!("qr create: {}", e)))?;
-        merge_cookies_from_headers(&mut merged, resp2.headers());
-        let body2 = resp2
-            .text()
-            .await
-            .map_err(|e| AppError::upstream_request_failed(format!("qr create body: {}", e)))?;
-        merge_cookies_from_body_if_present(&mut merged, &body2);
-
-        let parsed2: QrCreateResponse = serde_json::from_str(&body2)
-            .map_err(|e| AppError::upstream_request_failed(format!("parse qr create: {}", e)))?;
-        let data2 = parsed2
+        let request = self
+            .get("/login/qr/create")
+            .query(&[("key", qr_key), ("qrimg", "1")])
+            .query(&[("timestamp", now_ts_ms())]);
+        let (cookies, body) = self.qr_response(request, cookies, "qr create").await?;
+        let parsed: QrCreateResponse = serde_json::from_str(&body)
+            .map_err(|e| AppError::upstream_request_failed(format!("parse qr create: {e}")))?;
+        let data = parsed
             .data
             .ok_or_else(|| AppError::upstream_login_failed("no qr create data"))?;
 
         Ok(QrCreateResult {
-            qr_url: data2.qrurl.unwrap_or_default(),
-            qr_base64: data2.qrimg,
-            cookies: merged,
+            qr_url: data.qrurl.unwrap_or_default(),
+            qr_base64: data.qrimg,
+            cookies,
         })
     }
 
@@ -596,27 +578,11 @@ impl KugouLiteClient {
         qr_key: &str,
         cookies: &CookieStore,
     ) -> Result<QrPollResult, AppError> {
-        let mut merged = cookies.clone();
-        let url = format!(
-            "{}/login/qr/check?key={}&timestamp={}",
-            self.base_url,
-            qr_key,
-            timestamp_ms()
-        );
-        let resp = self
-            .client
-            .get(&url)
-            .timeout(self.default_timeout)
-            .header("Cookie", cookies.to_cookie_header())
-            .send()
-            .await
-            .map_err(|e| AppError::upstream_request_failed(format!("qr check: {}", e)))?;
-        merge_cookies_from_headers(&mut merged, resp.headers());
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| AppError::upstream_request_failed(format!("qr check body: {}", e)))?;
-        merge_cookies_from_body_if_present(&mut merged, &body);
+        let request = self
+            .get("/login/qr/check")
+            .query(&[("key", qr_key)])
+            .query(&[("timestamp", now_ts_ms())]);
+        let (mut merged, body) = self.qr_response(request, cookies, "qr check").await?;
 
         let parsed: QrCheckResponse = serde_json::from_str(&body)
             .map_err(|e| AppError::upstream_request_failed(format!("parse qr check: {}", e)))?;
@@ -654,27 +620,32 @@ impl KugouLiteClient {
         cookies: &CookieStore,
         timeout: Duration,
     ) -> Result<CookieStore, AuthFailure> {
-        let url = format!("{}/login/token", self.base_url);
-        let resp = self
-            .client
-            .get(url)
-            .timeout(timeout)
-            .header("Cookie", cookies.to_cookie_header())
+        let resp = proxy_request(self.get("/login/token").timeout(timeout), cookies)
             .send()
             .await
             .map_err(|e| {
-                AuthFailure::new(AppError::upstream_login_failed(format!(
+                AuthFailure::new(AppError::upstream_request_failed(format!(
                     "token refresh: {e}"
                 )))
             })?;
         let status = resp.status().as_u16();
-        let mut merged = cookies.clone();
-        merge_cookies_from_headers(&mut merged, resp.headers());
-        let body = resp.text().await.map_err(|e| {
-            AuthFailure::new(AppError::upstream_login_failed(format!("token body: {e}")))
-        })?;
-        let json = serde_json::from_str::<serde_json::Value>(&body).ok();
-        merge_cookies_from_body_if_present(&mut merged, &body);
+        if status == 429 {
+            return Err(AuthFailure::new(AppError::upstream_rate_limited()));
+        }
+        let (issued, body) = response_cookies(resp, CookieStore::new())
+            .await
+            .map_err(|e| {
+                AuthFailure::new(AppError::upstream_request_failed(format!(
+                    "token body: {e}"
+                )))
+            })?;
+        let json = serde_json::from_str::<Value>(&body).ok();
+        let token_issued = issued
+            .get("token")
+            .is_some_and(|token| !matches!(token.trim(), "" | "undefined" | "null"));
+        let identity_issued = issued
+            .get("userid")
+            .is_some_and(|userid| !matches!(userid.trim(), "" | "0" | "undefined" | "null"));
         let human_verification = requires_human_verification(json.as_ref(), &body);
         let business_status = json
             .as_ref()
@@ -684,14 +655,19 @@ impl KugouLiteClient {
         if human_verification
             || !(200..300).contains(&status)
             || business_status != Some(1)
-            || merged.is_empty("token")
+            || !token_issued
+            || !identity_issued
         {
             let error = if human_verification {
                 AppError::upstream_login_failed("upstream requires human verification")
             } else {
-                AppError::upstream_login_failed(format!(
-                    "token refresh rejected (HTTP {status}, status {business_status:?})"
-                ))
+                let detail =
+                    format!("token refresh rejected (HTTP {status}, status {business_status:?})");
+                if status >= 500 && !is_auth_failure(status, json.as_ref()) {
+                    AppError::upstream_request_failed(detail)
+                } else {
+                    AppError::upstream_login_failed(detail)
+                }
             };
             return Err(AuthFailure {
                 error,
@@ -699,6 +675,8 @@ impl KugouLiteClient {
                 human_verification,
             });
         }
+        let mut merged = cookies.clone();
+        merged.items.extend(issued.items);
         Ok(merged)
     }
 
@@ -707,12 +685,7 @@ impl KugouLiteClient {
         cookies: &CookieStore,
         timeout: Duration,
     ) -> Result<CookieStore, AuthFailure> {
-        let url = format!("{}/register/dev", self.base_url);
-        let resp = self
-            .client
-            .get(url)
-            .timeout(timeout)
-            .header("Cookie", cookies.to_cookie_header())
+        let resp = proxy_request(self.get("/register/dev").timeout(timeout), cookies)
             .send()
             .await
             .map_err(|e| {
@@ -721,9 +694,10 @@ impl KugouLiteClient {
                 )))
             })?;
         let status = resp.status().as_u16();
-        let mut merged = cookies.clone();
-        merge_cookies_from_headers(&mut merged, resp.headers());
-        let body = resp.text().await.map_err(|e| {
+        if status == 429 {
+            return Err(AuthFailure::new(AppError::upstream_rate_limited()));
+        }
+        let (merged, body) = response_cookies(resp, cookies.clone()).await.map_err(|e| {
             AuthFailure::new(AppError::upstream_request_failed(format!(
                 "register dev body: {e}"
             )))
@@ -736,7 +710,6 @@ impl KugouLiteClient {
                 invalid_credentials: false,
             });
         }
-        merge_cookies_from_body_if_present(&mut merged, &body);
         if !(200..300).contains(&status) || merged.is_empty("dfid") {
             return Err(AuthFailure::new(AppError::upstream_request_failed(
                 format!("device registration did not return a DFID (HTTP {status})"),
@@ -750,24 +723,20 @@ impl KugouLiteClient {
         cookies: &CookieStore,
         req: &MusicUrlRequest,
     ) -> Result<MusicUrlResult, AppError> {
-        let mut merged = cookies.clone();
-        let quality_param = map_quality(&req.quality);
-        let mut url = format!(
-            "{}/song/url?hash={}&quality={}",
-            self.base_url, req.hash, quality_param
-        );
-        if let Some(ref aaid) = req.album_audio_id {
-            url = format!("{}&album_audio_id={}", url, aaid);
+        let mut request = self
+            .get("/song/url")
+            .query(&[
+                ("hash", req.hash.as_str()),
+                ("quality", map_quality(&req.quality)),
+            ])
+            .timeout(self.default_timeout);
+        if let Some(album_audio_id) = req.album_audio_id.as_deref() {
+            request = request.query(&[("album_audio_id", album_audio_id)]);
         }
-
-        let resp = self
-            .client
-            .get(&url)
-            .timeout(self.default_timeout)
-            .header("Cookie", cookies.to_cookie_header())
+        let resp = proxy_request(request, cookies)
             .send()
             .await
-            .map_err(|e| AppError::upstream_request_failed(format!("song url: {}", e)))?;
+            .map_err(|e| AppError::upstream_request_failed(format!("song url: {e}")))?;
         let status = resp.status().as_u16();
         // 429 在这里就短路，不读 body。限流响应体常常根本不是 JSON（网关/防护页
         // 直接回 HTML 或空体），若让它继续走到下面 serde_json 那条通用失败路径，
@@ -776,16 +745,18 @@ impl KugouLiteClient {
         if status == 429 {
             return Err(AppError::upstream_rate_limited());
         }
-        merge_cookies_from_headers(&mut merged, resp.headers());
-        let body = resp
-            .text()
+        let (merged, body) = response_cookies(resp, cookies.clone())
             .await
-            .map_err(|e| AppError::upstream_request_failed(format!("song url body: {}", e)))?;
-        merge_cookies_from_body_if_present(&mut merged, &body);
-
+            .map_err(|e| AppError::upstream_request_failed(format!("song url body: {e}")))?;
         let json = serde_json::from_str::<Value>(&body).ok();
         let human_verification = requires_human_verification(json.as_ref(), &body);
         let auth_failed = !human_verification && is_auth_failure(status, json.as_ref());
+        // The proxy can wrap a definite authentication failure or challenge in HTTP 502.
+        if status >= 500 && !auth_failed && !human_verification {
+            return Err(AppError::upstream_request_failed(format!(
+                "song url upstream HTTP {status}"
+            )));
+        }
         let parsed: SongUrlResponse = match json {
             Some(Value::String(_)) if human_verification => SongUrlResponse::default(),
             Some(value) => serde_json::from_value(value)
@@ -798,35 +769,35 @@ impl KugouLiteClient {
             }
         };
 
-        let observation = parsed.observation();
-        let play_url = parsed.play_url();
-
-        match play_url {
-            Some(u) => Ok(MusicUrlResult {
-                url: u,
-                cookies: merged,
-                status_code: status,
-                auth_failed,
-                human_verification,
-                observation,
-            }),
-            None => Ok(MusicUrlResult {
-                url: String::new(),
-                cookies: merged,
-                status_code: status,
-                auth_failed,
-                human_verification,
-                observation,
-            }),
-        }
+        Ok(MusicUrlResult {
+            url: parsed
+                .play_url()
+                .filter(|_| (200..300).contains(&status))
+                .unwrap_or_default(),
+            cookies: merged,
+            status_code: status,
+            auth_failed,
+            human_verification,
+            observation: parsed.observation(),
+        })
     }
 }
 
-fn timestamp_ms() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
+// The pinned proxy uses a cache key shared across different Cookie values.
+fn proxy_request(request: RequestBuilder, cookies: &CookieStore) -> RequestBuilder {
+    request
+        .header("X-Apicache-Bypass", "1")
+        .header(reqwest::header::COOKIE, cookies.to_cookie_header())
+}
+
+async fn response_cookies(
+    response: Response,
+    mut cookies: CookieStore,
+) -> Result<(CookieStore, String), reqwest::Error> {
+    merge_cookies_from_headers(&mut cookies, response.headers());
+    let body = response.text().await?;
+    merge_cookies_from_body_if_present(&mut cookies, &body);
+    Ok((cookies, body))
 }
 
 /// LX 音质名 → 酷狗 `song/url` 的 quality 参数。
@@ -902,13 +873,10 @@ fn is_auth_failure(status: u16, body: Option<&Value>) -> bool {
             ["code", "errcode", "error_code"]
                 .iter()
                 .any(|key| matches!(upstream_code(body, key), Some(301 | 302)))
-                || ["error", "err_msg", "error_msg", "message"]
+                || ["error", "err_msg", "error_msg", "message", "msg"]
                     .iter()
                     .filter_map(|key| body.get(key).and_then(Value::as_str))
-                    .any(|message| {
-                        let lowercase = message.to_ascii_lowercase();
-                        lowercase.contains("token") || lowercase.contains("dfid")
-                    })
+                    .any(|message| message.to_ascii_lowercase().contains("token"))
         })
 }
 
@@ -1136,8 +1104,7 @@ mod tests {
         );
     }
 
-    /// `fail_process` 会进每一行运行时日志的 jsonl，长度必须被截断。这里断言的是
-    /// "存下来的条目数等于上限"，而不是某个具体条目的内容。
+    /// 取链事件保存的 `fail_process` 条目数有上限。
     #[test]
     fn fail_process_is_truncated_before_storage() {
         let long: Vec<serde_json::Value> = (0..FAIL_PROCESS_MAX_ENTRIES + 5)
@@ -1310,20 +1277,8 @@ mod tests {
 
         let begin = entitlements[0].begin_at.expect("正常时间串必须解析出来");
         let end = entitlements[0].end_at.expect("正常时间串必须解析出来");
-        // **不要**在这里断言 `end - begin` 等于 31 天：窗口跨过夏令时切换点时，两个
-        // 本地时刻之间的 UTC 秒数会多/少一个小时（澳大利亚 Lord Howe 岛这种带半小时
-        // 偏移又有夏令时的时区实测会挂）。能钉且与时区无关的写法是两个字段**各自**按
-        // 本地时区渲染回去都等于原串——字段接反、偏移一小时、被当成 UTC 解释，三种
-        // 错法都会让其中一条失败。
-        let rendered = |ts: i64| {
-            Local
-                .timestamp_opt(ts, 0)
-                .unwrap()
-                .format("%Y-%m-%d %H:%M:%S")
-                .to_string()
-        };
-        assert_eq!(rendered(begin), "2030-01-01 00:00:00");
-        assert_eq!(rendered(end), "2030-02-01 00:00:00");
+        assert_eq!(Some(begin), upstream_svip_timestamp("2029-12-31T16:00:00Z"));
+        assert_eq!(Some(end), upstream_svip_timestamp("2030-01-31T16:00:00Z"));
         assert!(end > begin, "接反了这里会失败");
     }
 
@@ -1332,15 +1287,18 @@ mod tests {
     /// 它们一律是 `None`，且**不能把整条响应升级成失败**——这一层只是记录。
     #[test]
     fn unreadable_time_strings_become_none_without_failing_the_response() {
-        assert!(local_time_to_epoch(Some("2030-01-01 00:00:00")).is_some());
-        assert_eq!(local_time_to_epoch(Some("")), None, "空串是「上游没说」");
-        assert_eq!(local_time_to_epoch(None), None);
+        assert!(
+            upstream_svip_timestamp("2030-01-01 00:00:00")
+                == upstream_svip_timestamp("2029-12-31T16:00:00Z")
+        );
+        assert_eq!(upstream_svip_timestamp(""), None, "空串是「上游没说」");
+        assert_eq!(observed_time(None), None);
         assert_eq!(
-            local_time_to_epoch(Some("2030-01-01")),
+            upstream_svip_timestamp("2030-01-01"),
             None,
             "只有日期没有钟点的串不是这个格式"
         );
-        assert_eq!(local_time_to_epoch(Some("2030/01/01 00:00:00")), None);
+        assert_eq!(upstream_svip_timestamp("2030/01/01 00:00:00"), None);
 
         let entitlements = parse_entitlements(
             r#"{"status":1,"data":{"busi_vip":[

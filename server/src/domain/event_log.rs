@@ -1,4 +1,4 @@
-use crate::domain::account::now_ts_ms;
+use crate::domain::now_ts_ms;
 use crate::domain::renewal::{RenewalOutcome, RenewalReason};
 use crate::error::ErrorCode;
 
@@ -198,16 +198,6 @@ pub enum LogView {
     Errors,
 }
 
-#[derive(Debug)]
-pub struct ListEvents {
-    pub source_id: String,
-    pub account_id: String,
-    pub limit: usize,
-    pub view: LogView,
-    pub event_type: Option<EventType>,
-    pub include_renewal: bool,
-}
-
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StoredEventLog {
     pub seq: i64,
@@ -225,7 +215,6 @@ pub struct ListGlobalEvents {
     pub before_seq: Option<i64>,
     pub after_seq: Option<i64>,
     pub limit: usize,
-    pub include_renewal: bool,
 }
 
 #[cfg(test)]

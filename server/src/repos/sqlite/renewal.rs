@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use chrono::NaiveDate;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use super::{Sqlite, decode, encode};
 use crate::domain::renewal::{
@@ -90,7 +90,7 @@ impl RenewalRepo for Sqlite {
         let account_id = account_id.to_owned();
         let progress = progress.clone();
         self.run(move |conn| {
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             tx.prepare_cached(
                 "INSERT INTO entitlement_daily_runs (account_id, upstream_day, progress_json)
                  VALUES (?1, ?2, ?3) ON CONFLICT (account_id, upstream_day) DO UPDATE

@@ -2,7 +2,6 @@ import { HttpClient } from './http';
 import type {
   AccountItem,
   RenewalStatus,
-  SourceDetail,
   QrLoginStartResponse,
   QrLoginPollResponse,
   RefreshTokenResponse,
@@ -18,10 +17,6 @@ export class AdminApi {
 
   async healthz(signal?: AbortSignal): Promise<{ ok: boolean }> {
     return this.http.get('/healthz', { signal });
-  }
-
-  async getSource(sourceId: string, signal?: AbortSignal): Promise<SourceDetail> {
-    return this.http.get(`/api/v1/admin/sources/${sourceId}`, { signal });
   }
 
   /**
@@ -49,7 +44,7 @@ export class AdminApi {
     const body: { name?: string | null; quality_fallback?: boolean } = {};
     if (patch.name !== undefined) body.name = patch.name;
     if (patch.quality_fallback !== undefined) body.quality_fallback = patch.quality_fallback;
-    return this.http.patch(`/api/v1/admin/sources/${sourceId}`, body, { signal });
+    return this.http.patch(`/api/v1/admin/sources/${encodeURIComponent(sourceId)}`, body, { signal });
   }
 
   async startQrLogin(signal?: AbortSignal): Promise<QrLoginStartResponse> {
@@ -57,15 +52,15 @@ export class AdminApi {
   }
 
   async pollQrLogin(sessionId: string, signal?: AbortSignal): Promise<QrLoginPollResponse> {
-    return this.http.get(`/api/v1/admin/providers/kugou-lite/login/qr/${sessionId}`, { signal });
+    return this.http.get(`/api/v1/admin/providers/kugou-lite/login/qr/${encodeURIComponent(sessionId)}`, { signal });
   }
 
-  async refreshToken(accountId: string): Promise<RefreshTokenResponse> {
-    return this.http.post(`/api/v1/admin/accounts/${accountId}/refresh-token`, null);
+  async refreshToken(accountId: string, signal?: AbortSignal): Promise<RefreshTokenResponse> {
+    return this.http.post(`/api/v1/admin/accounts/${encodeURIComponent(accountId)}/refresh-token`, null, { signal });
   }
 
-  async syncEntitlements(accountId: string): Promise<SyncEntitlementsResponse> {
-    return this.http.post(`/api/v1/admin/accounts/${accountId}/entitlements/sync`, null);
+  async syncEntitlements(accountId: string, signal?: AbortSignal): Promise<SyncEntitlementsResponse> {
+    return this.http.post(`/api/v1/admin/accounts/${encodeURIComponent(accountId)}/entitlements/sync`, null, { signal });
   }
 
   async listAccounts(signal?: AbortSignal): Promise<{ items: AccountItem[] }> {
@@ -73,7 +68,7 @@ export class AdminApi {
   }
 
   async getAccount(accountId: string, signal?: AbortSignal): Promise<AccountItem> {
-    return this.http.get(`/api/v1/admin/accounts/${accountId}`, { signal });
+    return this.http.get(`/api/v1/admin/accounts/${encodeURIComponent(accountId)}`, { signal });
   }
 
   async updateRenewal(
@@ -82,7 +77,7 @@ export class AdminApi {
     signal?: AbortSignal,
   ): Promise<RenewalStatus> {
     return this.http.patch(
-      `/api/v1/admin/accounts/${accountId}/entitlements/renewal`,
+      `/api/v1/admin/accounts/${encodeURIComponent(accountId)}/entitlements/renewal`,
       { enabled },
       { signal },
     );
@@ -90,7 +85,7 @@ export class AdminApi {
 
   async claimRenewal(accountId: string, signal?: AbortSignal): Promise<RenewalStatus> {
     return this.http.post(
-      `/api/v1/admin/accounts/${accountId}/entitlements/renewal/claim`,
+      `/api/v1/admin/accounts/${encodeURIComponent(accountId)}/entitlements/renewal/claim`,
       null,
       { signal },
     );
@@ -106,7 +101,6 @@ export class AdminApi {
       correlationId?: string;
       beforeSeq?: number;
       afterSeq?: number;
-      includeRenewal?: boolean;
     },
     signal?: AbortSignal,
   ): Promise<GlobalLogsResponse> {
@@ -119,9 +113,6 @@ export class AdminApi {
     if (query?.correlationId) params.set('correlation_id', query.correlationId);
     if (query?.beforeSeq !== undefined) params.set('before_seq', query.beforeSeq.toString());
     if (query?.afterSeq !== undefined) params.set('after_seq', query.afterSeq.toString());
-    if (query?.includeRenewal !== undefined) {
-      params.set('include_renewal', query.includeRenewal ? 'true' : 'false');
-    }
     const queryString = params.toString();
     return this.http.get(`/api/v1/admin/logs${queryString ? `?${queryString}` : ''}`, {
       signal,

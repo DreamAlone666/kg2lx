@@ -19,7 +19,6 @@ struct LegacyAccount {
     account_id: String,
     provider: ProviderKind,
     upstream_userid: String,
-    display_name: Option<String>,
     status: String,
     cookies: CookieStore,
     last_refresh_at: Option<i64>,
@@ -41,9 +40,11 @@ fn read_snapshot<'de, D: serde::Deserializer<'de>>(
 impl LegacyAccount {
     fn into_account(self, path: &Path) -> Result<ProviderAccount, AppError> {
         let status = match self.status.as_str() {
-            "active" | "expired" => AccountStatus::Active,
-            "pending" => AccountStatus::Pending,
-            "disabled" => AccountStatus::Disabled,
+            "active" => AccountStatus::Active,
+            "pending" | "disabled" | "expired" => {
+                tracing::warn!(account_id = %self.account_id, previous_status = %self.status, "normalized legacy account status");
+                AccountStatus::Active
+            }
             "login_failed" => AccountStatus::LoginFailed,
             _ => return Err(import_error(path, "unknown account status")),
         };
@@ -55,7 +56,6 @@ impl LegacyAccount {
             account_id: self.account_id,
             provider: self.provider,
             upstream_userid: self.upstream_userid,
-            display_name: self.display_name,
             status,
             cookies: self.cookies,
             credential_version: 0,
@@ -277,7 +277,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(known.status, AccountStatus::Disabled);
+        assert_eq!(known.status, AccountStatus::Active);
         let items = db
             .entitlement_snapshot("acc_known")
             .await
@@ -304,7 +304,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(empty.status, AccountStatus::Pending);
+        assert_eq!(empty.status, AccountStatus::Active);
         assert!(
             db.entitlement_snapshot("acc_empty")
                 .await

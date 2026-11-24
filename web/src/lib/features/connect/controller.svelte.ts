@@ -36,6 +36,10 @@ class ConnectController {
 
 		try {
 			const serverBaseUrl = this.baseUrl.trim().replace(/\/$/, '');
+			if (serverBaseUrl && !/^https?:\/\//i.test(serverBaseUrl)) {
+				this.error = '服务器地址须以 http:// 或 https:// 开头。';
+				return;
+			}
 			const adminToken = this.token.trim();
 			const api = new AdminApi(new HttpClient({ baseUrl: serverBaseUrl, adminToken }));
 			const signal = AbortSignal.timeout(CONNECT_TIMEOUT_MS);

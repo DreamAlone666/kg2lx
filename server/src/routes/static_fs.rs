@@ -1,43 +1,50 @@
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{Request, Response, StatusCode};
+use axum::http::{Method, Request, Response, StatusCode, header};
 use axum::response::IntoResponse;
 
 use crate::app_state::AppState;
 
 pub async fn serve(State(state): State<AppState>, req: Request<Body>) -> Response<Body> {
-    let base = match &state.config.web_dist_dir {
-        Some(d) => d.as_path(),
-        None => return StatusCode::NOT_FOUND.into_response(),
+    let Some(base) = state.config.web_dist_dir.as_deref() else {
+        return StatusCode::NOT_FOUND.into_response();
     };
-
-    let path = req.uri().path();
-    let relative = path.trim_start_matches('/');
-
-    if relative.is_empty() {
-        return serve_file(base, "index.html")
-            .await
-            .unwrap_or_else(|| StatusCode::NOT_FOUND.into_response());
-    }
-
-    if relative.split('/').any(|c| c == "..") {
+    let relative = req.uri().path().trim_start_matches('/');
+    if relative == "api"
+        || relative == "s"
+        || relative.starts_with("api/")
+        || relative.starts_with("s/")
+        || relative.split('/').any(|component| component == "..")
+    {
         return StatusCode::NOT_FOUND.into_response();
     }
-
-    if let Some(resp) = serve_file(base, relative).await {
-        return resp;
+    let head = req.method() == Method::HEAD;
+    if req.method() != Method::GET && !head {
+        return (
+            StatusCode::METHOD_NOT_ALLOWED,
+            [(header::ALLOW, "GET, HEAD")],
+        )
+            .into_response();
     }
-
-    serve_file(base, "index.html")
+    if !relative.is_empty() {
+        if let Some(response) = serve_file(base, relative, head).await {
+            return response;
+        }
+        if relative == "_app"
+            || relative.starts_with("_app/")
+            || std::path::Path::new(relative).extension().is_some()
+        {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+    }
+    serve_file(base, "index.html", head)
         .await
         .unwrap_or_else(|| StatusCode::NOT_FOUND.into_response())
 }
 
-async fn serve_file(base: &std::path::Path, relative: &str) -> Option<Response<Body>> {
-    let root = tokio::fs::canonicalize(base).await.ok()?;
-    let full = root.join(relative);
-    let canonical = tokio::fs::canonicalize(&full).await.ok()?;
-    if !canonical.starts_with(&root) {
+async fn serve_file(base: &std::path::Path, relative: &str, head: bool) -> Option<Response<Body>> {
+    let canonical = tokio::fs::canonicalize(base.join(relative)).await.ok()?;
+    if !canonical.starts_with(base) {
         return None;
     }
 
@@ -45,15 +52,22 @@ async fn serve_file(base: &std::path::Path, relative: &str) -> Option<Response<B
     if !meta.is_file() {
         return None;
     }
-    let bytes = tokio::fs::read(&canonical).await.ok()?;
-    let ct = mime_from_path(&canonical);
-    Some(
-        Response::builder()
-            .status(200)
-            .header("content-type", ct)
-            .body(Body::from(bytes))
-            .unwrap(),
-    )
+    let mut response = Response::builder()
+        .header(header::CONTENT_TYPE, mime_from_path(&canonical))
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .header(header::X_FRAME_OPTIONS, "DENY");
+    if relative.starts_with("_app/immutable/") {
+        response = response.header(header::CACHE_CONTROL, "public, max-age=31536000, immutable");
+    } else if matches!(relative, "index.html" | "_app/version.json") {
+        response = response.header(header::CACHE_CONTROL, "no-cache");
+    }
+    let body = if head {
+        response = response.header(header::CONTENT_LENGTH, meta.len());
+        Body::empty()
+    } else {
+        Body::from(tokio::fs::read(canonical).await.ok()?)
+    };
+    response.body(body).ok()
 }
 
 fn mime_from_path(path: &std::path::Path) -> &'static str {
@@ -63,6 +77,7 @@ fn mime_from_path(path: &std::path::Path) -> &'static str {
         "mjs" => "application/javascript; charset=utf-8",
         "css" => "text/css; charset=utf-8",
         "json" => "application/json; charset=utf-8",
+        "txt" => "text/plain; charset=utf-8",
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",

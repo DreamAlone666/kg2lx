@@ -29,7 +29,7 @@
 
 	async function startNewLogin() {
 		await qrLoginController.start();
-		if (!qrLoginController.sessionId) return;
+		if (!qrLoginController.sessionId || qrLoginController.isTerminal) return;
 
 		// 会话写进 URL，刷新页面后仍能续接同一个会话。
 		// 必须用 $app/navigation 的 replaceState：直接调 history.replaceState 会
@@ -64,7 +64,7 @@
 		const bound = qrLoginController.boundSource;
 		if (bound) {
 			const accountId = bound.account.account_id;
-			redirectTimer = setTimeout(() => goto(`/accounts/${accountId}`), REDIRECT_DELAY_MS);
+			redirectTimer = setTimeout(() => goto(`/accounts/${encodeURIComponent(accountId)}`), REDIRECT_DELAY_MS);
 		}
 
 		return clearRedirectTimer;

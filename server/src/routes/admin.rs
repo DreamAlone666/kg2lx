@@ -1,12 +1,21 @@
+use std::sync::Arc;
+
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::HeaderMap;
+use axum::middleware::Next;
+use axum::response::Response;
+use subtle::ConstantTimeEq;
 
 use crate::app_state::AppState;
-use crate::domain::event_log::{EventType, LogView};
+use crate::config::Config;
+use crate::domain::event_log::{EventType, ListGlobalEvents, LogView};
 use crate::domain::renewal::RenewalStatus;
 use crate::error::AppError;
-use crate::services::source::{GlobalLogsQuery, UpdateSourceInput};
+use crate::services::account::{AccountItem, RefreshResponse, SyncEntitlementsResponse};
+use crate::services::event_log::GlobalLogsResponse;
+use crate::services::login::{QrLoginPollResponse, QrLoginStartResponse};
+use crate::services::source::{UpdateSourceInput, UpdateSourceResponse};
 
 fn verify_admin(headers: &HeaderMap, token: &str) -> Result<(), AppError> {
     let auth = headers
@@ -14,115 +23,67 @@ fn verify_admin(headers: &HeaderMap, token: &str) -> Result<(), AppError> {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     let bearer = auth.strip_prefix("Bearer ").unwrap_or("");
-    if !token.is_empty() && bearer == token {
+    if !token.is_empty() && bool::from(bearer.as_bytes().ct_eq(token.as_bytes())) {
         Ok(())
     } else {
         Err(AppError::admin_unauthorized())
     }
 }
 
+pub async fn require_admin(
+    State(config): State<Arc<Config>>,
+    request: Request,
+    next: Next,
+) -> Result<Response, AppError> {
+    verify_admin(request.headers(), &config.admin_token)?;
+    Ok(next.run(request).await)
+}
+
 pub async fn start_qr_login(
     State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config.admin_token)?;
-    let resp = state.login.start_kugou_lite_qr_login().await?;
-    Ok(Json(serde_json::to_value(resp).unwrap()))
+) -> Result<Json<QrLoginStartResponse>, AppError> {
+    Ok(Json(state.login.start_kugou_lite_qr_login().await?))
 }
 
 pub async fn poll_qr_login(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Path(session_id): Path<String>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config.admin_token)?;
-    let resp = state.login.poll_kugou_lite_qr_login(&session_id).await?;
-    Ok(Json(serde_json::to_value(resp).unwrap()))
+) -> Result<Json<QrLoginPollResponse>, AppError> {
+    Ok(Json(
+        state.login.poll_kugou_lite_qr_login(&session_id).await?,
+    ))
 }
 
-pub async fn list_accounts(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config.admin_token)?;
-    let items = state.source.list_accounts(&state.entitlement).await?;
-    Ok(Json(serde_json::json!({ "items": items })))
+#[derive(serde::Serialize)]
+pub struct AccountList {
+    items: Vec<AccountItem>,
+}
+
+pub async fn list_accounts(State(state): State<AppState>) -> Result<Json<AccountList>, AppError> {
+    Ok(Json(AccountList {
+        items: state.accounts.list().await?,
+    }))
 }
 
 pub async fn get_account(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Path(account_id): Path<String>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config.admin_token)?;
-    let item = state
-        .source
-        .get_account(&account_id, &state.entitlement)
-        .await?;
-    Ok(Json(serde_json::to_value(item).unwrap()))
-}
-
-pub async fn list_sources(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config.admin_token)?;
-    let items = state.source.list_sources(&state.entitlement).await?;
-    Ok(Json(serde_json::json!({ "items": items })))
-}
-
-pub async fn get_source(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(source_id): Path<String>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config.admin_token)?;
-    let detail = state
-        .source
-        .get_source(&source_id, &state.entitlement)
-        .await?;
-    Ok(Json(serde_json::to_value(detail).unwrap()))
-}
-
-pub async fn refresh_source(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(source_id): Path<String>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config.admin_token)?;
-    let resp = state
-        .source
-        .refresh_source(&source_id, &state.auth, &state.entitlement)
-        .await?;
-    Ok(Json(serde_json::to_value(resp).unwrap()))
+) -> Result<Json<AccountItem>, AppError> {
+    Ok(Json(state.accounts.get(&account_id).await?))
 }
 
 pub async fn refresh_account_token(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Path(account_id): Path<String>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config.admin_token)?;
-    let resp = state
-        .source
-        .refresh_account_by_id(&state.auth, &account_id)
-        .await?;
-    Ok(Json(serde_json::to_value(resp).unwrap()))
+) -> Result<Json<RefreshResponse>, AppError> {
+    Ok(Json(state.accounts.refresh(&account_id).await?))
 }
 
 pub async fn sync_account_entitlements(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Path(account_id): Path<String>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config.admin_token)?;
-    let synced_at = state
-        .source
-        .sync_entitlements(&state.entitlement, account_id)
-        .await?;
-    Ok(Json(
-        serde_json::json!({ "ok": true, "synced_at": synced_at }),
-    ))
+) -> Result<Json<SyncEntitlementsResponse>, AppError> {
+    Ok(Json(state.accounts.sync(account_id).await?))
 }
 
 #[derive(serde::Deserialize)]
@@ -132,14 +93,12 @@ pub struct RenewalSettingsBody {
 
 pub async fn set_auto_claim(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Path(account_id): Path<String>,
     Json(body): Json<RenewalSettingsBody>,
 ) -> Result<Json<RenewalStatus>, AppError> {
-    verify_admin(&headers, &state.config.admin_token)?;
     Ok(Json(
         state
-            .entitlement
+            .accounts
             .set_auto_claim(&account_id, body.enabled)
             .await?,
     ))
@@ -147,23 +106,11 @@ pub async fn set_auto_claim(
 
 pub async fn claim_account_entitlements(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Path(account_id): Path<String>,
 ) -> Result<Json<RenewalStatus>, AppError> {
-    verify_admin(&headers, &state.config.admin_token)?;
-    Ok(Json(state.entitlement.renew_manually(account_id).await?))
+    Ok(Json(state.accounts.claim(account_id).await?))
 }
 
-/// 音源配置 PATCH 的请求体。
-///
-/// 契约统一为「字段**缺失** = 不改那个字段」，因此 `{}` 是一个合法的空操作请求
-/// （它不会重置任何东西）。要「恢复默认标题」必须显式送 `null` 或纯空白串。
-///
-/// `name` 用 `Option<Option<String>>` 正是为了表达这条契约：外层 `None` 表示
-/// 「请求里没有这个字段」，内层 `None` 表示「字段在、但值是 `null`」。若沿用
-/// 早先的 `Option<String>`，缺失与 `null` 会塌缩成同一个值，于是「只想改
-/// `quality_fallback`」的请求会把用户自定义的标题静默重置掉——这正是本端点从
-/// 「改名端点」变成通用 PATCH 时必须先修掉的那件事。
 #[derive(serde::Deserialize)]
 pub struct UpdateSourceBody {
     /// 缺失 = 不改；null / 纯空白 = 恢复默认标题；非空 = 设为该值（写入前清洗）。
@@ -187,168 +134,102 @@ where
     T::deserialize(deserializer).map(Some)
 }
 
-/// `Json` extractor 必须放在参数列表最后：axum 0.8 中 body 消费者只能是最后一个
-/// 参数，否则编译期报错。
 pub async fn update_source(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Path(source_id): Path<String>,
     Json(body): Json<UpdateSourceBody>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config.admin_token)?;
-    let resp = state
-        .source
-        .update_source(
-            &source_id,
-            UpdateSourceInput {
-                name: body.name,
-                quality_fallback: body.quality_fallback,
-            },
-        )
-        .await?;
-    Ok(Json(serde_json::to_value(resp).unwrap()))
-}
-
-#[derive(serde::Deserialize)]
-pub struct ListLogsParams {
-    pub limit: Option<String>,
-    pub view: Option<String>,
-    pub event_type: Option<EventType>,
-    #[serde(default)]
-    pub include_renewal: bool,
-}
-
-pub async fn list_source_logs(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(source_id): Path<String>,
-    Query(params): Query<ListLogsParams>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config.admin_token)?;
-
-    let limit = match params.limit.as_deref() {
-        None => 20,
-        Some(s) => s
-            .parse::<usize>()
-            .ok()
-            .filter(|&n| (1..=100).contains(&n))
-            .ok_or_else(|| AppError::invalid_request("invalid limit"))?,
+) -> Result<Json<UpdateSourceResponse>, AppError> {
+    let input = UpdateSourceInput {
+        name: body.name,
+        quality_fallback: body.quality_fallback,
     };
-
-    let view = match params.view.as_deref() {
-        None | Some("all") => LogView::All,
-        Some("errors") => LogView::Errors,
-        _ => return Err(AppError::invalid_request("invalid view")),
-    };
-
-    let resp = state
-        .source
-        .list_source_logs(
-            &source_id,
-            limit,
-            view,
-            params.event_type,
-            params.include_renewal,
-        )
-        .await?;
-    Ok(Json(serde_json::to_value(resp).unwrap()))
+    Ok(Json(state.source.update_source(&source_id, input).await?))
 }
 
 #[derive(serde::Deserialize)]
 pub struct ListGlobalLogsParams {
-    pub limit: Option<String>,
-    pub view: Option<String>,
-    pub event_type: Option<String>,
-    pub account_id: Option<String>,
-    pub source_id: Option<String>,
-    pub correlation_id: Option<String>,
-    pub before_seq: Option<String>,
-    pub after_seq: Option<String>,
-    pub include_renewal: Option<String>,
+    limit: Option<String>,
+    view: Option<String>,
+    event_type: Option<String>,
+    account_id: Option<String>,
+    source_id: Option<String>,
+    correlation_id: Option<String>,
+    before_seq: Option<String>,
+    after_seq: Option<String>,
 }
 
 fn non_empty(value: Option<String>) -> Option<String> {
     value.filter(|s| !s.is_empty())
 }
 
-pub async fn list_global_logs(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Query(params): Query<ListGlobalLogsParams>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config.admin_token)?;
-
-    let limit = match params.limit.as_deref() {
-        None => 30,
-        Some(s) => s
-            .parse::<usize>()
-            .ok()
-            .filter(|&n| (1..=100).contains(&n))
-            .ok_or_else(|| AppError::invalid_request("invalid limit"))?,
-    };
-
-    let view = match params.view.as_deref() {
-        None | Some("all") => LogView::All,
-        Some("errors") => LogView::Errors,
-        _ => return Err(AppError::invalid_request("invalid view")),
-    };
-
-    let event_type = match params.event_type.as_deref().filter(|s| !s.is_empty()) {
-        None => None,
-        Some("music_url") => Some(EventType::MusicUrl),
-        Some("token_refresh") => Some(EventType::TokenRefresh),
-        Some("account_login") => Some(EventType::AccountLogin),
-        Some("entitlement") => Some(EventType::Entitlement),
-        Some(_) => return Err(AppError::invalid_request("invalid event_type")),
-    };
-
-    let before_seq = match params.before_seq.as_deref() {
-        None => None,
-        Some(s) => Some(
-            s.parse::<i64>()
+fn cursor(value: Option<String>, field: &str) -> Result<Option<i64>, AppError> {
+    value
+        .map(|value| {
+            value
+                .parse::<i64>()
                 .ok()
                 .filter(|&n| n > 0)
-                .ok_or_else(|| AppError::invalid_request("invalid before_seq"))?,
-        ),
-    };
+                .ok_or_else(|| AppError::invalid_request(format!("invalid {field}")))
+        })
+        .transpose()
+}
 
-    let after_seq = match params.after_seq.as_deref() {
-        None => None,
-        Some(s) => Some(
-            s.parse::<i64>()
+impl TryFrom<ListGlobalLogsParams> for ListGlobalEvents {
+    type Error = AppError;
+
+    fn try_from(params: ListGlobalLogsParams) -> Result<Self, AppError> {
+        let limit = match params.limit.as_deref() {
+            None => 30,
+            Some(value) => value
+                .parse::<usize>()
                 .ok()
-                .filter(|&n| n > 0)
-                .ok_or_else(|| AppError::invalid_request("invalid after_seq"))?,
-        ),
-    };
-
-    if before_seq.is_some() && after_seq.is_some() {
-        return Err(AppError::invalid_request(
-            "before_seq and after_seq cannot be combined",
-        ));
-    }
-
-    let include_renewal = match params.include_renewal.as_deref() {
-        None | Some("true") => true,
-        Some("false") => false,
-        Some(_) => return Err(AppError::invalid_request("invalid include_renewal")),
-    };
-
-    let resp = state
-        .source
-        .list_global_logs(GlobalLogsQuery {
+                .filter(|n| (1..=100).contains(n))
+                .ok_or_else(|| AppError::invalid_request("invalid limit"))?,
+        };
+        let view = match params.view.as_deref() {
+            None | Some("all") => LogView::All,
+            Some("errors") => LogView::Errors,
+            _ => return Err(AppError::invalid_request("invalid view")),
+        };
+        let event_type = match non_empty(params.event_type).as_deref() {
+            None => None,
+            Some("music_url") => Some(EventType::MusicUrl),
+            Some("token_refresh") => Some(EventType::TokenRefresh),
+            Some("account_login") => Some(EventType::AccountLogin),
+            Some("entitlement") => Some(EventType::Entitlement),
+            Some(_) => return Err(AppError::invalid_request("invalid event_type")),
+        };
+        let before_seq = cursor(params.before_seq, "before_seq")?;
+        let after_seq = cursor(params.after_seq, "after_seq")?;
+        let correlation_id = non_empty(params.correlation_id);
+        if before_seq.is_some() && after_seq.is_some() {
+            return Err(AppError::invalid_request(
+                "before_seq and after_seq cannot be combined",
+            ));
+        }
+        if correlation_id.is_some() && (before_seq.is_some() || after_seq.is_some()) {
+            return Err(AppError::invalid_request(
+                "correlation_id cannot be combined with a cursor",
+            ));
+        }
+        Ok(Self {
             limit,
             view,
             event_type,
-            account_id: non_empty(params.account_id),
-            source_id: non_empty(params.source_id),
-            correlation_id: non_empty(params.correlation_id),
             before_seq,
             after_seq,
-            include_renewal,
+            correlation_id,
+            account_id: non_empty(params.account_id),
+            source_id: non_empty(params.source_id),
         })
-        .await?;
-    Ok(Json(serde_json::to_value(resp).unwrap()))
+    }
+}
+
+pub async fn list_global_logs(
+    State(state): State<AppState>,
+    Query(params): Query<ListGlobalLogsParams>,
+) -> Result<Json<GlobalLogsResponse>, AppError> {
+    Ok(Json(state.events.list(params.try_into()?).await?))
 }
 
 #[cfg(test)]

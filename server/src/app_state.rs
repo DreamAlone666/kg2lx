@@ -1,14 +1,16 @@
 use std::sync::Arc;
 
 use crate::config::Config;
-use crate::domain::account::now_ts;
+use crate::domain::now_ts;
 use crate::error::AppError;
 use crate::repos::account::AccountRepo;
 use crate::repos::event_log::EventLogRepo;
 use crate::repos::source::SourceRepo;
 use crate::repos::sqlite::Sqlite;
+use crate::services::account::AccountService;
 use crate::services::auth::AccountAuth;
 use crate::services::entitlement::EntitlementService;
+use crate::services::event_log::EventLogService;
 use crate::services::kugou_lite_client::KugouLiteClient;
 use crate::services::login::LoginService;
 use crate::services::runtime::RuntimeService;
@@ -18,12 +20,13 @@ use crate::services::source::SourceService;
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Config>,
-    pub auth: Arc<AccountAuth>,
-    pub entitlement: Arc<EntitlementService>,
+    pub accounts: Arc<AccountService>,
+    pub events: Arc<EventLogService>,
     pub login: Arc<LoginService>,
     pub source: Arc<SourceService>,
     pub runtime: Arc<RuntimeService>,
     pub script: Arc<ScriptService>,
+    pub storage: Arc<Sqlite>,
 }
 
 impl AppState {
@@ -32,9 +35,18 @@ impl AppState {
     }
 
     pub(crate) fn with_entitlement_clock(
-        config: Config,
+        mut config: Config,
         now: impl Fn() -> i64 + Send + Sync + 'static,
     ) -> Result<Self, AppError> {
+        if let Some(dir) = config.web_dist_dir.as_mut() {
+            *dir = std::fs::canonicalize(&*dir).map_err(|error| {
+                AppError::internal(format!(
+                    "cannot resolve WEB_DIST_DIR {}: {error}",
+                    dir.display()
+                ))
+            })?;
+            std::fs::read_dir(dir)?;
+        }
         let storage = Arc::new(Sqlite::open(&config.data_dir, config.event_log_limit)?);
         let config = Arc::new(config);
         let accounts: Arc<dyn AccountRepo> = storage.clone();
@@ -65,13 +77,14 @@ impl AppState {
             accounts.clone(),
             sources.clone(),
         ));
-        let source = Arc::new(SourceService::new(
+        let source = Arc::new(SourceService::new(accounts.clone(), sources.clone()));
+        let account_service = Arc::new(AccountService::new(
             config.clone(),
-            storage,
-            accounts.clone(),
-            sources.clone(),
-            logs.clone(),
+            storage.clone(),
+            auth.clone(),
+            entitlement.clone(),
         ));
+        let events = Arc::new(EventLogService::new(logs.clone()));
         let runtime = Arc::new(RuntimeService::new(
             auth.clone(),
             client,
@@ -83,12 +96,13 @@ impl AppState {
         let script = Arc::new(ScriptService::new(config.clone(), sources, accounts));
         Ok(Self {
             config,
-            auth,
-            entitlement,
+            accounts: account_service,
+            events,
             login,
             source,
             runtime,
             script,
+            storage,
         })
     }
 }

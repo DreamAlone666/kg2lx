@@ -1,5 +1,3 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use super::cookie_store::CookieStore;
 use super::provider::ProviderKind;
 
@@ -29,11 +27,4 @@ pub struct LoginSession {
     pub created_at: i64,
     pub expires_at: i64,
     pub updated_at: i64,
-}
-
-pub fn now_ts() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64
 }

@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 pub const RENEWAL_THRESHOLD: i64 = 48 * 60 * 60;
 pub const PROPAGATION_WINDOW: i64 = 120;
 pub const SNAPSHOT_MAX_AGE: i64 = 24 * 60 * 60;
-pub const WRITE_TIMEOUTS: [u64; 3] = [1, 5, 30];
+pub const WRITE_TIMEOUTS: [u64; 3] = [5, 10, 30];
+pub const MAX_RECORD_READS: u8 = 8;
 
 // Leave room for the longest write to return before the undated upgrade endpoint rolls over.
 pub const MIDNIGHT_MARGIN: i64 = 35;
@@ -185,6 +186,7 @@ pub enum RenewalReason {
 enum RenewalState {
     Ready,
     WaitingForReconciliation,
+    ReconciliationExhausted,
     VerificationPaused,
     UpstreamUnavailable,
     RateLimited,
@@ -237,7 +239,11 @@ impl RenewalStatus {
         } else if propagating_until.is_some() {
             RenewalState::Propagating
         } else if older_pending || daily.uncertain().is_some() {
-            RenewalState::WaitingForReconciliation
+            if daily.record_reads >= MAX_RECORD_READS {
+                RenewalState::ReconciliationExhausted
+            } else {
+                RenewalState::WaitingForReconciliation
+            }
         } else if next.is_none() {
             RenewalState::Completed
         } else if exhausted {

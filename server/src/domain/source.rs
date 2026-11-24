@@ -1,5 +1,3 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use super::provider::ProviderKind;
 
 /// 音源标题的建议长度上限（字符数）。
@@ -9,18 +7,6 @@ use super::provider::ProviderKind;
 /// 绝不参与任何拒绝写入的逻辑——否则一个语义完整但略长的名字
 /// 会被无理由拒绝。
 pub const SCRIPT_NAME_ADVISORY_CHARS: usize = 24;
-
-/// 音源描述的建议长度上限（字符数）。
-///
-/// 官方原文：「建议不要过长，36 个字符以内」。语义同
-/// [`SCRIPT_NAME_ADVISORY_CHARS`]，同样只是建议。
-///
-/// 与标题不同，描述由服务端独占生成、用户改不了，因此当前没有任何消费方
-/// （后台没有可供用户计数的输入框）。这里保留它，只是因为它是官方约束的
-/// 单一事实来源，删掉会让这个数字散落在注释里。刻意**不**把它挂到 API
-/// 响应上——那会给前端一个永远不会有消费者的字段，白白变成长期兼容包袱。
-#[allow(dead_code)]
-pub const SCRIPT_DESC_ADVISORY_CHARS: usize = 36;
 
 /// 标题的技术护栏（字节数上限），与 UX 规范无关。
 ///
@@ -72,13 +58,6 @@ pub struct Source {
     /// 用户开启这个开关，就等于一并接受「下载会拿到比所选档位更低的文件」。客户端
     /// 仍按**请求时**的档位记录与缓存该地址。
     pub quality_fallback: bool,
-}
-
-pub fn now_ts() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64
 }
 
 /// 清洗即将写入脚本头部注释的元信息文本。

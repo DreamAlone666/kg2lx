@@ -1,6 +1,7 @@
 .git
 .gitmodules
 .vscode
+.arts/
 
 spec/
 

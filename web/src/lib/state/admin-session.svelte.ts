@@ -8,15 +8,34 @@ class AdminSession {
   serverBaseUrl = $state(getLocal('serverBaseUrl') || '');
   adminToken = $state(getSession('adminToken') || '');
 
+  private requests = $state.raw(new AbortController());
+  private resetters = new Set<() => void>();
+
+  get signal() {
+    return this.requests.signal;
+  }
+
+  onReset(reset: () => void) {
+    this.resetters.add(reset);
+  }
+
+  private resetRequests() {
+    this.requests.abort();
+    this.requests = new AbortController();
+    for (const reset of this.resetters) reset();
+  }
+
   api = $derived.by(() => {
     const http = new HttpClient({
       baseUrl: this.serverBaseUrl,
       adminToken: this.adminToken,
+      signal: this.signal,
     });
     return new AdminApi(http);
   });
 
   setSession(baseUrl: string, token: string) {
+    this.resetRequests();
     this.serverBaseUrl = baseUrl.replace(/\/$/, '');
     this.adminToken = token;
 
@@ -25,6 +44,7 @@ class AdminSession {
   }
 
   logout() {
+    this.resetRequests();
     this.adminToken = '';
     clearSession('adminToken');
   }

@@ -45,20 +45,19 @@ class LogsController {
 	loadingCorrelation = $state(false);
 	correlationError = $state<string | null>(null);
 
-	private requestId = 0;
-	private correlationRequestId = 0;
-	private accountsRequestId = 0;
+	private logRequest: AbortController | null = null;
+	private olderRequest: AbortController | null = null;
+	private correlationRequest: AbortController | null = null;
+	private accountsRequest: AbortController | null = null;
 	private active = false;
 	private skipNextHighlight = false;
 	private newRowTimer: ReturnType<typeof setTimeout> | null = null;
-	private pending = new Set<number>();
 	private onStaleSelection: (() => void) | null = null;
 
 	private timer = createVisibilityAwareTimer({
 		intervalMs: POLL_INTERVAL_MS,
 		onTick: () => {
-			if (!this.active) return;
-			if (this.pending.size > 0) return;
+			if (!this.active || this.logRequest) return;
 			void this.loadLogs(true);
 		},
 	});
@@ -93,14 +92,16 @@ class LogsController {
 	stop() {
 		this.active = false;
 		this.timer.stop();
-		this.requestId++;
-		this.correlationRequestId++;
-		this.accountsRequestId++;
-		this.pending.clear();
+		this.logRequest?.abort();
+		this.logRequest = null;
+		this.accountsRequest?.abort();
+		this.accountsRequest = null;
+		this.cancelMore();
 		this.clearNewRowTimer();
 		this.onStaleSelection = null;
 
 		this.logs = [];
+		this.accounts = [];
 		this.accountsLoaded = false;
 		this.hasMore = false;
 		this.nextBeforeSeq = null;
@@ -172,9 +173,9 @@ class LogsController {
 	}
 
 	async loadMore() {
-		if (!this.active || this.loadingMore || !this.hasMore || this.nextBeforeSeq === null) return;
-		const requestId = this.requestId;
-		const beforeSeq = this.nextBeforeSeq;
+		if (!this.active || this.loading || this.loadingMore || !this.hasMore || this.nextBeforeSeq === null) return;
+		const request = new AbortController();
+		this.olderRequest = request;
 		this.loadingMore = true;
 
 		try {
@@ -183,23 +184,31 @@ class LogsController {
 				view: this.view,
 				eventType: this.eventType,
 				accountId: this.accountId,
-				beforeSeq,
-			});
-			if (!this.active || requestId !== this.requestId) return;
+				beforeSeq: this.nextBeforeSeq,
+			}, request.signal);
+			if (request.signal.aborted) return;
 
 			const seen = new Set(this.logs.map((item) => item.log_id));
-			const appended = res.items.filter((item) => !seen.has(item.log_id));
-			this.logs = [...this.logs, ...appended];
+			this.logs = [...this.logs, ...res.items.filter((item) => !seen.has(item.log_id))];
 			this.hasMore = res.has_more;
 			this.nextBeforeSeq = res.next_before_seq;
 			this.error = null;
-		} catch (e: unknown) {
-			if (handleAuthError(e)) return;
-			if (!this.active || requestId !== this.requestId) return;
-			this.error = describeApiError(e);
+		} catch (error) {
+			if (!request.signal.aborted && !handleAuthError(error)) {
+				this.error = describeApiError(error);
+			}
 		} finally {
-			if (this.active && requestId === this.requestId) this.loadingMore = false;
+			if (request === this.olderRequest) {
+				this.olderRequest = null;
+				this.loadingMore = false;
+			}
 		}
+	}
+
+	private cancelMore() {
+		this.olderRequest?.abort();
+		this.olderRequest = null;
+		this.loadingMore = false;
 	}
 
 	async loadCorrelation(correlationId: string, force = false) {
@@ -211,7 +220,9 @@ class LogsController {
 		) {
 			return;
 		}
-		const reqId = ++this.correlationRequestId;
+		this.correlationRequest?.abort();
+		const request = new AbortController();
+		this.correlationRequest = request;
 		const sameCorrelation = this.correlationLogs[0]?.correlation_id === correlationId;
 		this.correlationId = correlationId;
 		this.loadingCorrelation = !sameCorrelation || !force;
@@ -224,16 +235,16 @@ class LogsController {
 			const res = await adminSession.api.listLogs({
 				correlationId,
 				limit: 100,
-			});
-			if (!this.active || reqId !== this.correlationRequestId) return;
+			}, request.signal);
+			if (request.signal.aborted) return;
 			this.correlationLogs = sortEventsAscending(res.items);
 			this.correlationError = null;
 		} catch (e: unknown) {
-			if (handleAuthError(e)) return;
-			if (!this.active || reqId !== this.correlationRequestId) return;
+			if (request.signal.aborted || handleAuthError(e)) return;
 			this.correlationError = describeApiError(e);
 		} finally {
-			if (this.active && reqId === this.correlationRequestId) {
+			if (request === this.correlationRequest) {
+				this.correlationRequest = null;
 				this.loadingCorrelation = false;
 			}
 		}
@@ -243,7 +254,7 @@ class LogsController {
 		if (!accountId) return '扫码登录';
 		const found = this.accounts.find((a) => a.account_id === accountId);
 		if (!found) return accountId.slice(0, 8);
-		return found.sources[0]?.name || found.display_name || `账号 ${found.userid}`;
+		return found.sources[0]?.name || `账号 ${found.userid}`;
 	}
 
 	sourceDisplayName(accountId: string | null, sourceId: string | null): string | null {
@@ -273,68 +284,64 @@ class LogsController {
 	}
 
 	private async loadAccounts() {
-		const reqId = ++this.accountsRequestId;
+		this.accountsRequest?.abort();
+		const request = new AbortController();
+		this.accountsRequest = request;
 		try {
-			const res = await adminSession.api.listAccounts();
-			if (!this.active || reqId !== this.accountsRequestId) return;
-			this.accounts = res.items;
-		} catch (e: unknown) {
-			if (handleAuthError(e)) return;
-			// 账号列表用于筛选条与名称映射，失败时不阻塞日志主体展示
+			const res = await adminSession.api.listAccounts(request.signal);
+			if (!request.signal.aborted) this.accounts = res.items;
+		} catch (error) {
+			if (!request.signal.aborted) handleAuthError(error);
 		} finally {
-			if (this.active && reqId === this.accountsRequestId) {
+			if (request === this.accountsRequest) {
+				this.accountsRequest = null;
 				this.accountsLoaded = true;
 			}
 		}
 	}
 
 	private async loadLogs(silent: boolean) {
-		const requestId = ++this.requestId;
-		this.pending.add(requestId);
-		if (!silent) this.loading = true;
-
-		const useIncremental = silent && this.logs.length > 0;
+		this.logRequest?.abort();
+		const request = new AbortController();
+		this.logRequest = request;
+		if (!silent) this.cancelMore();
+		this.loading = !silent;
+		const afterSeq = silent ? this.logs[0]?.seq : undefined;
+		const filters = { view: this.view, eventType: this.eventType, accountId: this.accountId };
+		const api = adminSession.api;
 
 		try {
-			const res = await adminSession.api.listLogs({
-				limit: useIncremental ? INCREMENTAL_LIMIT : PAGE_SIZE,
-				view: this.view,
-				eventType: this.eventType,
-				accountId: this.accountId,
-				afterSeq: useIncremental ? this.logs[0].seq : undefined,
-			});
-			if (!this.active || requestId !== this.requestId) return;
+			const response = await api.listLogs({
+				...filters,
+				limit: afterSeq === undefined ? PAGE_SIZE : INCREMENTAL_LIMIT,
+				afterSeq,
+			}, request.signal);
+			if (request.signal.aborted) return;
+			const items = [...response.items];
+
+			// Bridge a large burst back to the previous head before moving the incremental cursor.
+			if (afterSeq !== undefined && response.has_more) {
+				let beforeSeq = items.at(-1)?.seq;
+				while (beforeSeq !== undefined && beforeSeq > afterSeq) {
+					const page = await api.listLogs({
+						...filters, limit: INCREMENTAL_LIMIT, beforeSeq,
+					}, request.signal);
+					if (request.signal.aborted) return;
+					items.push(...page.items.filter(item => item.seq > afterSeq));
+					const next = page.next_before_seq;
+					beforeSeq = next !== null && next < beforeSeq ? next : undefined;
+				}
+			}
 
 			const knownIds = new Set(this.logs.map((log) => log.log_id));
 			const hadRows = this.logs.length > 0;
-			let newlyAdded: StoredEvent[] = [];
-
-			if (useIncremental && res.has_more) {
-				// 突发超过 100 条：回退做一次全量头部刷新
-				const fullRes = await adminSession.api.listLogs({
-					limit: PAGE_SIZE,
-					view: this.view,
-					eventType: this.eventType,
-					accountId: this.accountId,
-				});
-				if (!this.active || requestId !== this.requestId) return;
-
-				newlyAdded = fullRes.items.filter((item) => !knownIds.has(item.log_id));
-				this.logs = fullRes.items;
-				this.hasMore = fullRes.has_more;
-				this.nextBeforeSeq = fullRes.next_before_seq;
-			} else if (useIncremental) {
-				if (res.items.length > 0) {
-					newlyAdded = res.items.filter((item) => !knownIds.has(item.log_id));
-					if (newlyAdded.length > 0) {
-						this.logs = [...newlyAdded, ...this.logs];
-					}
-				}
+			const newlyAdded = items.filter(item => !knownIds.has(item.log_id));
+			if (afterSeq !== undefined) {
+				if (newlyAdded.length > 0) this.logs = [...newlyAdded, ...this.logs];
 			} else {
-				newlyAdded = res.items.filter((item) => !knownIds.has(item.log_id));
-				this.logs = res.items;
-				this.hasMore = res.has_more;
-				this.nextBeforeSeq = res.next_before_seq;
+				this.logs = items;
+				this.hasMore = response.has_more;
+				this.nextBeforeSeq = response.next_before_seq;
 			}
 
 			this.lastUpdatedAt = Math.floor(Date.now() / 1000);
@@ -361,12 +368,11 @@ class LogsController {
 				}
 			}
 		} catch (e: unknown) {
-			if (handleAuthError(e)) return;
-			if (!this.active || requestId !== this.requestId) return;
+			if (request.signal.aborted || handleAuthError(e)) return;
 			this.error = describeApiError(e);
 		} finally {
-			this.pending.delete(requestId);
-			if (!silent && requestId === this.requestId) {
+			if (request === this.logRequest) {
+				this.logRequest = null;
 				this.loading = false;
 			}
 		}
@@ -381,6 +387,8 @@ class LogsController {
 	}
 
 	private clearCorrelation() {
+		this.correlationRequest?.abort();
+		this.correlationRequest = null;
 		this.correlationId = null;
 		this.correlationLogs = [];
 		this.loadingCorrelation = false;
@@ -415,3 +423,4 @@ class LogsController {
 }
 
 export const logsController = new LogsController();
+adminSession.onReset(() => logsController.stop());

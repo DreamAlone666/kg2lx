@@ -28,7 +28,7 @@
 
 <div
 	class={cn('rounded-xl border p-4 text-sm leading-relaxed', toneSurfaceClass(tone), className)}
-	role="alert"
+	role={tone === 'danger' ? 'alert' : 'status'}
 	{...rest}
 >
 	{#if title}

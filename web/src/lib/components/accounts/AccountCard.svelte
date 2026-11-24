@@ -28,7 +28,7 @@
 
 	const primarySource = $derived(account.sources[0] ?? null);
 	const title = $derived(
-		primarySource?.name || account.display_name || `账号 ${account.userid}`
+		primarySource?.name || `账号 ${account.userid}`
 	);
 	const showsUserid = $derived(Boolean(account.userid) && !title.includes(account.userid));
 	const sourceCountLabel = $derived(

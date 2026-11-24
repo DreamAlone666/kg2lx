@@ -80,40 +80,26 @@
 		autoClaimChecked = renewal.enabled;
 	});
 
-	// 可见性感知的 1 秒倒计时；到点自动触发一次静默刷新（不追踪 nowSec，避免每秒重建定时器）
 	$effect(() => {
 		const until = rawTargetUntil;
 		const accountId = account.account_id;
-		const visible = pageVisible.visible;
+		if (until === null || !Number.isFinite(until) || !pageVisible.visible) return;
 
-		if (until === null || !Number.isFinite(until) || !visible) return;
-
-		const initialNow = Math.floor(Date.now() / 1000);
-		nowSec = initialNow;
-
-		if (initialNow >= until) {
-			const key = `${accountId}:${until}`;
+		let timer: ReturnType<typeof setInterval> | undefined;
+		const key = `${accountId}:${until}`;
+		const tick = () => {
+			const now = Date.now();
+			nowSec = Math.floor(now / 1000);
+			// Give the server clock a short margin before requesting the next state.
+			if (now < until * 1000 + 1500) return;
+			if (timer !== undefined) clearInterval(timer);
 			if (triggeredDeadlineKey !== key) {
 				triggeredDeadlineKey = key;
 				untrack(() => onDeadlineElapsed());
 			}
-			return;
-		}
-
-		const timer = setInterval(() => {
-			if (!pageVisible.visible) return;
-			const current = Math.floor(Date.now() / 1000);
-			nowSec = current;
-			if (current >= until) {
-				clearInterval(timer);
-				const key = `${accountId}:${until}`;
-				if (triggeredDeadlineKey !== key) {
-					triggeredDeadlineKey = key;
-					onDeadlineElapsed();
-				}
-			}
-		}, 1000);
-
+		};
+		timer = setInterval(tick, 1000);
+		tick();
 		return () => clearInterval(timer);
 	});
 

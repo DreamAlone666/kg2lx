@@ -2,9 +2,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::config::Config;
-use crate::domain::account::{AccountStatus, ProviderAccount, now_ts};
+use crate::domain::account::{AccountStatus, ProviderAccount};
 use crate::domain::cookie_store::CookieStore;
 use crate::domain::event_log::{Event, EventContext, EventLog, RefreshReason};
+use crate::domain::now_ts;
 use crate::error::AppError;
 use crate::repos::account::AccountRepo;
 use crate::repos::event_log::{self, EventLogRepo};
@@ -46,6 +47,11 @@ impl AccountAuth {
         account: ProviderAccount,
         context: &EventContext,
     ) -> Result<ProviderAccount, AppError> {
+        if account.status == AccountStatus::LoginFailed {
+            return Err(AppError::upstream_login_failed(
+                "account must sign in again",
+            ));
+        }
         let reason = if account
             .last_refresh_at
             .is_none_or(|t| now_ts() - t > self.refresh_ttl)
@@ -118,27 +124,35 @@ impl AccountAuth {
         let mut updated = current.clone();
         let mut token_refreshed = false;
         let outcome = self
-            .authenticate(&mut updated.cookies, reason, &mut token_refreshed)
+            .authenticate(
+                &mut updated.cookies,
+                &current.upstream_userid,
+                reason,
+                &mut token_refreshed,
+            )
             .await;
         let (endpoint, human_verification) = match &outcome {
             Ok(endpoint) => (*endpoint, false),
             Err((failure, endpoint)) => (*endpoint, failure.human_verification),
         };
         let result = async {
+            let returned_userid = updated.cookies.get("userid");
+            if (token_refreshed || returned_userid != current.cookies.get("userid"))
+                && returned_userid != Some(current.upstream_userid.as_str())
+            {
+                return Err(mismatched_userid());
+            }
             if token_refreshed {
                 // Keep a fresh token even if subsequent device registration fails.
                 updated.credential_version += 1;
                 updated.updated_at = now_ts();
                 updated.last_refresh_at = Some(updated.updated_at);
-                if updated.status != AccountStatus::Disabled {
-                    updated.status = AccountStatus::Active;
-                }
+                updated.status = AccountStatus::Active;
                 updated.last_error = None;
                 updated.last_error_code = None;
                 updated = self.accounts.save_auth(&current, &updated).await?;
             } else if let Err((failure, _)) = &outcome
                 && failure.invalid_credentials
-                && current.status != AccountStatus::Disabled
             {
                 updated.status = AccountStatus::LoginFailed;
                 updated.updated_at = now_ts();
@@ -171,13 +185,14 @@ impl AccountAuth {
     pub async fn authenticate_qr(
         &self,
         cookies: &mut CookieStore,
+        userid: &str,
         context: EventContext,
     ) -> Result<(), AppError> {
         let started = Instant::now();
         let reason = RefreshReason::QrLogin;
         let mut token_refreshed = false;
         let (result, endpoint, human_verification) = match self
-            .authenticate(cookies, reason, &mut token_refreshed)
+            .authenticate(cookies, userid, reason, &mut token_refreshed)
             .await
         {
             Ok(endpoint) => (Ok(()), endpoint, false),
@@ -198,6 +213,7 @@ impl AccountAuth {
     async fn authenticate(
         &self,
         cookies: &mut CookieStore,
+        userid: &str,
         reason: RefreshReason,
         token_refreshed: &mut bool,
     ) -> Result<&'static str, (AuthFailure, &'static str)> {
@@ -219,6 +235,9 @@ impl AccountAuth {
             .await
             .map_err(|failure| (failure, "login/token"))?;
         *token_refreshed = true;
+        if cookies.get("userid") != Some(userid) {
+            return Err((AuthFailure::new(mismatched_userid()), "login/token"));
+        }
         if cookies.is_empty("dfid") {
             *cookies = self
                 .client
@@ -253,4 +272,8 @@ impl AccountAuth {
         )
         .await;
     }
+}
+
+fn mismatched_userid() -> AppError {
+    AppError::upstream_login_failed("upstream returned credentials for a different account")
 }

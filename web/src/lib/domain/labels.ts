@@ -26,8 +26,6 @@ export const providerLabel: Record<ProviderKind, string> = {
 
 export const accountStatusLabel: Record<AccountStatus, string> = {
 	active: '正常',
-	pending: '待处理',
-	disabled: '已禁用',
 	login_failed: '登录失败',
 };
 

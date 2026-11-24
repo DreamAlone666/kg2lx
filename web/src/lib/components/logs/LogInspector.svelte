@@ -21,6 +21,7 @@
 		formatLatency,
 		formatLogTimeMs,
 		formatRelativeOffsetMs,
+		entitlementCompletionLabel,
 		isEntitlementAlreadyDone,
 		isEventSuccess,
 		labelOf,
@@ -339,7 +340,7 @@
 						<dt class="text-muted-foreground">结果</dt>
 						<dd>
 							<StatusBadge tone={badge.tone}>
-								{alreadyDone ? '今日已完成' : labelOf(renewalOutcomeLabel, d.outcome)}
+								{alreadyDone ? entitlementCompletionLabel(d) : labelOf(renewalOutcomeLabel, d.outcome)}
 							</StatusBadge>
 						</dd>
 					{/if}
@@ -347,7 +348,7 @@
 					{#if d.upstream_code !== undefined && d.upstream_code !== null}
 						<dt class="text-muted-foreground">上游码</dt>
 						<dd class="tabular font-mono">
-							{d.upstream_code}{alreadyDone ? '（今日已领，无需重复）' : ''}
+							{d.upstream_code}{alreadyDone ? `（${entitlementCompletionLabel(d)}）` : ''}
 						</dd>
 					{/if}
 
@@ -429,7 +430,7 @@
 								<div class="min-w-0 flex-1">
 									<div class="flex items-center justify-between gap-2">
 										<span class="font-medium text-foreground">
-											{labelOf(eventTypeLabel, item.event_type)} · {itemHeadline.title}
+											{itemHeadline.title}
 										</span>
 										<span
 											class="tabular shrink-0 font-mono text-caption text-muted-foreground"

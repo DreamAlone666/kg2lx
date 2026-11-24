@@ -48,7 +48,7 @@ Calling this route consumes a slot and awards three hours. Its response carries 
 
 ## Time Fields
 
-`svip`'s `vip_begin_time` and `vip_end_time` matched the local clock in the observation. The API's `tvip` end time differed from the Concept app display by +8 hours. Compare time deltas within a single `product_type`. kg2lx assumes UTC+8 for scheduling, including unzoned `svip` timestamps. The provider's cutoff and the day assigned to an upgrade spanning midnight remain unverified. [kg2lx scheduling](../../../server/README.md#每日权益领升)
+`svip`'s `vip_begin_time` and `vip_end_time` matched the local clock in the observation. The API's `tvip` end time differed from the Concept app display by +8 hours. Compare time deltas within a single `product_type`. kg2lx assumes UTC+8 for scheduling and parses unzoned entitlement timestamps with the same offset. The provider's cutoff and the day assigned to an upgrade spanning midnight remain unverified. [kg2lx scheduling](../../../server/README.md#自动领取-vip)
 
 ## How To Re-verify
 

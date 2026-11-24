@@ -8,8 +8,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::{
-    KugouLiteClient, VipBusinessEntry, decode_vip_snapshot, requires_human_verification,
-    upstream_code,
+    KugouLiteClient, VipBusinessEntry, decode_vip_snapshot, proxy_request,
+    requires_human_verification, upstream_code,
 };
 use crate::domain::cookie_store::{
     CookieStore, merge_cookies_from_body_if_present, merge_cookies_from_headers,
@@ -22,6 +22,7 @@ pub enum FailureKind {
     Timeout,
     Unknown,
     Rejected,
+    Authentication,
     RateLimited,
     Verification,
     Gateway,
@@ -178,12 +179,7 @@ async fn exchange<T>(
     let mut merged = cookies.clone();
     let mut http_status = None;
     let received = async {
-        // The local proxy caches by hostname and URL, shared across Cookie values.
-        let response = request
-            .header("X-Apicache-Bypass", "1")
-            .header("Cookie", cookies.to_cookie_header())
-            .send()
-            .await?;
+        let response = proxy_request(request, cookies).send().await?;
         http_status = Some(response.status().as_u16());
         merge_cookies_from_headers(&mut merged, response.headers());
         response.text().await
@@ -197,6 +193,7 @@ async fn exchange<T>(
         Err(error) => {
             let kind = match http_status {
                 Some(429) => FailureKind::RateLimited,
+                Some(401 | 403) => FailureKind::Authentication,
                 Some(502) => FailureKind::Gateway,
                 _ if error.is_timeout() => FailureKind::Timeout,
                 _ => FailureKind::Unknown,
@@ -217,7 +214,7 @@ async fn exchange<T>(
     if result.as_ref().is_err_and(|failure| {
         matches!(
             failure.kind,
-            FailureKind::Verification | FailureKind::Gateway
+            FailureKind::Verification | FailureKind::Gateway | FailureKind::Authentication
         )
     }) {
         merged = cookies.clone();
@@ -265,6 +262,9 @@ fn business_response(
     // KuGouMusicApi wraps nonzero error_code values in HTTP 502, including idempotent
     // completion. Only the write whose step matches the code can accept that response.
     let confirmed_duplicate = http == 502 && code.is_some() && code == already_done_code;
+    let rejected = http == 502
+        && response.status == Some(0)
+        && code.is_some_and(|code| !matches!(code, 131001 | 297002));
     let failure = if requires_human_verification(Some(&parsed), body)
         || (parsed.is_null() && requires_human_verification(None, body))
     {
@@ -274,8 +274,19 @@ fn business_response(
             FailureKind::RateLimited,
             "upstream rate limited entitlement request",
         ))
-    } else if confirmed_duplicate || ((200..300).contains(&http) && parsed.is_object()) {
+    } else if matches!(http, 401 | 403) || matches!(code, Some(301 | 302)) {
+        Some((
+            FailureKind::Authentication,
+            "upstream rejected authentication",
+        ))
+    } else if confirmed_duplicate || rejected || ((200..300).contains(&http) && parsed.is_object())
+    {
         None
+    } else if http == 502 && matches!(code, Some(131001 | 297002)) {
+        Some((
+            FailureKind::Unknown,
+            "upstream confirmed a different entitlement step",
+        ))
     } else if http == 502 {
         Some((
             FailureKind::Gateway,
@@ -516,7 +527,15 @@ mod tests {
                     parse_grant(&body, status, step).unwrap(),
                     GrantResult::AlreadyDone { code }
                 );
-                assert!(parse_grant(&body, status, other_step).is_err());
+                let failure = parse_grant(&body, status, other_step).unwrap_err();
+                assert_eq!(
+                    failure.kind,
+                    if status == 502 {
+                        FailureKind::Unknown
+                    } else {
+                        FailureKind::Rejected
+                    }
+                );
             }
         }
         let failure =
@@ -527,6 +546,19 @@ mod tests {
         let failure = parse_grant("gateway error", 502, GrantStep::Upgrade).unwrap_err();
         assert_eq!(failure.kind, FailureKind::Gateway);
         assert!(failure.write_may_have_applied());
+        let failure =
+            parse_grant(r#"{"status":0,"error_code":4321}"#, 502, GrantStep::Upgrade).unwrap_err();
+        assert_eq!(failure.kind, FailureKind::Rejected);
+        assert!(!failure.write_may_have_applied());
+        for (http, body) in [
+            (401, ""),
+            (403, ""),
+            (502, r#"{"status":0,"error_code":302}"#),
+        ] {
+            let failure = parse_grant(body, http, GrantStep::Claim).unwrap_err();
+            assert_eq!(failure.kind, FailureKind::Authentication);
+            assert!(!failure.write_may_have_applied());
+        }
         assert_eq!(
             parse_grant("", 429, GrantStep::Upgrade).unwrap_err().kind,
             FailureKind::RateLimited

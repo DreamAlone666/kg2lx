@@ -1,7 +1,6 @@
 import type {
 	AccountStatus,
 	LoginSessionStatus,
-	RenewalOutcome,
 	RenewalState,
 	StepState
 } from '$lib/api/types';
@@ -22,8 +21,6 @@ export type Tone = 'success' | 'warning' | 'danger' | 'info' | 'neutral';
 
 const accountStatusTones: Record<AccountStatus, Tone> = {
 	active: 'success',
-	pending: 'warning',
-	disabled: 'neutral',
 	login_failed: 'danger',
 };
 
@@ -110,7 +107,7 @@ export const ENTITLEMENT_EXPIRING_DAYS = 7;
  *
  * `active` 表示上游生成快照时的状态。快照由「同步权益」更新，时间可另作到期提醒；
  * 已过的到期时间不显示「即将到期」。 *
- * `now` 可注入只为便于离线核算边界，调用方按默认取当前时刻即可（同 formatLogTime）。
+ * `now` 可注入只为便于离线核算边界，调用方按默认取当前时刻即可。
  */
 export function entitlementExpiringTone(
 	endAt: number | null | undefined,
@@ -138,6 +135,7 @@ export function qualityTone(quality: string | null | undefined): Tone {
 const renewalStateTones: Record<RenewalState, Tone> = {
 	ready: 'neutral',
 	waiting_for_reconciliation: 'warning',
+	reconciliation_exhausted: 'danger',
 	verification_paused: 'danger',
 	upstream_unavailable: 'warning',
 	rate_limited: 'warning',
@@ -147,7 +145,7 @@ const renewalStateTones: Record<RenewalState, Tone> = {
 	attempts_exhausted: 'danger',
 };
 
-/** 自动领取 VIP 9 态语义色调。 */
+/** 自动领取 VIP 状态语义色调。 */
 export function renewalStateTone(state: RenewalState | string | null | undefined): Tone {
 	return renewalStateTones[state as RenewalState] ?? 'neutral';
 }
@@ -161,17 +159,4 @@ const renewalStepTones: Record<StepState, Tone> = {
 /** 自动领取 VIP 单步状态（领取 / 升级）语义色调。 */
 export function renewalStepTone(step: StepState | string | null | undefined): Tone {
 	return renewalStepTones[step as StepState] ?? 'neutral';
-}
-
-const renewalOutcomeTones: Record<RenewalOutcome, Tone> = {
-	succeeded: 'success',
-	already_done: 'success',
-	failed: 'danger',
-	uncertain: 'warning',
-	deferred: 'info',
-};
-
-/** 自动领取 VIP 单次执行回执色调（already_done 视为已完成，不按错误着红）。 */
-export function renewalOutcomeTone(outcome: RenewalOutcome | string | null | undefined): Tone {
-	return renewalOutcomeTones[outcome as RenewalOutcome] ?? 'neutral';
 }

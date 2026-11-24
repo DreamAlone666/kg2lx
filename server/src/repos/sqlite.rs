@@ -1,4 +1,6 @@
+mod accounts;
 mod events;
+pub use accounts::AccountRecord;
 mod legacy;
 mod migrations;
 mod renewal;
@@ -17,7 +19,9 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::domain::account::{AccountStatus, ProviderAccount};
 use crate::domain::cookie_store::CookieStore;
-use crate::domain::entitlement::{EntitlementObservation, EntitlementSnapshot};
+use crate::domain::entitlement::EntitlementObservation;
+#[cfg(test)]
+use crate::domain::entitlement::EntitlementSnapshot;
 use crate::domain::login_session::LoginSession;
 use crate::domain::provider::ProviderKind;
 use crate::domain::source::Source;
@@ -33,7 +37,8 @@ const DATABASE_QUEUE_CAPACITY: usize = 64;
 type Job = Box<dyn FnOnce(&mut Connection) + Send>;
 
 pub struct Sqlite {
-    jobs: mpsc::Sender<Job>,
+    jobs: tokio::sync::Mutex<Option<mpsc::Sender<Job>>>,
+    worker: std::sync::Mutex<Option<std::thread::JoinHandle<rusqlite::Result<()>>>>,
     event_log_limit: i64,
 }
 
@@ -43,15 +48,25 @@ impl Sqlite {
         let event_log_limit = i64::from(event_log_limit);
         events::prune_all(&mut connection, event_log_limit).map_err(sqlite_error)?;
         let (jobs, mut worker) = mpsc::channel::<Job>(DATABASE_QUEUE_CAPACITY);
-        std::thread::Builder::new()
+        let handle = std::thread::Builder::new()
             .name("kg2lx-sqlite".into())
             .spawn(move || {
                 while let Some(job) = worker.blocking_recv() {
                     job(&mut connection);
                 }
+                let busy = connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                    row.get::<_, bool>(0)
+                })?;
+                if busy {
+                    tracing::warn!(
+                        "SQLite WAL checkpoint could not finish while another connection was active"
+                    );
+                }
+                connection.close().map_err(|(_, error)| error)
             })?;
         Ok(Self {
-            jobs,
+            jobs: tokio::sync::Mutex::new(Some(jobs)),
+            worker: std::sync::Mutex::new(Some(handle)),
             event_log_limit,
         })
     }
@@ -61,16 +76,38 @@ impl Sqlite {
         f: impl FnOnce(&mut Connection) -> rusqlite::Result<T> + Send + 'static,
     ) -> Result<T, AppError> {
         let (reply, receive) = oneshot::channel();
-        self.jobs
-            .send(Box::new(move |conn| {
-                let _ = reply.send(f(conn));
-            }))
-            .await
-            .map_err(|_| AppError::internal("SQLite worker stopped"))?;
+        {
+            let jobs = self.jobs.lock().await;
+            jobs.as_ref()
+                .ok_or_else(|| AppError::internal("SQLite worker stopped"))?
+                .send(Box::new(move |conn| {
+                    let _ = reply.send(f(conn));
+                }))
+                .await
+                .map_err(|_| AppError::internal("SQLite worker stopped"))?;
+        }
         receive
             .await
             .map_err(|_| AppError::internal("SQLite worker did not return a result"))?
             .map_err(sqlite_error)
+    }
+
+    pub async fn ping(&self) -> Result<(), AppError> {
+        self.run(|conn| conn.query_row("SELECT 1", [], |_| Ok(())))
+            .await
+    }
+
+    pub async fn shutdown(&self) -> Result<(), AppError> {
+        self.jobs.lock().await.take();
+        let worker = self.worker.lock().unwrap().take();
+        if let Some(worker) = worker {
+            tokio::task::spawn_blocking(move || worker.join())
+                .await
+                .map_err(|error| AppError::internal(error.to_string()))?
+                .map_err(|_| AppError::internal("SQLite worker panicked"))?
+                .map_err(sqlite_error)?;
+        }
+        Ok(())
     }
 }
 
@@ -80,7 +117,7 @@ fn open_database(data_dir: &Path) -> Result<Connection, AppError> {
     if !path.try_exists()? {
         initialize(data_dir, &path)?;
     }
-    let mut connection = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_WRITE)
+    let connection = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_WRITE)
         .map_err(sqlite_error)?;
     connection
         .busy_timeout(Duration::from_secs(5))
@@ -88,7 +125,7 @@ fn open_database(data_dir: &Path) -> Result<Connection, AppError> {
     connection
         .pragma_update(None, "foreign_keys", true)
         .map_err(sqlite_error)?;
-    migrations::migrate(&mut connection, &path, 1, migrations::MIGRATIONS)?;
+    migrations::validate(&connection, &path)?;
     connection
         .pragma_update(None, "journal_mode", "WAL")
         .map_err(sqlite_error)?;
@@ -105,10 +142,10 @@ fn initialize(data_dir: &Path, target: &Path) -> Result<(), AppError> {
     connection
         .pragma_update(None, "foreign_keys", true)
         .map_err(sqlite_error)?;
-    migrations::migrate(&mut connection, target, 0, migrations::MIGRATIONS)?;
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(sqlite_error)?;
+    migrations::initialize(&tx).map_err(sqlite_error)?;
     legacy::import(&tx, data_dir)?;
     tx.commit().map_err(sqlite_error)?;
     connection
@@ -122,7 +159,10 @@ fn initialize(data_dir: &Path, target: &Path) -> Result<(), AppError> {
 }
 
 fn sqlite_error(error: rusqlite::Error) -> AppError {
-    AppError::internal(format!("SQLite: {error}"))
+    match error {
+        rusqlite::Error::QueryReturnedNoRows => AppError::account_not_found(),
+        _ => AppError::internal(format!("SQLite: {error}")),
+    }
 }
 
 fn encode(value: &impl Serialize) -> rusqlite::Result<String> {
@@ -148,7 +188,7 @@ fn provider_at(row: &Row<'_>, index: usize) -> rusqlite::Result<ProviderKind> {
 }
 
 const ACCOUNT_SELECT: &str = "
-    SELECT account_id, provider, upstream_userid, display_name, status, cookies_json,
+    SELECT account_id, provider, upstream_userid, status, cookies_json,
            last_refresh_at, credential_version, last_error, last_error_code, created_at, updated_at
     FROM accounts";
 
@@ -157,21 +197,18 @@ fn read_account(row: &Row<'_>) -> rusqlite::Result<ProviderAccount> {
         account_id: row.get(0)?,
         provider: provider_at(row, 1)?,
         upstream_userid: row.get(2)?,
-        display_name: row.get(3)?,
-        status: match row.get_ref(4)?.as_str()? {
+        status: match row.get_ref(3)?.as_str()? {
             "active" => AccountStatus::Active,
-            "pending" => AccountStatus::Pending,
-            "disabled" => AccountStatus::Disabled,
             "login_failed" => AccountStatus::LoginFailed,
             _ => return Err(rusqlite::Error::InvalidQuery),
         },
-        cookies: decode(row.get_ref(5)?.as_str()?, 5)?,
-        last_refresh_at: row.get(6)?,
-        credential_version: row.get(7)?,
-        last_error: row.get(8)?,
-        last_error_code: row.get(9)?,
-        created_at: row.get(10)?,
-        updated_at: row.get(11)?,
+        cookies: decode(row.get_ref(4)?.as_str()?, 4)?,
+        last_refresh_at: row.get(5)?,
+        credential_version: row.get(6)?,
+        last_error: row.get(7)?,
+        last_error_code: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
     })
 }
 
@@ -182,12 +219,12 @@ fn account_by_id(conn: &Connection, account_id: &str) -> rusqlite::Result<Provid
 
 fn write_account(conn: &Connection, account: &ProviderAccount) -> rusqlite::Result<()> {
     conn.execute(
-        "INSERT INTO accounts (account_id, provider, upstream_userid, display_name, status,
+        "INSERT INTO accounts (account_id, provider, upstream_userid, status,
          cookies_json, last_refresh_at, credential_version, last_error, last_error_code, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             account.account_id, account.provider.to_string(), account.upstream_userid,
-            account.display_name, account.status.as_str(), encode(&account.cookies)?,
+            account.status.as_str(), encode(&account.cookies)?,
             account.last_refresh_at, account.credential_version, account.last_error,
             account.last_error_code, account.created_at, account.updated_at,
         ],
@@ -197,17 +234,6 @@ fn write_account(conn: &Connection, account: &ProviderAccount) -> rusqlite::Resu
 
 #[async_trait]
 impl AccountRepo for Sqlite {
-    async fn list_all(&self) -> Result<Vec<ProviderAccount>, AppError> {
-        self.run(|conn| {
-            conn.prepare(&format!(
-                "{ACCOUNT_SELECT} ORDER BY created_at ASC, account_id ASC"
-            ))?
-            .query_map([], read_account)?
-            .collect()
-        })
-        .await
-    }
-
     async fn find_by_id(&self, account_id: &str) -> Result<Option<ProviderAccount>, AppError> {
         let account_id = account_id.to_owned();
         self.run(move |conn| account_by_id(conn, &account_id).optional())
@@ -319,6 +345,7 @@ impl AccountRepo for Sqlite {
 
 #[async_trait]
 impl EntitlementRepo for Sqlite {
+    #[cfg(test)]
     async fn entitlement_snapshot(
         &self,
         account_id: &str,
@@ -445,18 +472,6 @@ impl SourceRepo for Sqlite {
         .await
     }
 
-    async fn list_by_account_id(&self, account_id: &str) -> Result<Vec<Source>, AppError> {
-        let account_id = account_id.to_owned();
-        self.run(move |conn| {
-            conn.prepare(&format!(
-                "{SOURCE_SELECT} WHERE account_id = ?1 ORDER BY created_at ASC, source_id ASC"
-            ))?
-            .query_map([account_id], read_source)?
-            .collect()
-        })
-        .await
-    }
-
     async fn update_settings(
         &self,
         source_id: &str,
@@ -477,17 +492,10 @@ impl SourceRepo for Sqlite {
                 params![source_id, name, quality_fallback, updated_at],
                 read_source,
             )
+            .optional()
         })
-        .await
-    }
-
-    async fn list_all(&self) -> Result<Vec<Source>, AppError> {
-        self.run(|conn| {
-            conn.prepare(SOURCE_SELECT)?
-                .query_map([], read_source)?
-                .collect()
-        })
-        .await
+        .await?
+        .ok_or_else(AppError::source_not_found)
     }
 }
 
@@ -509,11 +517,13 @@ impl LoginSessionRepo for Sqlite {
     async fn save(&self, session: &LoginSession) -> Result<(), AppError> {
         let session = session.clone();
         self.run(move |conn| {
-            conn.execute(
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            tx.execute(
                 "DELETE FROM login_sessions WHERE expires_at < ?1",
-                [crate::domain::login_session::now_ts() - 300],
+                [crate::domain::now_ts() - 300],
             )?;
-            write_session(conn, &session)
+            write_session(&tx, &session)?;
+            tx.commit()
         })
         .await
     }
@@ -553,7 +563,7 @@ impl LoginSessionRepo for Sqlite {
 fn write_session(conn: &Connection, session: &LoginSession) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT INTO login_sessions (session_id, session_json, expires_at) VALUES (?1, ?2, ?3)
-         ON CONFLICT(session_id) DO UPDATE SET session_json = excluded.session_json",
+         ON CONFLICT(session_id) DO UPDATE SET session_json = excluded.session_json, expires_at = excluded.expires_at",
         params![session.session_id, encode(&session)?, session.expires_at],
     )?;
     Ok(())

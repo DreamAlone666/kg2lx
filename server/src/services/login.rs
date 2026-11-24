@@ -2,12 +2,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::config::Config;
-use crate::domain::account::{self, AccountStatus, ProviderAccount};
+use crate::domain::account::{AccountStatus, ProviderAccount};
 use crate::domain::event_log::{Event, EventContext, EventLog, EventTrigger, LoginOutcome};
-use crate::domain::login_session::{self, LoginSession, LoginSessionStatus};
+use crate::domain::login_session::{LoginSession, LoginSessionStatus};
 use crate::domain::provider::ProviderKind;
 use crate::domain::source;
-use crate::error::AppError;
+use crate::error::{AppError, ErrorCode};
 use crate::repos::account::AccountRepo;
 use crate::repos::event_log::{self, EventLogRepo};
 use crate::repos::login_session::LoginSessionRepo;
@@ -87,7 +87,7 @@ impl LoginService {
     }
 
     pub async fn start_kugou_lite_qr_login(&self) -> Result<QrLoginStartResponse, AppError> {
-        let now = login_session::now_ts();
+        let now = crate::domain::now_ts();
         let session_id = format!("sess_{}", uuid::Uuid::new_v4());
         let expires_at = now + 300;
 
@@ -106,15 +106,11 @@ impl LoginService {
             updated_at: now,
         };
 
-        self.session_repo.save(&session).await?;
-
         let key = self.client.request_qr_key(&session.temp_cookies).await;
         let key = self.record_qr_transport_result(key).await?;
         session.qr_key = key.qr_key;
         session.temp_cookies = key.cookies;
-        session.updated_at = login_session::now_ts();
-        self.session_repo.save(&session).await?;
-
+        session.updated_at = crate::domain::now_ts();
         let qr = self
             .client
             .create_qr_code(&session.qr_key, &session.temp_cookies)
@@ -124,7 +120,7 @@ impl LoginService {
         session.qr_base64 = qr.qr_base64.clone();
         session.temp_cookies = qr.cookies;
         session.status = LoginSessionStatus::WaitingScan;
-        session.updated_at = login_session::now_ts();
+        session.updated_at = crate::domain::now_ts();
         self.session_repo.save(&session).await?;
 
         Ok(QrLoginStartResponse {
@@ -151,7 +147,17 @@ impl LoginService {
             return self.build_bound_response(&session).await;
         }
 
-        let now = login_session::now_ts();
+        if session.status == LoginSessionStatus::Failed {
+            return Err(AppError::upstream_login_failed(
+                session.error.unwrap_or_else(|| "QR login failed".into()),
+            ));
+        }
+        if session.status == LoginSessionStatus::Pending {
+            return Err(AppError::upstream_login_failed(
+                "QR login was not initialized",
+            ));
+        }
+        let now = crate::domain::now_ts();
         if session.status == LoginSessionStatus::Expired {
             return Ok(Self::state_response(session_id, "expired"));
         }
@@ -162,11 +168,22 @@ impl LoginService {
             return self.finish_binding(&mut session).await;
         }
 
+        if session.qr_key.is_empty() {
+            return Err(AppError::upstream_login_failed("QR session has no key"));
+        }
         let poll = self
             .client
             .poll_qr_login(&session.qr_key, &session.temp_cookies)
             .await;
-        let poll = self.record_qr_transport_result(poll).await?;
+        let poll = match self.record_qr_transport_result(poll).await {
+            Ok(poll) => poll,
+            Err(error) => {
+                if error.code == ErrorCode::UpstreamLoginFailed {
+                    self.remember_failure(&mut session, &error).await?;
+                }
+                return Err(error);
+            }
+        };
         session.temp_cookies = poll.cookies;
         session.updated_at = now;
 
@@ -187,13 +204,11 @@ impl LoginService {
                 self.session_repo.save(&session).await?;
             }
             _ => {
-                session.status = LoginSessionStatus::Failed;
-                session.error = poll.message.clone();
-                self.session_repo.save(&session).await?;
                 let error = AppError::upstream_login_failed(
                     poll.message
                         .unwrap_or_else(|| "unknown qr check error".into()),
                 );
+                self.remember_failure(&mut session, &error).await?;
                 self.log_login(
                     EventContext::new(EventTrigger::Qr, None, None),
                     LoginOutcome::Failed,
@@ -222,6 +237,7 @@ impl LoginService {
             None => {
                 let error =
                     AppError::upstream_login_failed("missing userid after qr authorization");
+                self.remember_failure(session, &error).await?;
                 self.log_login(
                     EventContext::new(EventTrigger::Qr, None, None),
                     LoginOutcome::Failed,
@@ -252,10 +268,11 @@ impl LoginService {
             let mut cookies = session.temp_cookies.clone();
             if let Err(error) = self
                 .auth
-                .authenticate_qr(&mut cookies, context.clone())
+                .authenticate_qr(&mut cookies, &userid, context.clone())
                 .await
             {
-                if cookies != session.temp_cookies {
+                if cookies.get("userid") == Some(userid.as_str()) && cookies != session.temp_cookies
+                {
                     session.temp_cookies = cookies;
                     self.session_repo.save(session).await?;
                 }
@@ -266,12 +283,11 @@ impl LoginService {
                     "refreshed userid differs from QR authorization",
                 ));
             }
-            let now = account::now_ts();
+            let now = crate::domain::now_ts();
             let mut account = existing.unwrap_or_else(|| ProviderAccount {
                 account_id: account_id.clone(),
                 provider: ProviderKind::KugouLite,
                 upstream_userid: userid.clone(),
-                display_name: None,
                 status: AccountStatus::Active,
                 cookies: crate::domain::cookie_store::CookieStore::new(),
                 credential_version: 0,
@@ -308,6 +324,17 @@ impl LoginService {
             self.build_bound_response(session).await
         }
         .await;
+        if let Err(error) = &result
+            && session.status != LoginSessionStatus::Bound
+            && matches!(
+                error.code,
+                ErrorCode::UpstreamLoginFailed
+                    | ErrorCode::AccountNotFound
+                    | ErrorCode::SourceNotFound
+            )
+        {
+            self.remember_failure(session, error).await?;
+        }
         let outcome = match (&result, rebind) {
             (Ok(_), true) => LoginOutcome::Rebound,
             (Ok(_), false) => LoginOutcome::Bound,
@@ -323,9 +350,21 @@ impl LoginService {
         result
     }
 
+    async fn remember_failure(
+        &self,
+        session: &mut LoginSession,
+        error: &AppError,
+    ) -> Result<(), AppError> {
+        session.status = LoginSessionStatus::Failed;
+        session.error = Some(error.message.clone());
+        session.updated_at = crate::domain::now_ts();
+        session.temp_cookies = crate::domain::cookie_store::CookieStore::new();
+        self.session_repo.save(session).await
+    }
+
     async fn expire(&self, session: &mut LoginSession) -> Result<QrLoginPollResponse, AppError> {
         session.status = LoginSessionStatus::Expired;
-        session.updated_at = login_session::now_ts();
+        session.updated_at = crate::domain::now_ts();
         self.session_repo.save(session).await?;
         self.log_login(
             EventContext::new(EventTrigger::Qr, None, None),

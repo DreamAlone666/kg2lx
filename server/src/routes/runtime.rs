@@ -2,10 +2,12 @@ use axum::Json;
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, header};
+use serde::de::DeserializeOwned;
 
 use crate::app_state::AppState;
 use crate::error::AppError;
-use crate::services::runtime::RuntimeMusicUrlRequest;
+use crate::services::runtime::{RuntimeMusicUrlRequest, RuntimeMusicUrlResponse};
+use crate::services::script::ScriptUpdateResponse;
 
 fn verify_runtime(headers: &HeaderMap) -> Result<String, AppError> {
     let auth = headers
@@ -23,7 +25,7 @@ pub async fn music_url(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<Json<serde_json::Value>, AppError> {
+) -> Result<Json<RuntimeMusicUrlResponse>, AppError> {
     let runtime_token = verify_runtime(&headers)?;
 
     match std::str::from_utf8(body.as_ref()) {
@@ -43,8 +45,12 @@ pub async fn music_url(
     }
 
     let req = parse_music_url_request(&body)?;
-    let resp = state.runtime.fetch_music_url(&runtime_token, req).await?;
-    Ok(Json(serde_json::to_value(resp).unwrap()))
+    let resp = state
+        .runtime
+        .fetch_music_url(&runtime_token, req)
+        .await
+        .map_err(AppError::for_public_response)?;
+    Ok(Json(resp))
 }
 
 /// `POST /api/v1/runtime/script-update` 的请求体。
@@ -63,24 +69,24 @@ struct ScriptUpdateRequest {
 /// 告诉客户端它手上那份脚本是否已经过期。
 ///
 /// 认证与 `/music-url` 完全一致（同一个 `verify_runtime`）。这个端点**不写运行时
-/// 日志**：`RuntimeLog` 记的是取链事件，而这个请求既没有 hash 也没有音质。
+/// 日志**：通知请求不产生取链事件。
 pub async fn script_update(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<Json<serde_json::Value>, AppError> {
+) -> Result<Json<ScriptUpdateResponse>, AppError> {
     let runtime_token = verify_runtime(&headers)?;
 
-    let req: ScriptUpdateRequest = serde_json::from_slice(&body)
-        .map_err(|_| AppError::invalid_request("invalid request body"))?;
+    let req: ScriptUpdateRequest = parse_runtime_body(&body)?;
     let resp = state
         .script
         .check_script_update(&runtime_token, &req.version)
-        .await?;
-    Ok(Json(serde_json::to_value(resp).unwrap()))
+        .await
+        .map_err(AppError::for_public_response)?;
+    Ok(Json(resp))
 }
 
-fn parse_music_url_request(body: &[u8]) -> Result<RuntimeMusicUrlRequest, AppError> {
+fn parse_runtime_body<T: DeserializeOwned>(body: &[u8]) -> Result<T, AppError> {
     let value: serde_json::Value =
         serde_json::from_slice(body).map_err(|_| AppError::invalid_request("invalid json"))?;
     // Tolerate two request body shapes for backward compatibility with scripts
@@ -94,8 +100,11 @@ fn parse_music_url_request(body: &[u8]) -> Result<RuntimeMusicUrlRequest, AppErr
             .map_err(|_| AppError::invalid_request("invalid request body"))?,
         value => value,
     };
-    let req: RuntimeMusicUrlRequest = serde_json::from_value(value)
-        .map_err(|_| AppError::invalid_request("invalid request body"))?;
+    serde_json::from_value(value).map_err(|_| AppError::invalid_request("invalid request body"))
+}
+
+fn parse_music_url_request(body: &[u8]) -> Result<RuntimeMusicUrlRequest, AppError> {
+    let req: RuntimeMusicUrlRequest = parse_runtime_body(body)?;
 
     if req.hash.is_empty() {
         return Err(AppError::invalid_request("hash is required"));

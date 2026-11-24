@@ -93,6 +93,7 @@
 		bind:this={ref}
 		class={cn(buttonVariants({ variant, size }), className)}
 		{...(rest as HTMLButtonAttributes)}
+		type={(rest as HTMLButtonAttributes).type ?? 'button'}
 		disabled={pending || (rest as HTMLButtonAttributes).disabled}
 		{...(pending ? { 'aria-busy': 'true' } : {})}
 	>
