@@ -9,7 +9,7 @@
 - **扫码绑定：** 每个酷狗概念版账号对应一个独立音源，互不影响。
 - **快捷导入：** 在后台复制脚本地址，粘贴到 LX Music 的自定义音源即可。
 - **名字自定义：** 音源标题可自定义，但改完需要重新导入。
-- 查看并同步**会员权益**。后台展示概念版 VIP 与畅听 VIP 的有效期，支持按账号开启自动领取 VIP、手动领取或核对当日记录。
+- **会员权益：** 同步会员权益，支持按账号开启自动领取 VIP、手动领取或核对当日记录。
 - **音质自动降级：** 开启后，自动沿音质档位向下重试，尽量让你听到声音。
 - 在**全站事件日志**中按账号和事件类型查询取链、Token 刷新、扫码登录及权益操作。取链事件还记录上游业务状态、实际音质与降级结果。
 - **一键部署：** 提供预构建的 `linux/amd64` Docker 镜像与 Docker Compose 示例（见下）。
@@ -29,7 +29,7 @@ LX Music 的跨平台体验很好，我的歌单在上面同步，恰好我也�
 
 ## 界面预览
 
-![kg2lx v0.2.0 界面预览](./docs/images/demo.avif)
+![kg2lx 账号详情与自动领取 VIP](./docs/images/demo.avif)
 
 ## Docker Compose 一键部署（推荐）
 
@@ -53,7 +53,7 @@ services:
     restart: unless-stopped
 
   kg2lx:
-    image: ghcr.io/dreamalone666/kg2lx:v0.2.0
+    image: ghcr.io/dreamalone666/kg2lx:v0.3.0
     # 有独立部署的 KuGouMusicApi 时，才需要删除
     depends_on:
       - kugou-api
@@ -85,17 +85,15 @@ volumes:
 docker compose up -d
 ```
 
-`kg2lx` 与 `KuGouMusicApi` 使用兼容的版本组合。更新版本时，将 `kg2lx` 镜像替换为目标 release tag，并将 `KuGouMusicApi` 替换为该 release 兼容的短 commit tag。
+`kg2lx` 与 `KuGouMusicApi` 使用兼容的版本组合。更新时，以目标版本的 GitHub Release 列出的两个镜像 tag 为准。
 
 ### 从 v0.2.0 升级到 SQLite
 
-1. 停止旧容器并备份整个数据卷。用同一个卷及原来的 `PUBLIC_BASE_URL` 启动新版。
-2. 首次启动将 v0.2.0 的账号、音源和已有权益快照导入 SQLite。旧脚本地址和两种令牌会沿用，已导入的洛雪音源可以继续播放。若要使用 `0.1.3` 脚本本身的修复，请在洛雪中重新导入。
-3. 调用旧音源管理接口的客户端需切换到账号接口与全站日志接口。使用 `REFRESH_INTERVAL_SECS` 的部署需将配置移到 `ACCOUNT_REFRESH_TTL`。 [管理接口与配置迁移](./server/README.md#升级适配)
+1. 停止旧容器并备份整个数据卷后，用同一个卷及原来的 `PUBLIC_BASE_URL` 启动新版。
+2. 首次启动会将 v0.2.0 的账号、音源和已有权益快照导入 SQLite。沿用旧脚本地址和两种令牌，已导入的洛雪音源兼容。
+3. 旧音源管理接口已切换到账号接口与全站日志接口，使用 `REFRESH_INTERVAL_SECS` 的部署需改成 `ACCOUNT_REFRESH_TTL`，见[升级适配](./server/README.md#升级适配)。
 
-旧 JSON 文件、扫码会话和 JSONL 日志仍留在卷中。回退到 v0.2.0 会读取切换前的文件，升级后的新增和修改留在 SQLite。
-
-之前运行过未发布 SQLite 开发版的环境，请停服备份后改用新的 `DATA_DIR`。如果需要保留 v0.2.0 的数据，可以将备份中原始的 `accounts/` 与 `sources/` 复制进去。开发 SQLite 库及其 WAL 文件留在备份中。
+旧 JSON 文件、扫码会话和 JSONL 日志会留存，但不再使用，除非回退到 v0.2.0。
 
 ## 使用方法
 
@@ -105,7 +103,7 @@ docker compose up -d
 4. **导入 LX Music：**
    - 在账号详情的「洛雪脚本接入」中复制 **脚本链接 (Script URL)**。
    - 打开 LX Music 客户端，在设置中将其作为 **自定义音源** 导入。
-5. **维护账号与排障：** 在账号详情页刷新 Token、同步会员权益、开启或手动触发自动领取 VIP；在独立的“日志”页按事件类型与账号查看全站事件及因果链路。
+5. **维护账号与排障：** 在账号详情页刷新 Token、同步会员权益、开启或手动触发自动领取 VIP；在独立日志页查看全站事件及因果链路。
 
 ## 手动部署
 

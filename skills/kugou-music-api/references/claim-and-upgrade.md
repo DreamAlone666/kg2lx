@@ -40,7 +40,7 @@ curl -b cookies.txt -H 'X-Apicache-Bypass: 1' \
   'http://localhost:3000/youth/month/vip/record'
 ```
 
-In the observed path through the proxy, `/song/url` at the target quality still returned `status: 2` for about 120 seconds after an upgrade from expiry. `/youth/union/vip` first showed `is_vip: 1` at about the same time. Use fresh reads when measuring this interval because the local proxy cache can contribute to the observed delay. The daily record's visibility delay and actual response envelope remain open.
+In the observed path through the proxy, `/song/url` at the target quality still returned `status: 2` for about 120 seconds after an upgrade from expiry. `/youth/union/vip` first showed `is_vip: 1` at about the same time. Use fresh reads when measuring this interval because the local proxy cache can contribute to the observed delay. Verified `/youth/month/vip/record` returns `data.list[]` rows with `day` (`YYYY-MM-DD`), `vip_type` (`"tvip"` or `"svip"`), `receive_vip`, and `recharge_num` alongside `month`, `sign_list`, `future_duration`, and `server_time`. The daily record's visibility delay remains open.
 
 ## `/youth/vip` Is A Write
 

@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.3.0] - 2026-11-24
 
 ### Added
 
@@ -18,6 +18,7 @@ All notable changes to this project will be documented in this file.
 - 账号列表与详情在一次 SQLite 读事务内查询关联音源及权益。全站日志按取链、刷新 Token、扫码登录和权益分类保留。取链上限由 `EVENT_LOG_LIMIT` 设置，默认 10,000 条。
 - 洛雪音源脚本升至 `0.1.3`。更新提示链接指向账号详情，更新检查与取链继续兼容旧版的 JSON 字符串请求体。重新导入后应用脚本端的修复。
 - 服务端使用即时写事务。收到 SIGTERM 或 SIGINT 后排空 SQLite 工作队列，对 WAL 执行检查点并关闭连接。`/healthz` 探测 SQLite，失败时返回 503。
+- 升级后端 Rust 兼容依赖与前端同大版本依赖。
 
 ### Fixed
 
@@ -161,7 +162,8 @@ All notable changes to this project will be documented in this file.
 - 修复移动端音源请求 body 双重序列化导致的播放失败。
 - 后端兼容旧版脚本发送的 JSON 字符串包装请求体。
 
-[Unreleased]: https://github.com/DreamAlone666/kg2lx/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/DreamAlone666/kg2lx/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/DreamAlone666/kg2lx/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/DreamAlone666/kg2lx/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/DreamAlone666/kg2lx/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/DreamAlone666/kg2lx/compare/v0.1.1...v0.1.2
