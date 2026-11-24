@@ -12,10 +12,12 @@ use crate::config::Config;
 use crate::domain::event_log::{EventType, ListGlobalEvents, LogView};
 use crate::domain::renewal::RenewalStatus;
 use crate::error::AppError;
-use crate::services::account::{AccountItem, RefreshResponse, SyncEntitlementsResponse};
+use crate::services::account::{
+    AccountItem, DeleteAccountResponse, RefreshResponse, SyncEntitlementsResponse,
+};
 use crate::services::event_log::GlobalLogsResponse;
 use crate::services::login::{QrLoginPollResponse, QrLoginStartResponse};
-use crate::services::source::{UpdateSourceInput, UpdateSourceResponse};
+use crate::services::source::{RotateTokensResponse, UpdateSourceInput, UpdateSourceResponse};
 
 fn verify_admin(headers: &HeaderMap, token: &str) -> Result<(), AppError> {
     let auth = headers
@@ -70,6 +72,13 @@ pub async fn get_account(
     Path(account_id): Path<String>,
 ) -> Result<Json<AccountItem>, AppError> {
     Ok(Json(state.accounts.get(&account_id).await?))
+}
+
+pub async fn delete_account(
+    State(state): State<AppState>,
+    Path(account_id): Path<String>,
+) -> Result<Json<DeleteAccountResponse>, AppError> {
+    Ok(Json(state.accounts.delete(account_id).await?))
 }
 
 pub async fn refresh_account_token(
@@ -144,6 +153,13 @@ pub async fn update_source(
         quality_fallback: body.quality_fallback,
     };
     Ok(Json(state.source.update_source(&source_id, input).await?))
+}
+
+pub async fn rotate_source_tokens(
+    State(state): State<AppState>,
+    Path(source_id): Path<String>,
+) -> Result<Json<RotateTokensResponse>, AppError> {
+    Ok(Json(state.source.rotate_tokens(&source_id).await?))
 }
 
 #[derive(serde::Deserialize)]

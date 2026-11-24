@@ -96,7 +96,10 @@ fn build_app(state: AppState) -> Router {
             get(routes::admin::poll_qr_login),
         )
         .route("/accounts", get(routes::admin::list_accounts))
-        .route("/accounts/{account_id}", get(routes::admin::get_account))
+        .route(
+            "/accounts/{account_id}",
+            get(routes::admin::get_account).delete(routes::admin::delete_account),
+        )
         .route("/logs", get(routes::admin::list_global_logs))
         .route(
             "/accounts/{account_id}/refresh-token",
@@ -115,6 +118,10 @@ fn build_app(state: AppState) -> Router {
             post(routes::admin::claim_account_entitlements),
         )
         .route("/sources/{source_id}", patch(routes::admin::update_source))
+        .route(
+            "/sources/{source_id}/rotate-tokens",
+            post(routes::admin::rotate_source_tokens),
+        )
         .route_layer(middleware::from_fn_with_state(
             state.config.clone(),
             routes::admin::require_admin,

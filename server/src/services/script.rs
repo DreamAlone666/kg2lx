@@ -63,7 +63,8 @@ const SCRIPT_ERROR_PREFIX: &str = "kg2lx：";
 /// `dictionary_covers_every_error_code` 能成立的前提，而任何一个漏掉的码都会让
 /// 脚本回退到后端的英文诊断文本——那才是要杜绝的事。
 const SCRIPT_ERROR_MESSAGES: &[(ErrorCode, &str)] = &[
-    (ErrorCode::AdminUnauthorized, "脚本令牌无效，请重新导入"),
+    (ErrorCode::AdminUnauthorized, "管理未授权"),
+    (ErrorCode::RuntimeUnauthorized, "脚本令牌无效，请重新导入"),
     (ErrorCode::SourceNotFound, "音源不存在，请重新导入音源"),
     (ErrorCode::AccountNotFound, "账号不存在，请重新绑定"),
     (ErrorCode::LoginSessionNotFound, "登录已过期，请重新扫码"),
@@ -77,6 +78,7 @@ const SCRIPT_ERROR_MESSAGES: &[(ErrorCode, &str)] = &[
     // 「没拿到 url、且上游没有表达拒绝」，上游明确拒绝某一档是下面那条。
     // 两句读起来像同一件事，用户就无法从播放条上分辨该不该去改什么。
     (ErrorCode::UpstreamPlayUrlEmpty, "未取到播放地址"),
+    (ErrorCode::UpstreamSongForbidden, "该歌曲暂不支持播放"),
     (ErrorCode::UpstreamQualityRefused, "该音质不可用"),
     (ErrorCode::UpstreamQualityExhausted, "所有音质均不可用"),
     (ErrorCode::UpstreamRateLimited, "酷狗繁忙，请稍后重试"),
@@ -146,7 +148,14 @@ const SCRIPT_UPDATE_TIMEOUT_MS: u64 = 5_000;
 /// 不做排序。排序会把「表里放错位置」这件事掩盖掉，而用户读这段文字时正是按
 /// 新 → 旧理解的。
 const SCRIPT_RELEASE_NOTES: &[(&str, &[&str])] = &[
-    ("0.1.3", &["修复限流冷却后无法重试", "更新入口指向账号详情"]),
+    (
+        "0.1.3",
+        &[
+            "修复限流冷却后无法重试",
+            "更新入口指向账号详情",
+            "明确提示整曲不可播放与脚本令牌无效",
+        ],
+    ),
     (
         "0.1.2",
         &[
@@ -1221,6 +1230,10 @@ async function run() {
   await exhausted()
   now += 120000
   await busy()
+  response = { statusCode: 404, body: { code: 'UPSTREAM_SONG_FORBIDDEN' } }
+  await assert.rejects(request(), { message: 'kg2lx：该歌曲暂不支持播放', retryable: false })
+  response = { statusCode: 401, body: JSON.stringify({ code: 'RUNTIME_UNAUTHORIZED' }) }
+  await assert.rejects(request(), { message: 'kg2lx：脚本令牌无效，请重新导入', retryable: false })
   await assert.rejects(handler({ source: 'kg', action: 'musicUrl', info: null }))
 }
 run().catch(error => { console.error(error); process.exitCode = 1 })
@@ -1521,6 +1534,16 @@ run().catch(error => { console.error(error); process.exitCode = 1 })
             Ok(None)
         }
 
+        async fn rotate_tokens(
+            &self,
+            _source_id: &str,
+            _script_token: String,
+            _runtime_token: String,
+            _updated_at: i64,
+        ) -> Result<Source, AppError> {
+            unreachable!("this test double serves read or settings calls only")
+        }
+
         async fn update_settings(
             &self,
             _source_id: &str,
@@ -1548,6 +1571,10 @@ run().catch(error => { console.error(error); process.exitCode = 1 })
             _upstream_userid: &str,
         ) -> Result<Option<ProviderAccount>, AppError> {
             Ok(None)
+        }
+
+        async fn delete(&self, _account_id: &str) -> Result<(), AppError> {
+            unreachable!("this test double serves account lookups and authentication only")
         }
 
         async fn save_auth(

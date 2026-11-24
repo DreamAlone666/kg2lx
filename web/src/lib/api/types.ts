@@ -50,7 +50,8 @@ export type RenewalReason =
   | 'confirm_snapshot'
   | 'reconcile_mismatch'
   | 'recover_write'
-  | 'post_refresh';
+  | 'post_refresh'
+  | 'post_bind';
 
 export type RenewalState =
   | 'ready'
@@ -105,6 +106,19 @@ export type UpdateSourceResponse = {
    */
   quality_fallback: boolean;
   updated_at: number;
+};
+
+export type RotateTokensResponse = {
+  ok: true;
+  source_id: string;
+  script_url: string;
+  runtime_token_preview: string;
+  updated_at: number;
+};
+
+export type DeleteAccountResponse = {
+  ok: true;
+  account_id: string;
 };
 
 export type QrLoginStartResponse = {

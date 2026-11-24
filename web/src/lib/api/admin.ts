@@ -10,6 +10,8 @@ import type {
   EventType,
   LogView,
   UpdateSourceResponse,
+  RotateTokensResponse,
+  DeleteAccountResponse,
 } from './types';
 
 export class AdminApi {
@@ -47,6 +49,14 @@ export class AdminApi {
     return this.http.patch(`/api/v1/admin/sources/${encodeURIComponent(sourceId)}`, body, { signal });
   }
 
+  async rotateSourceTokens(sourceId: string, signal?: AbortSignal): Promise<RotateTokensResponse> {
+    return this.http.post(
+      `/api/v1/admin/sources/${encodeURIComponent(sourceId)}/rotate-tokens`,
+      null,
+      { signal },
+    );
+  }
+
   async startQrLogin(signal?: AbortSignal): Promise<QrLoginStartResponse> {
     return this.http.post('/api/v1/admin/providers/kugou-lite/login/qr', null, { signal });
   }
@@ -69,6 +79,10 @@ export class AdminApi {
 
   async getAccount(accountId: string, signal?: AbortSignal): Promise<AccountItem> {
     return this.http.get(`/api/v1/admin/accounts/${encodeURIComponent(accountId)}`, { signal });
+  }
+
+  async deleteAccount(accountId: string, signal?: AbortSignal): Promise<DeleteAccountResponse> {
+    return this.http.delete(`/api/v1/admin/accounts/${encodeURIComponent(accountId)}`, { signal });
   }
 
   async updateRenewal(

@@ -71,12 +71,16 @@ curl \
 
 当响应状态变为 `bound` 时，表示账号已成功绑定，请将返回结果中的 `source.script_url` 复制到洛雪音乐中作为自定义音源导入。
 
+绑定完成后，服务端在后台同步一次会员快照，绑定响应可先返回。同步失败可在账号详情重试。扫码登录、Token 刷新和这次同步共用 `correlation_id`，同步事件的原因为 `post_bind`。
+
 **3. 查询和维护账号**
 
 - **查询账号**。`GET /api/v1/admin/accounts` 与 `GET /api/v1/admin/accounts/{account_id}` 返回登录状态、权益快照、自动领取 VIP 调度状态及关联音源列表（`sources` 数组）。
 - **刷新 Token**。发送 `POST /api/v1/admin/accounts/{account_id}/refresh-token` 更新登录凭据。
 - **同步权益**。发送 `POST /api/v1/admin/accounts/{account_id}/entitlements/sync` 读取上游快照，失败时保留上次成功记录。
 - **更新音源设置**。发送 `PATCH /api/v1/admin/sources/{source_id}`，通过 `name` 修改标题，通过 `quality_fallback` 设置音质自动降级。
+- **轮换音源凭据**。发送 `POST /api/v1/admin/sources/{source_id}/rotate-tokens`。成功返回 `ok`、`source_id`、新的 `script_url`、`runtime_token_preview` 和 `updated_at`。旧脚本地址和运行时令牌立即失效。请在洛雪中删除旧音源，再导入新地址。
+- **删除账号**。发送 `DELETE /api/v1/admin/accounts/{account_id}`。成功返回 `200 { "ok": true, "account_id": "..." }`。账号不存在时返回 `404 ACCOUNT_NOT_FOUND`。删除后，关联的脚本地址与运行时令牌均返回 `404 SOURCE_NOT_FOUND`，全站历史事件仍可查询。
 
 ### 全站事件日志
 
@@ -122,6 +126,8 @@ POST /api/v1/runtime/music-url
 Authorization: Bearer <runtime_token>
 ```
 
+缺少或空的运行时 Bearer 令牌返回 `401 RUNTIME_UNAUTHORIZED`。取链收到整曲拒绝（上游 `status: 3` 且无地址）时返回 `404 UPSTREAM_SONG_FORBIDDEN`，本次取链结束。
+
 **运行时 API 请求示例：**
 
 ```bash
@@ -135,6 +141,7 @@ curl -X POST \
 ## 数据存储
 
 - **数据库**。状态保存在 `DATA_DIR/kg2lx.db`，请使用服务进程可写的本地数据卷。
+- **删除级联**。SQLite 会随账号一并删除关联音源、会员快照、自动领取 VIP 设置和每日进度。事件日志按原保留策略保存。
 - **首次启动**。新建 SQLite 基线的 `user_version` 为 1。同次事务从 v0.2.0 的 `accounts/` 和 `sources/` 导入账号、音源、令牌和已有权益快照。遇到损坏文件或引用冲突时，导入回滚并指出文件。
 - **历史记录**。旧扫码会话与 JSONL 日志留在原目录，新会话和日志进入 SQLite。
 - **备份与回退**。停服务后备份整个数据卷，切回 v0.2.0 时读取切换前的旧文件。

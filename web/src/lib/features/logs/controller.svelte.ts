@@ -6,6 +6,7 @@ import type { AccountItem, EventType, LogView, StoredEvent } from '$lib/api/type
 
 const PAGE_SIZE = 30;
 const INCREMENTAL_LIMIT = 100;
+const MAX_BRIDGE_PAGES = 5;
 const POLL_INTERVAL_MS = 3000;
 const NEW_ROW_MARK_MS = 1000;
 
@@ -257,6 +258,10 @@ class LogsController {
 		return found.sources[0]?.name || `账号 ${found.userid}`;
 	}
 
+	isDeletedAccount(accountId: string): boolean {
+		return this.accountsLoaded && !this.accounts.some(account => account.account_id === accountId);
+	}
+
 	sourceDisplayName(accountId: string | null, sourceId: string | null): string | null {
 		if (!sourceId) return null;
 		const accountsToSearch = accountId
@@ -289,13 +294,15 @@ class LogsController {
 		this.accountsRequest = request;
 		try {
 			const res = await adminSession.api.listAccounts(request.signal);
-			if (!request.signal.aborted) this.accounts = res.items;
+			if (!request.signal.aborted) {
+				this.accounts = res.items;
+				this.accountsLoaded = true;
+			}
 		} catch (error) {
 			if (!request.signal.aborted) handleAuthError(error);
 		} finally {
 			if (request === this.accountsRequest) {
 				this.accountsRequest = null;
-				this.accountsLoaded = true;
 			}
 		}
 	}
@@ -318,11 +325,16 @@ class LogsController {
 			}, request.signal);
 			if (request.signal.aborted) return;
 			const items = [...response.items];
+			let resetToLatest = false;
 
 			// Bridge a large burst back to the previous head before moving the incremental cursor.
 			if (afterSeq !== undefined && response.has_more) {
 				let beforeSeq = items.at(-1)?.seq;
-				while (beforeSeq !== undefined && beforeSeq > afterSeq) {
+				for (
+					let pageNumber = 0;
+					pageNumber < MAX_BRIDGE_PAGES && beforeSeq !== undefined && beforeSeq > afterSeq + 1;
+					pageNumber++
+				) {
 					const page = await api.listLogs({
 						...filters, limit: INCREMENTAL_LIMIT, beforeSeq,
 					}, request.signal);
@@ -331,12 +343,20 @@ class LogsController {
 					const next = page.next_before_seq;
 					beforeSeq = next !== null && next < beforeSeq ? next : undefined;
 				}
+				resetToLatest = beforeSeq !== undefined && beforeSeq > afterSeq + 1;
 			}
 
 			const knownIds = new Set(this.logs.map((log) => log.log_id));
 			const hadRows = this.logs.length > 0;
-			const newlyAdded = items.filter(item => !knownIds.has(item.log_id));
-			if (afterSeq !== undefined) {
+			const visibleItems = resetToLatest ? items.slice(0, PAGE_SIZE) : items;
+			const newlyAdded = visibleItems.filter(item => !knownIds.has(item.log_id));
+			if (resetToLatest) {
+				this.cancelMore();
+				this.logs = visibleItems;
+				this.nextBeforeSeq = visibleItems.at(-1)?.seq ?? null;
+				this.hasMore = true;
+				toast.push({ tone: 'info', message: '期间新增日志较多，已刷新为最新记录。' });
+			} else if (afterSeq !== undefined) {
 				if (newlyAdded.length > 0) this.logs = [...newlyAdded, ...this.logs];
 			} else {
 				this.logs = items;

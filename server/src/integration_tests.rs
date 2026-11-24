@@ -34,6 +34,8 @@ const ACCOUNT_ROUTE: &str = "/api/v1/admin/accounts/acc_fixture";
 const LOG_ROUTE: &str = "/api/v1/admin/logs";
 const RENEWAL_ROUTE: &str = "/api/v1/admin/accounts/acc_fixture/entitlements/renewal";
 const CLAIM_ROUTE: &str = "/api/v1/admin/accounts/acc_fixture/entitlements/renewal/claim";
+const MUSIC_URL_ROUTE: &str = "/api/v1/runtime/music-url";
+const SCRIPT_UPDATE_ROUTE: &str = "/api/v1/runtime/script-update";
 
 fn entitlement_time() -> i64 {
     upstream_svip_timestamp("2035-02-01 12:00:00").unwrap()
@@ -162,14 +164,21 @@ impl Upstream {
                 }
             }
             "/youth/union/vip" => {
-                this.vip.on_request().await;
+                let number = this.vip.on_request().await;
                 match this.vip_mode.load(SeqCst) {
                     1 => (StatusCode::BAD_GATEWAY, Json(json!({"status":0}))).into_response(),
                     2 => Json(json!({"status":0,"data":{"busi_vip":[]}})).into_response(),
-                    3 => Json(
+                    3 if number == 1 => Json(
                         json!({"status":1,"data":{"busi_vip":[{"product_type":"svip","is_vip":1}]},
                         "cookie":"token=late-vip; vip_extra=seen"}),
                     )
+                    .into_response(),
+                    4 => Json(json!({"status": 1, "data": {"busi_vip": [{
+                        "product_type": "svip",
+                        "is_vip": 1,
+                        "vip_begin_time": "2035-02-01 00:00:00",
+                        "vip_end_time": "2035-02-03 00:00:00"
+                    }]}}))
                     .into_response(),
                     _ => Json(json!({"status":1,"data":{"busi_vip":[]}})).into_response(),
                 }
@@ -195,6 +204,8 @@ impl Upstream {
                         assert_eq!(args["quality"], "flac");
                         Json(json!({"status":1,"url":"https://example.test/song.flac"})).into_response()
                     }
+                    10 if number == 1 => Json(json!({"status":2,"priv_status":0})).into_response(),
+                    9 | 10 => Json(json!({"status":3,"priv_status":0,"fail_process":[]})).into_response(),
 
                     _ => Json(json!({"status":1,"url":"https://example.test/song.flac",
                         "priv_status":0,"fail_process":[],"extName":"flac","bitRate":0,"fileSize":80000,"timeLength":8})).into_response(),
@@ -341,7 +352,7 @@ impl Fixture {
     async fn song(&self, token: &str, shape: Value) -> (StatusCode, Value) {
         let response = self
             .http
-            .post(format!("{}/api/v1/runtime/music-url", self.server.base))
+            .post(format!("{}{MUSIC_URL_ROUTE}", self.server.base))
             .bearer_auth(token)
             .json(&shape)
             .send()
@@ -360,6 +371,37 @@ impl Fixture {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(bound["status"], "bound");
         bound
+    }
+
+    async fn wait_for_post_bind(&self, account_id: &str) -> Vec<Value> {
+        let route = format!("{LOG_ROUTE}?account_id={account_id}");
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let (_, reply) = self.admin(Method::GET, &route).await;
+                let rows = reply["items"].as_array().unwrap();
+                if rows
+                    .iter()
+                    .any(|event| event["detail"]["reason"] == "post_bind")
+                {
+                    return rows.clone();
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the background sync should record a post_bind event")
+    }
+
+    async fn script_update(&self, token: &str) -> (StatusCode, Value) {
+        let response = self
+            .http
+            .post(format!("{}{SCRIPT_UPDATE_ROUTE}", self.server.base))
+            .bearer_auth(token)
+            .json(&json!({"version": "0.1.2"}))
+            .send()
+            .await
+            .unwrap();
+        (response.status(), response.json().await.unwrap())
     }
 
     async fn token(&self) -> String {
@@ -381,6 +423,258 @@ impl Fixture {
 
 fn old_three_fields() -> Value {
     json!({"hash":"TEST-HASH","album_audio_id":null,"quality":"flac"})
+}
+
+#[tokio::test]
+async fn runtime_routes_require_their_own_bearer_token() {
+    let app = Fixture::start(None).await;
+    for path in [MUSIC_URL_ROUTE, SCRIPT_UPDATE_ROUTE] {
+        for authorization in [
+            None,
+            Some("Bearer"),
+            Some("Bearer  "),
+            Some("Basic example"),
+        ] {
+            let mut request = app.http.post(format!("{}{path}", app.server.base));
+            if let Some(header) = authorization {
+                request = request.header("Authorization", header);
+            }
+            let response = request.body("invalid-json").send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+            let body: Value = response.json().await.unwrap();
+            assert_eq!(body["code"], "RUNTIME_UNAUTHORIZED");
+            assert!(body.get("retryable").is_none());
+        }
+    }
+}
+
+#[tokio::test]
+async fn whole_song_refusal_stops_fallback_and_does_not_request_vip() {
+    for (mode, song_calls) in [(9, 1), (10, 2)] {
+        let app = Fixture::start(Some(now_ts())).await;
+        app.upstream.song_mode.store(mode, SeqCst);
+        assert_eq!(
+            app.http
+                .patch(format!("{}{DETAIL_ROUTE}", app.server.base))
+                .bearer_auth(ADMIN_TOKEN)
+                .json(&json!({"quality_fallback": true}))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(app.admin(Method::POST, SYNC_ROUTE).await.0, StatusCode::OK);
+        assert_eq!(
+            app.http
+                .patch(format!("{}{RENEWAL_ROUTE}", app.server.base))
+                .bearer_auth(ADMIN_TOKEN)
+                .json(&json!({"enabled": true}))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        let (status, body) = app.song("rt_fixture", old_three_fields()).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(
+            body,
+            json!({"code":"UPSTREAM_SONG_FORBIDDEN","message":"song playback forbidden by upstream"})
+        );
+        let (_, logs) = app
+            .admin(Method::GET, &format!("{LOG_ROUTE}?event_type=music_url"))
+            .await;
+        let events = logs["items"].as_array().unwrap();
+        assert_eq!(events.len(), song_calls);
+        assert_eq!(events[0]["error_code"], "UPSTREAM_SONG_FORBIDDEN");
+        assert_eq!(events[0]["detail"]["upstream_status"], 3);
+        assert_eq!(
+            events[0]["detail"]["quality_fallback_index"],
+            song_calls - 1
+        );
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert_eq!(app.upstream.song.requests.load(SeqCst), song_calls);
+        assert_eq!(app.upstream.vip.requests.load(SeqCst), 1);
+        assert_eq!(app.upstream.claim.requests.load(SeqCst), 0);
+        assert_eq!(app.upstream.upgrade.requests.load(SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn rotating_a_source_revokes_both_old_tokens_and_keeps_the_source_settings() {
+    use crate::repos::source::SourceRepo;
+    let app = Fixture::start(Some(now_ts())).await;
+    let before = SourceRepo::find_by_id(app.state.storage.as_ref(), SOURCE)
+        .await
+        .unwrap()
+        .unwrap();
+    let route = format!("{DETAIL_ROUTE}/rotate-tokens");
+    let (status, reply) = app.admin(Method::POST, &route).await;
+    assert_eq!(status, StatusCode::OK);
+    let after = SourceRepo::find_by_id(app.state.storage.as_ref(), SOURCE)
+        .await
+        .unwrap()
+        .unwrap();
+    let new_script = url::Url::parse(reply["script_url"].as_str().unwrap()).unwrap();
+    assert_eq!(reply["ok"], true);
+    assert_eq!(reply["source_id"], SOURCE);
+    assert_eq!(reply["updated_at"], after.updated_at);
+    assert_eq!(
+        reply["runtime_token_preview"],
+        after.runtime_token_preview()
+    );
+    assert!(reply.get("runtime_token").is_none());
+    assert_eq!(new_script.host_str(), Some("example.test"));
+    assert_eq!(new_script.path(), format!("/s/{}.js", after.script_token));
+    assert!(uuid::Uuid::parse_str(after.script_token.strip_prefix("st_").unwrap()).is_ok());
+    assert!(uuid::Uuid::parse_str(after.runtime_token.strip_prefix("rt_").unwrap()).is_ok());
+    assert_ne!(before.script_token, after.script_token);
+    assert_ne!(before.runtime_token, after.runtime_token);
+    assert_eq!(after.account_id, before.account_id);
+    assert_eq!(after.name, before.name);
+    assert_eq!(after.quality_fallback, before.quality_fallback);
+    assert!(after.updated_at > before.updated_at);
+
+    let (status, missing) = app.admin(Method::GET, "/s/st_fixture.js").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(missing["code"], "SOURCE_NOT_FOUND");
+    for (status, error) in [
+        app.song("rt_fixture", old_three_fields()).await,
+        app.script_update("rt_fixture").await,
+    ] {
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(error["code"], "SOURCE_NOT_FOUND");
+    }
+    let script = app
+        .http
+        .get(format!("{}{}", app.server.base, new_script.path()))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(script.contains(&format!("const TOKEN = \"{}\"", after.runtime_token)));
+    assert!(!script.contains(&before.runtime_token));
+    assert_eq!(
+        app.song(&after.runtime_token, old_three_fields()).await.0,
+        StatusCode::OK
+    );
+    let (status, update) = app.script_update(&after.runtime_token).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(update["update"], true);
+    assert!(
+        update["log"]
+            .as_str()
+            .unwrap()
+            .contains(new_script.as_str())
+    );
+    assert_eq!(
+        app.song("rt_shared", old_three_fields()).await.0,
+        StatusCode::OK
+    );
+    let (status, missing) = app
+        .admin(Method::POST, "/api/v1/admin/sources/missing/rotate-tokens")
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(missing["code"], "SOURCE_NOT_FOUND");
+}
+
+#[tokio::test]
+async fn deleting_an_account_revokes_all_its_sources_and_keeps_its_history() {
+    let app = Fixture::start_with_accounts(Some(now_ts()), true).await;
+    assert_eq!(
+        app.song("rt_fixture", old_three_fields()).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        app.song("rt_shared", old_three_fields()).await.0,
+        StatusCode::OK
+    );
+    let (status, reply) = app.admin(Method::DELETE, ACCOUNT_ROUTE).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(reply, json!({"ok": true, "account_id": ACCOUNT}));
+    let (status, list) = app.admin(Method::GET, "/api/v1/admin/accounts").await;
+    assert_eq!(status, StatusCode::OK);
+    let items = list["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["account_id"], "acc_other");
+    for method in [Method::GET, Method::DELETE] {
+        let (status, error) = app.admin(method, ACCOUNT_ROUTE).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(error["code"], "ACCOUNT_NOT_FOUND");
+    }
+    for (script_path, token) in [
+        ("/s/st_fixture.js", "rt_fixture"),
+        ("/s/st_shared.js", "rt_shared"),
+    ] {
+        for (status, error) in [
+            app.admin(Method::GET, script_path).await,
+            app.song(token, old_three_fields()).await,
+            app.script_update(token).await,
+        ] {
+            assert_eq!(status, StatusCode::NOT_FOUND);
+            assert_eq!(error["code"], "SOURCE_NOT_FOUND");
+        }
+    }
+    let (_, logs) = app
+        .admin(Method::GET, &format!("{LOG_ROUTE}?account_id={ACCOUNT}"))
+        .await;
+    let rows = logs["items"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    for (row, source) in rows.iter().zip(["src_shared", SOURCE]) {
+        assert_eq!(row["account_id"], ACCOUNT);
+        assert_eq!(row["source_id"], source);
+        assert_eq!(row["ok"], true);
+    }
+}
+
+#[tokio::test]
+async fn deletion_waits_for_an_account_sync_and_a_concurrent_rebind() {
+    for rebind in [false, true] {
+        let app = Arc::new(Fixture::start(Some(now_ts())).await);
+        let upstream = if rebind {
+            &app.upstream.login
+        } else {
+            &app.upstream.vip
+        };
+        upstream.pause_next();
+        let inflight = {
+            let app = app.clone();
+            tokio::spawn(async move {
+                if rebind {
+                    assert_eq!(app.bind().await["account"]["account_id"], ACCOUNT);
+                } else {
+                    assert_eq!(app.admin(Method::POST, SYNC_ROUTE).await.0, StatusCode::OK);
+                }
+            })
+        };
+        upstream.wait_until_entered().await;
+        let mut deletion = {
+            let app = app.clone();
+            tokio::spawn(async move { app.admin(Method::DELETE, ACCOUNT_ROUTE).await })
+        };
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), &mut deletion)
+                .await
+                .is_err(),
+            "deletion must wait for the account operation"
+        );
+        upstream.release.notify_one();
+        inflight.await.unwrap();
+        assert_eq!(deletion.await.unwrap().0, StatusCode::OK);
+        assert_eq!(
+            app.admin(Method::GET, ACCOUNT_ROUTE).await.0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            app.song("rt_fixture", old_three_fields()).await.0,
+            StatusCode::NOT_FOUND
+        );
+    }
 }
 
 #[tokio::test]
@@ -614,25 +908,70 @@ async fn router_authenticates_before_parsing_and_preserves_static_http_contract(
 }
 
 #[tokio::test]
+async fn post_bind_sync_returns_bound_before_fetching_and_records_the_same_event_chain() {
+    let app = Fixture::start(None).await;
+    app.upstream.vip_mode.store(4, SeqCst);
+    app.upstream.vip.pause_next();
+    let bound = tokio::time::timeout(Duration::from_secs(2), app.bind())
+        .await
+        .expect("binding must return while the upstream snapshot is blocked");
+    let account_id = bound["account"]["account_id"].as_str().unwrap();
+    let path = format!("/api/v1/admin/accounts/{account_id}");
+    app.upstream.vip.wait_until_entered().await;
+    let (_, before) = app.admin(Method::GET, &path).await;
+    assert!(before.get("entitlements").is_none());
+    app.upstream.vip.release.notify_one();
+
+    let events = app.wait_for_post_bind(account_id).await;
+    assert_eq!(events.len(), 3);
+    for (event, kind) in events
+        .iter()
+        .zip(["entitlement", "account_login", "token_refresh"])
+    {
+        assert_eq!(event["event_type"], kind);
+        assert_eq!(event["trigger"], "qr");
+        assert_eq!(event["correlation_id"], events[0]["correlation_id"]);
+        assert_eq!(event["ok"], true);
+    }
+    assert_eq!(events[0]["detail"]["action"], "sync");
+    assert_eq!(events[0]["detail"]["reason"], "post_bind");
+    let (_, after) = app.admin(Method::GET, &path).await;
+    assert_eq!(after["entitlements"][0]["product_type"], "svip");
+    assert_eq!(after["entitlements"][0]["active"], true);
+    assert_eq!(after["entitlements_synced_at"], entitlement_time());
+    assert_eq!(after["renewal"]["enabled"], false);
+    let session = bound["session_id"].as_str().unwrap();
+    let (status, repeated) = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/admin/providers/kugou-lite/login/qr/{session}"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(repeated, bound);
+    assert_eq!(app.upstream.vip.requests.load(SeqCst), 1);
+}
+
+#[tokio::test]
 async fn binds_and_refreshes_during_vip_outage_and_exposes_four_event_categories() {
+    use crate::repos::source::SourceRepo;
     let app = Fixture::start(None).await;
     app.upstream.vip_mode.store(1, SeqCst);
     let bound = app.bind().await;
     let source_id = bound["source"]["source_id"].as_str().unwrap();
     let account_id = bound["account"]["account_id"].as_str().unwrap();
     let db = Sqlite::open(&app.state.config.data_dir, app.state.config.event_log_limit).unwrap();
-    use crate::repos::source::SourceRepo;
     let source = SourceRepo::find_by_id(&db, source_id)
         .await
         .unwrap()
         .unwrap();
 
     let account = format!("/api/v1/admin/accounts/{account_id}");
-    assert_eq!(app.upstream.vip.requests.load(SeqCst), 0);
-    let (status, _) = app
-        .admin(Method::POST, &format!("{account}/entitlements/sync"))
-        .await;
-    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    let events = app.wait_for_post_bind(account_id).await;
+    assert_eq!(app.upstream.vip.requests.load(SeqCst), 1);
+    assert_eq!(events[0]["detail"]["reason"], "post_bind");
+    assert_eq!(events[0]["correlation_id"], events[1]["correlation_id"]);
+    assert_eq!(events[0]["error_code"], "UPSTREAM_VIP_CHECK_FAILED");
     let (_, response) = app.admin(Method::GET, &account).await;
     assert_eq!(response["status"], "active");
     assert_eq!(response["renewal"]["enabled"], false);
@@ -683,6 +1022,7 @@ async fn binds_and_refreshes_during_vip_outage_and_exposes_four_event_categories
             "token_refresh"
         ]
     );
+    assert_eq!(rows[3]["correlation_id"], rows[4]["correlation_id"]);
     assert_eq!(rows[4]["correlation_id"], rows[5]["correlation_id"]);
     assert!(
         rows[2]["source_id"].is_null(),
@@ -790,6 +1130,7 @@ async fn late_music_and_vip_responses_cannot_overwrite_renewed_credentials() {
     assert!([SOURCE, "src_shared"].contains(&rebound_source));
     app.upstream.vip.release.notify_one();
     assert_eq!(sync.await.unwrap(), StatusCode::OK);
+    app.wait_for_post_bind(ACCOUNT).await;
     assert_eq!(app.token().await, "auth-2");
 
     let (_, logs) = app

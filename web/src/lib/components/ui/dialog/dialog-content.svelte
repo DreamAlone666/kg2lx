@@ -6,7 +6,7 @@
 	/**
 	 * 轻量浮层容器：bits-ui Dialog 的本仓包装（Portal + 滚动锁定 + 焦点陷阱 + Escape）。
 	 *
-	 * - center：移动端贴底圆角卡，sm+ 居中弹窗
+	 * - center：居中弹窗
 	 * - drawer：移动端底部抽屉（max-h-[88dvh]），sm+ 右侧全高侧边抽屉（不与页面主滚动条抢滚轮、不挤压主表列宽）
 	 */
 	let {
@@ -23,7 +23,7 @@
 	const layoutClass = $derived(
 		variant === 'drawer'
 			? 'fixed inset-x-0 bottom-0 top-auto z-50 flex max-h-[88dvh] flex-col overflow-hidden rounded-t-2xl border-t border-border bg-card text-card-foreground shadow-lift sm:inset-y-0 sm:right-0 sm:left-auto sm:max-h-none sm:w-full sm:max-w-lg sm:rounded-none sm:border-t-0 sm:border-l'
-			: 'fixed inset-x-3 bottom-3 top-auto z-50 flex max-h-[85vh] flex-col overflow-hidden rounded-xl border border-border bg-card text-card-foreground shadow-lift sm:inset-x-auto sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:w-full sm:max-w-lg sm:-translate-x-1/2 sm:-translate-y-1/2'
+			: 'fixed inset-x-3 top-1/2 z-50 flex max-h-[85vh] -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-border bg-card text-card-foreground shadow-lift sm:inset-x-auto sm:left-1/2 sm:w-full sm:max-w-lg sm:-translate-x-1/2'
 	);
 </script>
 

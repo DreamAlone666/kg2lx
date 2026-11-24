@@ -184,6 +184,7 @@ export function isNamedVipProduct(productType: string | null | undefined): boole
  */
 export const errorCodeLabel: Record<string, string> = {
 	ADMIN_UNAUTHORIZED: '未授权',
+	RUNTIME_UNAUTHORIZED: '脚本令牌无效',
 	SOURCE_NOT_FOUND: '音源不存在',
 	SOURCE_NAME_EMPTY: '标题不能为空',
 	SOURCE_NAME_TOO_LONG: '标题过长',
@@ -209,6 +210,7 @@ export const errorCodeLabel: Record<string, string> = {
 	 * 不要再把这里写成「暂无可用音质」那类听起来像上游拒绝的说法。
 	 */
 	UPSTREAM_PLAY_URL_EMPTY: '未取到播放地址',
+	UPSTREAM_SONG_FORBIDDEN: '该歌曲暂不支持播放',
 	/**
 	 * 只陈述「上游明确拒绝了这一档」这个事实，不描述我们自己的降级策略。
 	 *

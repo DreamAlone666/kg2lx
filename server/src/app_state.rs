@@ -72,12 +72,14 @@ impl AppState {
             config.clone(),
             client.clone(),
             auth.clone(),
-            logs.clone(),
+            entitlement.clone(),
             storage.clone(),
+        ));
+        let source = Arc::new(SourceService::new(
             accounts.clone(),
             sources.clone(),
+            config.public_base_url.clone(),
         ));
-        let source = Arc::new(SourceService::new(accounts.clone(), sources.clone()));
         let account_service = Arc::new(AccountService::new(
             config.clone(),
             storage.clone(),

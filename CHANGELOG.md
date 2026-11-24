@@ -8,6 +8,9 @@ All notable changes to this project will be documented in this file.
 
 - 管理后台新增账号管理与全站事件日志。账号详情集中展示登录态、会员权益、自动领取 VIP 与关联音源。日志支持筛选、增量轮询、历史分页、请求链路检查和复制原始 JSON。
 - 新增按账号启用的自动领取 VIP。支持手动领取、升级、核对当日记录，并展示两步进度、预计到期和生效等待。
+- 账号详情支持删除账号和重置音源链接与凭据。SQLite 级联删除相关设置与记录，历史事件可继续查询。轮换后可从原位复制新的脚本地址。
+- 扫码绑定后在后台同步一次会员快照。同步与绑定共用请求链路，绑定结果可先返回。
+- GitHub Actions 在 PR 和 main 分支推送时并行运行 Rust 与 Web 检查。
 
 ### Changed
 
@@ -24,14 +27,16 @@ All notable changes to this project will be documented in this file.
 - 洛雪脚本在取链成功和冷却结束后复位限流计数，保留原失败类别，处理缺失的请求信息并校验更新链接。
 - 管理 API 在解析请求前校验 Bearer Token，配置 Token 去除首尾空白。静态资源使用对应缓存策略，缺失的 API、脚本和构建资源返回 404。
 - 修复同源首页跳转、扫码失败持续轮询、日志分页与增量轮询竞态、账号详情切换与登出残留状态。增加中文错误页、保存失败反馈、存储容错及权益倒计时容差。
+- 日志增量轮询最多补拉五页。仍有缺口时刷新为最新记录，保留向前翻页入口。
 
 ### Breaking Changes
 
 - 移除旧 `/sources` 管理页面、音源列表和详情读接口，以及按音源刷新的接口和日志接口。管理客户端应改用 `/api/v1/admin/accounts` 及账号详情、账号 `refresh-token`、`/api/v1/admin/logs?source_id=…`。音源设置的原 `PATCH` 地址仍可用。
 - 全站日志统一包含权益事件，移除 `include_renewal`。时间字段为 `created_at_ms`，`correlation_id`、`before_seq` 与 `after_seq` 互斥。
+- 运行时鉴权缺少令牌时返回 `401 RUNTIME_UNAUTHORIZED`。整曲拒绝独立返回 `404 UPSTREAM_SONG_FORBIDDEN`，结束取链并跳过本次自动领取判断。
 - 移除 `REFRESH_INTERVAL_SECS` 的读取兼容和原 `SOURCE_NAME_PREFIX` 提示。使用 `ACCOUNT_REFRESH_TTL` 设置登录态保鲜时间。
 - 账号响应移除 `display_name`，JSON 导入时将旧 `pending`、`disabled`、`expired` 归为 `active`。
-- 未发布的 SQLite 迁移合成 `001_init.sql`，`user_version` 为 1。试用过开发 SQLite 版本的部署需备份原卷，换用新的 `DATA_DIR`。v0.2.0 升级步骤见服务端文档。 [升级适配](./server/README.md#升级适配)
+- 未发布的 SQLite 迁移合成 `001_init.sql`，`user_version` 为 1。包含账号级联外键。试用过开发 SQLite 版本的部署需备份原卷，换用新的 `DATA_DIR`。v0.2.0 升级步骤见服务端文档。 [升级适配](./server/README.md#升级适配)
 
 ## [0.2.0] - 2026-09-22
 

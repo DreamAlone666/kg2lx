@@ -8,6 +8,7 @@ use crate::error::AppError;
 #[async_trait]
 pub trait AccountRepo: Send + Sync {
     async fn find_by_id(&self, account_id: &str) -> Result<Option<ProviderAccount>, AppError>;
+    async fn delete(&self, account_id: &str) -> Result<(), AppError>;
     async fn find_by_provider_userid(
         &self,
         provider: ProviderKind,

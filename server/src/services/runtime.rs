@@ -166,6 +166,13 @@ impl RuntimeService {
                 self.record(&context, &req, Some(attempt), None).await;
                 break Ok(RuntimeMusicUrlResponse { url: response.url });
             }
+            if response.observation.status == Some(3) {
+                renewal_signal = None;
+                let error = AppError::upstream_song_forbidden();
+                self.record(&context, &req, Some(attempt), Some(error.code))
+                    .await;
+                break Err(error);
+            }
             // A known refusal owns the fallback decision even when an auth heuristic also matches.
             if refused {
                 if source.quality_fallback
@@ -334,6 +341,16 @@ mod tests {
             Ok(None)
         }
 
+        async fn rotate_tokens(
+            &self,
+            _source_id: &str,
+            _script_token: String,
+            _runtime_token: String,
+            _updated_at: i64,
+        ) -> Result<Source, AppError> {
+            unreachable!("this test double serves read or settings calls only")
+        }
+
         async fn update_settings(
             &self,
             _source_id: &str,
@@ -361,6 +378,10 @@ mod tests {
             _upstream_userid: &str,
         ) -> Result<Option<ProviderAccount>, AppError> {
             Ok(None)
+        }
+
+        async fn delete(&self, _account_id: &str) -> Result<(), AppError> {
+            unreachable!("this test double serves account lookups and authentication only")
         }
 
         async fn save_auth(

@@ -29,6 +29,7 @@
 		renewalOutcomeLabel,
 		renewalReasonLabel,
 		runtimeStageLabel,
+		shortId,
 		tokenRefreshReasonLabel
 	} from '$lib/domain';
 	import { toneDotClass } from '$lib/components/ui/tone-classes';
@@ -134,15 +135,19 @@
 
 				<dt class="text-muted-foreground">归属账号</dt>
 				<dd class="min-w-0">
-					{#if ev.account_id}
+					{#if !ev.account_id}
+						<span class="text-muted-foreground">扫码登录（无归属账号）</span>
+					{:else if logsController.isDeletedAccount(ev.account_id)}
+						<span class="text-muted-foreground">
+							已删除账号 <span class="font-mono text-muted-foreground">({shortId(ev.account_id, 12)})</span>
+						</span>
+					{:else}
 						<a
-							href={resolve(`/accounts/${ev.account_id}`)}
+							href={resolve(`/accounts/${encodeURIComponent(ev.account_id)}`)}
 							class="font-medium text-primary hover:underline"
 						>
 							{accountLabel}
 						</a>
-					{:else}
-						<span class="text-muted-foreground">扫码登录（无归属账号）</span>
 					{/if}
 				</dd>
 

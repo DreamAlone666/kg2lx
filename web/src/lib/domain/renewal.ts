@@ -47,6 +47,7 @@ export const renewalReasonLabel: Record<RenewalReason, string> = {
 	reconcile_mismatch: '状态不一致核对',
 	recover_write: '继续完成升级',
 	post_refresh: '刷新后同步',
+	post_bind: '绑定后同步',
 };
 
 export const renewalOutcomeLabel: Record<RenewalOutcome, string> = {

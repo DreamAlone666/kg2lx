@@ -9,6 +9,13 @@ pub trait SourceRepo: Send + Sync {
     async fn find_by_script_token(&self, script_token: &str) -> Result<Option<Source>, AppError>;
     async fn find_by_runtime_token(&self, runtime_token: &str) -> Result<Option<Source>, AppError>;
     async fn find_by_account_id(&self, account_id: &str) -> Result<Option<Source>, AppError>;
+    async fn rotate_tokens(
+        &self,
+        source_id: &str,
+        script_token: String,
+        runtime_token: String,
+        updated_at: i64,
+    ) -> Result<Source, AppError>;
     async fn update_settings(
         &self,
         source_id: &str,

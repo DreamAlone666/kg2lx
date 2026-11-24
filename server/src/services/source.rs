@@ -17,6 +17,15 @@ pub struct UpdateSourceResponse {
     pub updated_at: i64,
 }
 
+#[derive(serde::Serialize)]
+pub struct RotateTokensResponse {
+    pub ok: bool,
+    pub source_id: String,
+    pub script_url: String,
+    pub runtime_token_preview: String,
+    pub updated_at: i64,
+}
+
 /// 音源 PATCH 的输入。
 ///
 /// 与路由层的 `UpdateSourceBody` 一一对应：字段的外层 `None` 表示「请求里没提这个
@@ -32,14 +41,39 @@ pub struct UpdateSourceInput {
 pub struct SourceService {
     account_repo: Arc<dyn AccountRepo>,
     source_repo: Arc<dyn SourceRepo>,
+    public_base_url: String,
 }
 
 impl SourceService {
-    pub fn new(account_repo: Arc<dyn AccountRepo>, source_repo: Arc<dyn SourceRepo>) -> Self {
+    pub fn new(
+        account_repo: Arc<dyn AccountRepo>,
+        source_repo: Arc<dyn SourceRepo>,
+        public_base_url: String,
+    ) -> Self {
         Self {
             account_repo,
             source_repo,
+            public_base_url,
         }
+    }
+
+    pub async fn rotate_tokens(&self, source_id: &str) -> Result<RotateTokensResponse, AppError> {
+        let source = self
+            .source_repo
+            .rotate_tokens(
+                source_id,
+                format!("st_{}", uuid::Uuid::new_v4()),
+                format!("rt_{}", uuid::Uuid::new_v4()),
+                crate::domain::now_ts(),
+            )
+            .await?;
+        Ok(RotateTokensResponse {
+            ok: true,
+            script_url: source.script_url(&self.public_base_url),
+            runtime_token_preview: source.runtime_token_preview(),
+            source_id: source.source_id,
+            updated_at: source.updated_at,
+        })
     }
 
     pub async fn update_source(
@@ -171,6 +205,16 @@ mod tests {
             Ok(None)
         }
 
+        async fn rotate_tokens(
+            &self,
+            _source_id: &str,
+            _script_token: String,
+            _runtime_token: String,
+            _updated_at: i64,
+        ) -> Result<Source, AppError> {
+            unreachable!("this test double serves read or settings calls only")
+        }
+
         async fn update_settings(
             &self,
             _source_id: &str,
@@ -208,6 +252,10 @@ mod tests {
             _upstream_userid: &str,
         ) -> Result<Option<ProviderAccount>, AppError> {
             Ok(None)
+        }
+
+        async fn delete(&self, _account_id: &str) -> Result<(), AppError> {
+            unreachable!("this test double serves account lookups and authentication only")
         }
 
         async fn save_auth(
@@ -271,7 +319,11 @@ mod tests {
             account: Some(sample_account()),
         });
         (
-            SourceService::new(account_repo, source_repo.clone()),
+            SourceService::new(
+                account_repo,
+                source_repo.clone(),
+                "https://example.test".into(),
+            ),
             source_repo,
         )
     }

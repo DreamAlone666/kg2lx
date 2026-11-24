@@ -8,6 +8,7 @@ use std::fmt;
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ErrorCode {
     AdminUnauthorized,
+    RuntimeUnauthorized,
     SourceNotFound,
     AccountNotFound,
     LoginSessionNotFound,
@@ -15,6 +16,7 @@ pub enum ErrorCode {
     UpstreamLoginFailed,
     UpstreamVipCheckFailed,
     UpstreamPlayUrlEmpty,
+    UpstreamSongForbidden,
     /// 上游**明确拒绝**了这一次取链（`/song/url` 的 `status:2`）。它与
     /// `UpstreamPlayUrlEmpty` 是两件事：后者是「没拿到 url、且上游也没有表达
     /// 拒绝」，一个 `status:2` 会被后者含混地吞掉，用户就永远看不出是权益/档位
@@ -47,6 +49,7 @@ impl ErrorCode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::AdminUnauthorized => "ADMIN_UNAUTHORIZED",
+            Self::RuntimeUnauthorized => "RUNTIME_UNAUTHORIZED",
             Self::SourceNotFound => "SOURCE_NOT_FOUND",
             Self::AccountNotFound => "ACCOUNT_NOT_FOUND",
             Self::LoginSessionNotFound => "LOGIN_SESSION_NOT_FOUND",
@@ -54,6 +57,7 @@ impl ErrorCode {
             Self::UpstreamLoginFailed => "UPSTREAM_LOGIN_FAILED",
             Self::UpstreamVipCheckFailed => "UPSTREAM_VIP_CHECK_FAILED",
             Self::UpstreamPlayUrlEmpty => "UPSTREAM_PLAY_URL_EMPTY",
+            Self::UpstreamSongForbidden => "UPSTREAM_SONG_FORBIDDEN",
             Self::UpstreamQualityRefused => "UPSTREAM_QUALITY_REFUSED",
             Self::UpstreamQualityExhausted => "UPSTREAM_QUALITY_EXHAUSTED",
             Self::UpstreamRateLimited => "UPSTREAM_RATE_LIMITED",
@@ -71,8 +75,9 @@ impl ErrorCode {
     /// 新变体若忘了加进来，测试覆盖不到它，而 `as_str` 的部分仍需人工保证。
     ///
     #[cfg(test)]
-    pub const ALL: [ErrorCode; 15] = [
+    pub const ALL: [ErrorCode; 17] = [
         ErrorCode::AdminUnauthorized,
+        ErrorCode::RuntimeUnauthorized,
         ErrorCode::SourceNotFound,
         ErrorCode::AccountNotFound,
         ErrorCode::LoginSessionNotFound,
@@ -80,6 +85,7 @@ impl ErrorCode {
         ErrorCode::UpstreamLoginFailed,
         ErrorCode::UpstreamVipCheckFailed,
         ErrorCode::UpstreamPlayUrlEmpty,
+        ErrorCode::UpstreamSongForbidden,
         ErrorCode::UpstreamQualityRefused,
         ErrorCode::UpstreamQualityExhausted,
         ErrorCode::UpstreamRateLimited,
@@ -115,6 +121,14 @@ impl AppError {
         Self {
             code: ErrorCode::AdminUnauthorized,
             message: "unauthorized".into(),
+            status: StatusCode::UNAUTHORIZED,
+        }
+    }
+
+    pub fn runtime_unauthorized() -> Self {
+        Self {
+            code: ErrorCode::RuntimeUnauthorized,
+            message: "runtime token required".into(),
             status: StatusCode::UNAUTHORIZED,
         }
     }
@@ -171,6 +185,14 @@ impl AppError {
         Self {
             code: ErrorCode::UpstreamPlayUrlEmpty,
             message: "play url unavailable".into(),
+            status: StatusCode::NOT_FOUND,
+        }
+    }
+
+    pub fn upstream_song_forbidden() -> Self {
+        Self {
+            code: ErrorCode::UpstreamSongForbidden,
+            message: "song playback forbidden by upstream".into(),
             status: StatusCode::NOT_FOUND,
         }
     }
@@ -313,13 +335,17 @@ mod tests {
         }
     }
 
-    /// 两个新码的线上字符串是**对外契约**：已导入的脚本用信封里的 code 去查脚本
-    /// 自带的本地字典（键正是 `as_str()`），Web 前端也按字面量索引。而 `as_str`
-    /// 与 serde 都从变体名派生，重命名变体时两边会一起变、`as_str_matches_serde`
-    /// 依旧全绿，契约却在无声漂移。这条断言把这两个字面量钉死：改名必须先改到
-    /// 这里，也就必然会被评审看见。
+    /// 已导入的脚本和 Web 前端按线上错误码查本地字典。
     #[test]
-    fn quality_error_code_strings_are_pinned() {
+    fn runtime_error_code_strings_are_pinned() {
+        assert_eq!(
+            ErrorCode::RuntimeUnauthorized.as_str(),
+            "RUNTIME_UNAUTHORIZED"
+        );
+        assert_eq!(
+            ErrorCode::UpstreamSongForbidden.as_str(),
+            "UPSTREAM_SONG_FORBIDDEN"
+        );
         assert_eq!(
             ErrorCode::UpstreamQualityRefused.as_str(),
             "UPSTREAM_QUALITY_REFUSED"

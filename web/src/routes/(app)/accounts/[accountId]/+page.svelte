@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
 	import { SvelteSet } from 'svelte/reactivity';
-	import { afterNavigate } from '$app/navigation';
+	import { afterNavigate, goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import {
@@ -14,6 +14,7 @@
 		StatusBadge
 	} from '$lib/components/ui';
 	import * as Tooltip from '$lib/components/ui/tooltip';
+	import ConfirmDialog from '$lib/components/accounts/ConfirmDialog.svelte';
 	import RenewalCard from '$lib/components/accounts/RenewalCard.svelte';
 	import SourceNameEditor from '$lib/components/accounts/SourceNameEditor.svelte';
 	import CopyField from '$lib/components/ui/CopyField.svelte';
@@ -49,6 +50,7 @@
 	const savingAutoClaim = $derived(
 		account ? Boolean(accountsController.savingAutoClaim[account.account_id]) : false
 	);
+	const deleting = $derived(Boolean(accountsController.deletingAccounts[accountId]));
 
 	const primaryTitle = $derived(
 		account
@@ -58,6 +60,7 @@
 	const pageTitle = $derived(account ? `${primaryTitle} | kg2lx` : '账号详情 | kg2lx');
 
 	const renamedSourceIds = new SvelteSet<string>();
+	const rotatedSourceIds = new SvelteSet<string>();
 
 	// 近期动态（底部通栏 6 条）
 	let recentEvents = $state<StoredEvent[]>([]);
@@ -96,6 +99,7 @@
 		const id = to?.params?.accountId ?? accountId;
 		if (!id) return;
 		renamedSourceIds.clear();
+		rotatedSourceIds.clear();
 		recentEvents = [];
 		recentError = null;
 		void accountsController.loadAccount(id);
@@ -154,6 +158,24 @@
 	async function handleQualityFallbackChange(sourceId: string, next: boolean) {
 		const res = await accountsController.setQualityFallback(sourceId, next);
 		if (res.status === 'failed') toast.error(res.message);
+	}
+
+	async function handleRotateSource(sourceId: string) {
+		const result = await accountsController.rotateSourceTokens(sourceId);
+		if (result.status === 'ok') {
+			rotatedSourceIds.add(sourceId);
+			toast.success('已生成新的脚本链接与凭据。');
+		}
+		return result;
+	}
+
+	async function handleDeleteAccount(targetAccountId: string) {
+		const result = await accountsController.deleteAccount(targetAccountId);
+		if (result.status === 'ok') {
+			toast.success('账号已删除。');
+			await goto('/accounts', { replaceState: true });
+		}
+		return result;
 	}
 </script>
 
@@ -297,6 +319,31 @@
 								{describeAccountError(account.last_error_code, account.last_error)}
 							</Alert>
 						{/if}
+
+						<div class="flex flex-wrap items-center justify-between gap-3 border-t border-border/70 pt-4">
+							<p class="text-xs leading-relaxed text-muted-foreground">
+								移除此账号及关联的洛雪脚本配置，已记录的历史事件日志会保留。
+							</p>
+							<ConfirmDialog
+								triggerLabel="删除账号"
+								triggerClass="ml-auto shrink-0 text-danger hover:bg-danger-soft hover:text-danger"
+								title="删除账号"
+								confirmLabel="确认删除"
+								pendingLabel="删除中…"
+								disabled={Boolean(pendingAction) || deleting}
+								pending={deleting}
+								onConfirm={() => handleDeleteAccount(account.account_id)}
+							>
+								{#snippet description()}
+									确认移除 <span class="font-medium text-foreground">{primaryTitle}</span>（<span class="font-mono text-foreground">{account.userid}</span>）？
+								{/snippet}
+								{#snippet impacts()}
+									<li>关联的 {account.sources.length} 个洛雪脚本链接将<strong>立即停止工作</strong>。</li>
+									<li>本地保存的登录凭据、会员快照与自动领取 VIP 记录将被一并清除。</li>
+									<li>已产生的全站历史事件日志仍会保留，方便事后排障。</li>
+								{/snippet}
+							</ConfirmDialog>
+						</div>
 					</CardContent>
 				</Card>
 			</div>
@@ -319,6 +366,7 @@
 					</Card>
 				{:else}
 					{#each account.sources as source, index (source.source_id)}
+						{@const rotatingSource = Boolean(accountsController.rotatingSources[source.source_id])}
 						<div class="space-y-4">
 							{#if account.sources.length > 1}
 								<div class="rounded-xl bg-muted/50 px-4 py-3">
@@ -349,7 +397,11 @@
 										</div>
 										<CopyField value={source.script_url} />
 
-										{#if renamedSourceIds.has(source.source_id)}
+										{#if rotatedSourceIds.has(source.source_id)}
+											<Alert tone="warning" title="旧脚本链接已失效，请重新导入">
+												<p class="leading-relaxed">请在洛雪音乐中删除旧音源，再导入上方的新地址。</p>
+											</Alert>
+										{:else if renamedSourceIds.has(source.source_id)}
 											<Alert tone="warning" title="需要重新导入才会在洛雪中生效">
 												<p class="leading-relaxed">
 													洛雪音乐在导入音源时就把脚本头部信息固定下来了，之后不会自动同步。要让它显示新标题，请删除该音源后重新导入上面的地址；地址本身没有变化，已导入的音源仍可正常播放。
@@ -362,7 +414,7 @@
 										<p class="text-xs font-medium tracking-wide text-muted-foreground uppercase">
 											运行时 Token 预览
 										</p>
-										<div class="flex items-center gap-2">
+										<div class="flex flex-wrap items-center justify-between gap-2">
 											<Tooltip.Root>
 												<Tooltip.Trigger type={null}>
 													{#snippet child({ props })}
@@ -378,6 +430,24 @@
 													客户端取链鉴权凭据（出于安全仅展示前缀，完整 Token 已内置于上方脚本中）
 												</Tooltip.Content>
 											</Tooltip.Root>
+											<ConfirmDialog
+												triggerLabel="重置链接与凭据"
+												triggerClass="text-muted-foreground hover:bg-danger-soft hover:text-danger"
+												title="重置脚本链接与凭据"
+												confirmLabel="确认重置"
+												pendingLabel="重置中…"
+												disabled={Boolean(pendingAction) || rotatingSource || deleting}
+												pending={rotatingSource}
+												onConfirm={() => handleRotateSource(source.source_id)}
+											>
+												{#snippet description()}
+													将为音源 <span class="font-medium text-foreground">{source.name}</span> 生成新的脚本地址与运行时 Token。
+												{/snippet}
+												{#snippet impacts()}
+													<li>旧脚本地址与旧运行时 Token 将<strong>立即失效</strong>。</li>
+													<li>需要在洛雪音乐中删除旧音源，并重新导入新地址。</li>
+												{/snippet}
+											</ConfirmDialog>
 										</div>
 									</div>
 								</CardContent>

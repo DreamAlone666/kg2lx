@@ -14,7 +14,7 @@ CREATE TABLE accounts (
 );
 
 CREATE TABLE account_entitlements (
-    account_id TEXT PRIMARY KEY NOT NULL REFERENCES accounts(account_id),
+    account_id TEXT PRIMARY KEY NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
     items_json TEXT,
     synced_at INTEGER,
     sync_failed INTEGER NOT NULL CHECK (sync_failed IN (0, 1)),
@@ -23,7 +23,7 @@ CREATE TABLE account_entitlements (
 
 CREATE TABLE sources (
     source_id        TEXT PRIMARY KEY NOT NULL,
-    account_id       TEXT NOT NULL REFERENCES accounts(account_id),
+    account_id       TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
     provider         TEXT NOT NULL,
     name             TEXT NOT NULL,
     script_token     TEXT NOT NULL UNIQUE,
@@ -70,7 +70,7 @@ CREATE TRIGGER event_logs_count_delete AFTER DELETE ON event_logs BEGIN
 END;
 
 CREATE TABLE entitlement_renewal (
-    account_id         TEXT PRIMARY KEY NOT NULL REFERENCES accounts(account_id),
+    account_id         TEXT PRIMARY KEY NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
     auto_claim_enabled INTEGER NOT NULL DEFAULT 0 CHECK (auto_claim_enabled IN (0, 1)),
     rate_limit_until   INTEGER,
     rate_limit_streak  INTEGER NOT NULL DEFAULT 0,
@@ -78,7 +78,7 @@ CREATE TABLE entitlement_renewal (
 );
 
 CREATE TABLE entitlement_daily_runs (
-    account_id    TEXT NOT NULL REFERENCES accounts(account_id),
+    account_id    TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
     upstream_day  TEXT NOT NULL,
     progress_json TEXT NOT NULL,
     unsettled     INTEGER GENERATED ALWAYS AS (

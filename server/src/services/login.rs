@@ -6,13 +6,16 @@ use crate::domain::account::{AccountStatus, ProviderAccount};
 use crate::domain::event_log::{Event, EventContext, EventLog, EventTrigger, LoginOutcome};
 use crate::domain::login_session::{LoginSession, LoginSessionStatus};
 use crate::domain::provider::ProviderKind;
+use crate::domain::renewal::RenewalReason;
 use crate::domain::source;
 use crate::error::{AppError, ErrorCode};
 use crate::repos::account::AccountRepo;
-use crate::repos::event_log::{self, EventLogRepo};
+use crate::repos::event_log;
 use crate::repos::login_session::LoginSessionRepo;
 use crate::repos::source::SourceRepo;
+use crate::repos::sqlite::Sqlite;
 use crate::services::auth::AccountAuth;
+use crate::services::entitlement::EntitlementService;
 use crate::services::kugou_lite_client::KugouLiteClient;
 use crate::services::singleflight::KeyedLocks;
 
@@ -57,11 +60,9 @@ pub struct LoginService {
     config: Arc<Config>,
     client: Arc<KugouLiteClient>,
     auth: Arc<AccountAuth>,
-    logs: Arc<dyn EventLogRepo>,
+    entitlement: Arc<EntitlementService>,
     session_locks: KeyedLocks,
-    session_repo: Arc<dyn LoginSessionRepo>,
-    account_repo: Arc<dyn AccountRepo>,
-    source_repo: Arc<dyn SourceRepo>,
+    storage: Arc<Sqlite>,
 }
 
 impl LoginService {
@@ -69,20 +70,16 @@ impl LoginService {
         config: Arc<Config>,
         client: Arc<KugouLiteClient>,
         auth: Arc<AccountAuth>,
-        logs: Arc<dyn EventLogRepo>,
-        session_repo: Arc<dyn LoginSessionRepo>,
-        account_repo: Arc<dyn AccountRepo>,
-        source_repo: Arc<dyn SourceRepo>,
+        entitlement: Arc<EntitlementService>,
+        storage: Arc<Sqlite>,
     ) -> Self {
         Self {
             config,
             client,
             auth,
-            logs,
+            entitlement,
             session_locks: KeyedLocks::default(),
-            session_repo,
-            account_repo,
-            source_repo,
+            storage,
         }
     }
 
@@ -121,7 +118,7 @@ impl LoginService {
         session.temp_cookies = qr.cookies;
         session.status = LoginSessionStatus::WaitingScan;
         session.updated_at = crate::domain::now_ts();
-        self.session_repo.save(&session).await?;
+        self.storage.save(&session).await?;
 
         Ok(QrLoginStartResponse {
             session_id,
@@ -137,9 +134,7 @@ impl LoginService {
         session_id: &str,
     ) -> Result<QrLoginPollResponse, AppError> {
         let _guard = self.session_locks.lock(session_id).await;
-        let mut session = self
-            .session_repo
-            .find_by_id(session_id)
+        let mut session = LoginSessionRepo::find_by_id(self.storage.as_ref(), session_id)
             .await?
             .ok_or_else(AppError::login_session_not_found)?;
 
@@ -196,12 +191,12 @@ impl LoginService {
                     (LoginSessionStatus::WaitingConfirm, "waiting_confirm")
                 };
                 session.status = status;
-                self.session_repo.save(&session).await?;
+                self.storage.save(&session).await?;
                 return Ok(Self::state_response(session_id, label));
             }
             4 => {
                 session.status = LoginSessionStatus::Authorized;
-                self.session_repo.save(&session).await?;
+                self.storage.save(&session).await?;
             }
             _ => {
                 let error = AppError::upstream_login_failed(
@@ -250,7 +245,7 @@ impl LoginService {
         };
         let _identity = self.auth.identities.lock(&userid).await;
         let existing = self
-            .account_repo
+            .storage
             .find_by_provider_userid(ProviderKind::KugouLite, &userid)
             .await?;
         let account_id = existing.as_ref().map_or_else(
@@ -259,7 +254,7 @@ impl LoginService {
         );
         let rebind = existing.is_some();
         let existing_source = if rebind {
-            self.source_repo.find_by_account_id(&account_id).await?
+            self.storage.find_by_account_id(&account_id).await?
         } else {
             None
         };
@@ -274,7 +269,7 @@ impl LoginService {
                 if cookies.get("userid") == Some(userid.as_str()) && cookies != session.temp_cookies
                 {
                     session.temp_cookies = cookies;
-                    self.session_repo.save(session).await?;
+                    self.storage.save(session).await?;
                 }
                 return Err(error);
             }
@@ -317,7 +312,7 @@ impl LoginService {
                 updated_at: now,
                 quality_fallback: false,
             });
-            self.session_repo
+            self.storage
                 .bind(&bound, &account, new_source.as_ref())
                 .await?;
             *session = bound;
@@ -341,12 +336,20 @@ impl LoginService {
             (Err(_), _) => LoginOutcome::Failed,
         };
         self.log_login(
-            context,
+            context.clone(),
             outcome,
             Some(started.elapsed().as_millis() as u64),
             result.as_ref().err(),
         )
         .await;
+        if result.is_ok() {
+            let entitlement = self.entitlement.clone();
+            tokio::spawn(async move {
+                let _ = entitlement
+                    .sync(account_id, context, RenewalReason::PostBind)
+                    .await;
+            });
+        }
         result
     }
 
@@ -359,13 +362,13 @@ impl LoginService {
         session.error = Some(error.message.clone());
         session.updated_at = crate::domain::now_ts();
         session.temp_cookies = crate::domain::cookie_store::CookieStore::new();
-        self.session_repo.save(session).await
+        self.storage.save(session).await
     }
 
     async fn expire(&self, session: &mut LoginSession) -> Result<QrLoginPollResponse, AppError> {
         session.status = LoginSessionStatus::Expired;
         session.updated_at = crate::domain::now_ts();
-        self.session_repo.save(session).await?;
+        self.storage.save(session).await?;
         self.log_login(
             EventContext::new(EventTrigger::Qr, None, None),
             LoginOutcome::Expired,
@@ -406,7 +409,7 @@ impl LoginService {
             error.map(|error| error.code),
         );
         event.ok = matches!(outcome, LoginOutcome::Bound | LoginOutcome::Rebound);
-        event_log::record(self.logs.as_ref(), event).await;
+        event_log::record(self.storage.as_ref(), event).await;
     }
 
     async fn build_bound_response(
@@ -418,19 +421,17 @@ impl LoginService {
             .as_ref()
             .ok_or_else(AppError::account_not_found)?;
 
-        let account = self
-            .account_repo
-            .find_by_id(account_id)
+        let account = AccountRepo::find_by_id(self.storage.as_ref(), account_id)
             .await?
             .ok_or_else(AppError::account_not_found)?;
 
         let src = self
-            .source_repo
+            .storage
             .find_by_account_id(account_id)
             .await?
             .ok_or_else(AppError::source_not_found)?;
 
-        let script_url = format!("{}/s/{}.js", self.config.public_base_url, src.script_token);
+        let script_url = src.script_url(&self.config.public_base_url);
 
         Ok(QrLoginPollResponse {
             session_id: session.session_id.clone(),

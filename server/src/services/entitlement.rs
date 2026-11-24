@@ -68,8 +68,14 @@ impl EntitlementService {
         reason: RenewalReason,
     ) -> Result<i64, AppError> {
         let service = self.clone();
+        // A binding reads the newly stored session and records its own event chain.
+        let key = if reason == RenewalReason::PostBind {
+            format!("post-bind/{}", context.correlation_id)
+        } else {
+            account_id.clone()
+        };
         self.syncs
-            .run(account_id.clone(), async move {
+            .run(key, async move {
                 let _action = service.admin_actions.lock(&account_id).await;
                 let mut account = service.account(&account_id).await?;
                 service

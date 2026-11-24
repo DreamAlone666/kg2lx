@@ -234,6 +234,18 @@ fn write_account(conn: &Connection, account: &ProviderAccount) -> rusqlite::Resu
 
 #[async_trait]
 impl AccountRepo for Sqlite {
+    async fn delete(&self, account_id: &str) -> Result<(), AppError> {
+        let account_id = account_id.to_owned();
+        self.run(move |conn| {
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            if tx.execute("DELETE FROM accounts WHERE account_id = ?1", [account_id])? == 0 {
+                return Err(rusqlite::Error::QueryReturnedNoRows);
+            }
+            tx.commit()
+        })
+        .await
+    }
+
     async fn find_by_id(&self, account_id: &str) -> Result<Option<ProviderAccount>, AppError> {
         let account_id = account_id.to_owned();
         self.run(move |conn| account_by_id(conn, &account_id).optional())
@@ -452,6 +464,33 @@ impl Sqlite {
 
 #[async_trait]
 impl SourceRepo for Sqlite {
+    async fn rotate_tokens(
+        &self,
+        source_id: &str,
+        script_token: String,
+        runtime_token: String,
+        updated_at: i64,
+    ) -> Result<Source, AppError> {
+        let source_id = source_id.to_owned();
+        self.run(move |conn| {
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let source = tx
+                .query_row(
+                    "UPDATE sources SET script_token = ?2, runtime_token = ?3, updated_at = ?4
+                 WHERE source_id = ?1
+                 RETURNING source_id, account_id, provider, name, script_token, runtime_token,
+                           created_at, updated_at, quality_fallback",
+                    params![source_id, script_token, runtime_token, updated_at],
+                    read_source,
+                )
+                .optional()?;
+            tx.commit()?;
+            Ok(source)
+        })
+        .await?
+        .ok_or_else(AppError::source_not_found)
+    }
+
     async fn find_by_id(&self, source_id: &str) -> Result<Option<Source>, AppError> {
         self.find_source("source_id = ?1", source_id).await
     }

@@ -15,8 +15,8 @@ fn verify_runtime(headers: &HeaderMap) -> Result<String, AppError> {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     let token = auth.strip_prefix("Bearer ").unwrap_or("");
-    if token.is_empty() {
-        return Err(AppError::admin_unauthorized());
+    if token.trim().is_empty() {
+        return Err(AppError::runtime_unauthorized());
     }
     Ok(token.to_string())
 }

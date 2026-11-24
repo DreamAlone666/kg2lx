@@ -19,28 +19,34 @@ class AccountsController {
 	savingAutoClaim = $state<Partial<Record<string, boolean>>>({});
 	savingSourceName = $state<Partial<Record<string, boolean>>>({});
 	savingQualityFallback = $state<Partial<Record<string, boolean>>>({});
+	rotatingSources = $state<Partial<Record<string, boolean>>>({});
+	deletingAccounts = $state<Partial<Record<string, boolean>>>({});
 	lastLoadedAt = $state<number | null>(null);
 
 	private listAbort: AbortController | null = null;
 	private detailAbort: AbortController | null = null;
+	private detailAccountId: string | null = null;
 	private listRequestId = 0;
 	private detailRequestId = 0;
+	private lifecycleRevision = 0;
 
 	async loadAccounts(options?: { silent?: boolean }) {
 		const silent = options?.silent ?? false;
 		const requestId = ++this.listRequestId;
 		if (this.listAbort) this.listAbort.abort();
-		this.listAbort = new AbortController();
+		const request = new AbortController();
+		this.listAbort = request;
 
 		if (!silent) this.loadingList = true;
 		if (!silent) this.error = null;
 
 		try {
-			const res = await adminSession.api.listAccounts(this.listAbort.signal);
-			if (requestId !== this.listRequestId) return;
-			this.accounts = res.items.map((item) => this.mergePendingEdits(item));
-			this.lastLoadedAt = Math.floor(Date.now() / 1000);
-			this.error = null;
+			const api = adminSession.api;
+			await this.applyAccountRead(() => api.listAccounts(request.signal), request.signal, res => {
+				this.accounts = res.items.map((item) => this.mergePendingEdits(item));
+				this.lastLoadedAt = Math.floor(Date.now() / 1000);
+				this.error = null;
+			});
 		} catch (e: unknown) {
 			if (requestId !== this.listRequestId || handleAuthError(e)) return;
 			if (!silent) this.error = describeApiError(e);
@@ -53,18 +59,21 @@ class AccountsController {
 		const silent = options?.silent ?? false;
 		const requestId = ++this.detailRequestId;
 		if (this.detailAbort) this.detailAbort.abort();
-		this.detailAbort = new AbortController();
+		const request = new AbortController();
+		this.detailAbort = request;
+		this.detailAccountId = accountId;
 
 		if (!silent) this.loadingDetail = true;
 		if (!silent) this.error = null;
 
 		try {
-			const fresh = await adminSession.api.getAccount(accountId, this.detailAbort.signal);
-			if (requestId !== this.detailRequestId) return;
-			const merged = this.mergePendingEdits(fresh);
-			this.currentAccount = merged;
-			this.syncAccountInList(merged);
-			this.error = null;
+			const api = adminSession.api;
+			await this.applyAccountRead(() => api.getAccount(accountId, request.signal), request.signal, fresh => {
+				const merged = this.mergePendingEdits(fresh);
+				this.currentAccount = merged;
+				this.syncAccountInList(merged);
+				this.error = null;
+			});
 		} catch (e: unknown) {
 			if (requestId !== this.detailRequestId || handleAuthError(e)) return;
 			if (!silent) this.error = describeApiError(e);
@@ -98,11 +107,12 @@ class AccountsController {
 			if (signal.aborted) return { status: 'redirected' } as const;
 
 			try {
-				const fresh = await api.getAccount(accountId, signal);
+				await this.applyAccountRead(() => api.getAccount(accountId, signal), signal, fresh => {
+					const merged = this.mergePendingEdits(fresh);
+					if (this.currentAccount?.account_id === accountId) this.currentAccount = merged;
+					this.syncAccountInList(merged);
+				});
 				if (signal.aborted) return { status: 'redirected' } as const;
-				const merged = this.mergePendingEdits(fresh);
-				if (this.currentAccount?.account_id === accountId) this.currentAccount = merged;
-				this.syncAccountInList(merged);
 			} catch (error) {
 				if (signal.aborted || handleAuthError(error)) return { status: 'redirected' } as const;
 				if (!actionError && !claimRenewal) return { status: 'unconfirmed' } as const;
@@ -143,6 +153,41 @@ class AccountsController {
 		);
 	}
 
+	rotateSourceTokens(sourceId: string) {
+		return this.save(
+			this.rotatingSources, sourceId,
+			() => adminSession.api.rotateSourceTokens(sourceId),
+			res => {
+				this.lifecycleRevision++;
+				this.patchSource(sourceId, src => ({
+					...src,
+					script_url: res.script_url,
+					runtime_token_preview: res.runtime_token_preview,
+					updated_at: res.updated_at,
+				}));
+			}
+		);
+	}
+
+	deleteAccount(accountId: string) {
+		return this.save(
+			this.deletingAccounts, accountId,
+			() => adminSession.api.deleteAccount(accountId),
+			() => {
+				this.lifecycleRevision++;
+				if (this.detailAccountId === accountId) {
+					this.detailRequestId++;
+					this.detailAbort?.abort();
+					this.detailAbort = null;
+					this.detailAccountId = null;
+					this.loadingDetail = false;
+				}
+				if (this.currentAccount?.account_id === accountId) this.currentAccount = null;
+				this.accounts = this.accounts.filter(account => account.account_id !== accountId);
+			}
+		);
+	}
+
 	private async save<T>(
 		pending: Partial<Record<string, boolean>>,
 		id: string,
@@ -176,6 +221,7 @@ class AccountsController {
 		this.detailAbort?.abort();
 		this.listAbort = null;
 		this.detailAbort = null;
+		this.detailAccountId = null;
 		this.accounts = [];
 		this.currentAccount = null;
 		this.loadingList = false;
@@ -185,7 +231,26 @@ class AccountsController {
 		this.savingAutoClaim = {};
 		this.savingSourceName = {};
 		this.savingQualityFallback = {};
+		this.rotatingSources = {};
+		this.deletingAccounts = {};
 		this.lastLoadedAt = null;
+	}
+
+	// A read started before a deletion or rotation may still hold the old account data.
+	private async applyAccountRead<T>(
+		fetch: () => Promise<T>,
+		signal: AbortSignal,
+		apply: (result: T) => void,
+	) {
+		while (!signal.aborted) {
+			const revision = this.lifecycleRevision;
+			const result = await fetch();
+			if (signal.aborted) return;
+			if (revision === this.lifecycleRevision) {
+				apply(result);
+				return;
+			}
+		}
 	}
 
 	private syncAccountInList(account: AccountItem) {
@@ -250,6 +315,11 @@ class AccountsController {
 				...src,
 				name: this.savingSourceName[src.source_id] ? prev.name : src.name,
 				default_name: this.savingSourceName[src.source_id] ? prev.default_name : src.default_name,
+				script_url: this.rotatingSources[src.source_id] ? prev.script_url : src.script_url,
+				runtime_token_preview: this.rotatingSources[src.source_id]
+					? prev.runtime_token_preview
+					: src.runtime_token_preview,
+				updated_at: this.rotatingSources[src.source_id] ? prev.updated_at : src.updated_at,
 				quality_fallback: this.savingQualityFallback[src.source_id]
 					? prev.quality_fallback
 					: src.quality_fallback,

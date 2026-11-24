@@ -60,6 +60,17 @@ pub struct Source {
     pub quality_fallback: bool,
 }
 
+impl Source {
+    pub fn script_url(&self, public_base_url: &str) -> String {
+        format!("{public_base_url}/s/{}.js", self.script_token)
+    }
+
+    pub fn runtime_token_preview(&self) -> String {
+        let prefix: String = self.runtime_token.chars().take(8).collect();
+        format!("{prefix}...")
+    }
+}
+
 /// 清洗即将写入脚本头部注释的元信息文本。
 ///
 /// 两条硬性要求，且**顺序不可颠倒**：

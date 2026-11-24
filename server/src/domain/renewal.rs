@@ -179,6 +179,7 @@ pub enum RenewalReason {
     ReconcileMismatch,
     RecoverWrite,
     PostRefresh,
+    PostBind,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]

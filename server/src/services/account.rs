@@ -47,6 +47,12 @@ pub struct RefreshResponse {
 }
 
 #[derive(serde::Serialize)]
+pub struct DeleteAccountResponse {
+    pub ok: bool,
+    pub account_id: String,
+}
+
+#[derive(serde::Serialize)]
 pub struct SyncEntitlementsResponse {
     pub ok: bool,
     pub synced_at: i64,
@@ -93,6 +99,20 @@ impl AccountService {
             .next()
             .map(|record| self.present(record))
             .ok_or_else(AppError::account_not_found)
+    }
+
+    pub async fn delete(&self, account_id: String) -> Result<DeleteAccountResponse, AppError> {
+        let _action = self.auth.admin_actions.lock(&account_id).await;
+        // Rebinding holds this identity lock while updating the account and its sources.
+        let _identity = match self.storage.find_by_id(&account_id).await? {
+            Some(account) => Some(self.auth.identities.lock(&account.upstream_userid).await),
+            None => None,
+        };
+        self.storage.delete(&account_id).await?;
+        Ok(DeleteAccountResponse {
+            ok: true,
+            account_id,
+        })
     }
 
     pub async fn refresh(&self, account_id: &str) -> Result<RefreshResponse, AppError> {
@@ -143,23 +163,17 @@ impl AccountService {
         let default_name = source::default_name(&account.upstream_userid);
         let sources = sources
             .into_iter()
-            .map(|source| {
-                let prefix: String = source.runtime_token.chars().take(8).collect();
-                AccountSourceItem {
-                    source_id: source.source_id,
-                    provider: source.provider.to_string(),
-                    name: source.name,
-                    default_name: default_name.clone(),
-                    name_advisory_chars: SCRIPT_NAME_ADVISORY_CHARS,
-                    script_url: format!(
-                        "{}/s/{}.js",
-                        self.config.public_base_url, source.script_token
-                    ),
-                    runtime_token_preview: format!("{prefix}..."),
-                    quality_fallback: source.quality_fallback,
-                    created_at: source.created_at,
-                    updated_at: source.updated_at,
-                }
+            .map(|source| AccountSourceItem {
+                script_url: source.script_url(&self.config.public_base_url),
+                runtime_token_preview: source.runtime_token_preview(),
+                source_id: source.source_id,
+                provider: source.provider.to_string(),
+                name: source.name,
+                default_name: default_name.clone(),
+                name_advisory_chars: SCRIPT_NAME_ADVISORY_CHARS,
+                quality_fallback: source.quality_fallback,
+                created_at: source.created_at,
+                updated_at: source.updated_at,
             })
             .collect();
         AccountItem {
