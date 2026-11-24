@@ -23,13 +23,14 @@
 		eventTypeLabel,
 		formatBitRate,
 		formatClockTime,
-		formatDateTime,
+		formatDateTimeMs,
 		formatLatency,
-		formatLogTime,
+		formatLogTimeMs,
 		isEntitlementAlreadyDone,
 		labelOf,
 		qualityLabel,
-		qualityTone
+		qualityTone,
+		shortId
 	} from '$lib/domain';
 	import { EASE_OUT_SOFT } from '$lib/utils/motion';
 	import { cn } from '$lib/utils.js';
@@ -82,7 +83,16 @@
 
 	onMount(() => {
 		const initial = parseUrlParams(page.url.searchParams);
-		logsController.start(initial);
+		logsController.start(initial, {
+			onStaleSelection: () => {
+				pushUrlState({
+					view: logsController.view,
+					eventType: logsController.eventType,
+					accountId: logsController.accountId,
+					selectedLogId: null,
+				});
+			},
+		});
 	});
 
 	onDestroy(() => {
@@ -140,21 +150,29 @@
 		}
 		return null;
 	});
-	const inspectorOpen = $derived(Boolean(selectedEvent));
-	const showAccountColumn = $derived(!logsController.accountId && !inspectorOpen);
+	const selectedIndex = $derived(
+		selectedEvent ? logsController.logs.findIndex((item) => item.log_id === selectedEvent.log_id) : -1
+	);
+	const prevLogId = $derived(
+		selectedIndex > 0 ? (logsController.logs[selectedIndex - 1]?.log_id ?? null) : null
+	);
+	const nextLogId = $derived(
+		selectedIndex >= 0 && selectedIndex < logsController.logs.length - 1
+			? (logsController.logs[selectedIndex + 1]?.log_id ?? null)
+			: null
+	);
+	const showAccountColumn = $derived(!logsController.accountId);
 	const showOutcomeColumn = $derived(logsController.view === 'all');
 	const showMusicColumns = $derived(
 		logsController.logs.some((event) => event.event_type === 'music_url')
 	);
 	const showUpstreamColumn = $derived(
-		!inspectorOpen &&
-			logsController.logs.some(
-				(event) =>
-					event.event_type === 'music_url' &&
-					(event.detail.upstream_status !== null || event.detail.upstream_priv_status !== null)
-			)
+		logsController.logs.some(
+			(event) =>
+				event.event_type === 'music_url' &&
+				(event.detail.upstream_status !== null || event.detail.upstream_priv_status !== null)
+		)
 	);
-	const showLatencyColumn = $derived(!inspectorOpen);
 
 	const cell = 'px-4 py-2.5 align-top';
 	const heading = 'px-4 py-2.5 font-medium';
@@ -273,14 +291,10 @@
 			{/if}
 		{:else if event.event_type === 'entitlement'}
 			{@const d = event.detail}
-			{#if isEntitlementAlreadyDone(d)}
-				{#if d.upstream_code !== undefined && d.upstream_code !== null}
-					<span class="tabular font-mono text-muted-foreground">幂等码 {d.upstream_code}</span>
-				{/if}
-			{:else if d.outcome === 'deferred'}
-				<StatusBadge tone="info">已延后</StatusBadge>
-			{:else if d.outcome === 'uncertain'}
-				<StatusBadge tone="warning">结果待核对</StatusBadge>
+			{#if isEntitlementAlreadyDone(d) && d.upstream_code !== undefined && d.upstream_code !== null}
+				<span class="tabular font-mono text-muted-foreground">
+					上游码 {d.upstream_code}（今日已领）
+				</span>
 			{/if}
 			{#if d.http_status !== undefined && d.http_status !== null && !isEntitlementAlreadyDone(d) && !event.ok}
 				<span class="tabular font-mono">HTTP {d.http_status}</span>
@@ -293,12 +307,11 @@
 	<header>
 		<h1 class="text-heading tracking-tight">事件日志</h1>
 		<p class="mt-1 text-sm text-muted-foreground">
-			查看全站取链、Token 刷新、扫码登录与每日领升事件，点击任意记录可检视关联因果链路。
+			查看全站取链、Token 刷新、扫码登录与会员权益事件，点击任意记录可查看关联链路。
 		</p>
 	</header>
 
-	<div class="lg:flex lg:items-start lg:gap-6">
-		<Card class="min-w-0 flex-1 overflow-hidden">
+	<Card class="overflow-x-clip">
 			<CardHeader class="gap-3 border-b border-border/70">
 				<!-- 一级分段切换 + 仅错误 + 实时控制 -->
 				<div class="flex flex-wrap items-center justify-between gap-3">
@@ -385,7 +398,7 @@
 							type="button"
 							aria-pressed={!logsController.accountId}
 							class={cn(
-								'cursor-pointer rounded-full border px-2.5 py-1 text-xs font-medium transition-colors',
+								'touch-target inline-flex cursor-pointer items-center rounded-full border px-2.5 py-1 text-xs font-medium transition-colors',
 								!logsController.accountId
 									? 'border-primary/35 bg-primary-soft text-primary-soft-foreground'
 									: 'border-border bg-background text-muted-foreground hover:text-foreground'
@@ -402,7 +415,7 @@
 								type="button"
 								aria-pressed={active}
 								class={cn(
-									'max-w-44 cursor-pointer truncate rounded-full border px-2.5 py-1 text-xs font-medium transition-colors',
+									'touch-target inline-flex max-w-44 cursor-pointer items-center rounded-full border px-2.5 py-1 text-xs font-medium transition-colors',
 									active
 										? 'border-primary/35 bg-primary-soft text-primary-soft-foreground'
 										: 'border-border bg-background text-muted-foreground hover:text-foreground'
@@ -410,9 +423,21 @@
 								title={`${accLabel} (账号 ${acc.userid})`}
 								onclick={() => handleFilterChange({ accountId: acc.account_id })}
 							>
-								{accLabel}
+								<span class="truncate">{accLabel}</span>
 							</button>
 						{/each}
+
+						{#if logsController.accountsLoaded && logsController.accountId && !logsController.accounts.some((a) => a.account_id === logsController.accountId)}
+							<button
+								type="button"
+								aria-pressed="true"
+								class="touch-target inline-flex max-w-44 cursor-pointer items-center rounded-full border border-primary/35 bg-primary-soft px-2.5 py-1 text-xs font-medium text-primary-soft-foreground transition-colors"
+								title={`账号 ID: ${logsController.accountId}`}
+								onclick={() => handleFilterChange({ accountId: logsController.accountId })}
+							>
+								<span class="truncate">账号 {shortId(logsController.accountId)}</span>
+							</button>
+						{/if}
 					</div>
 				{/if}
 			</CardHeader>
@@ -432,9 +457,15 @@
 
 				{#if logsController.logs.length > 0}
 					<!-- 桌面端表格 -->
-					<div class="hidden max-h-[42rem] overflow-auto md:block">
-						<table class="w-full table-fixed text-left text-xs">
-							<thead class="sticky top-0 z-10 bg-card shadow-[inset_0_-1px_0_0_var(--color-border)]">
+					<div class="hidden md:block">
+						<table
+							class={cn(
+								'w-full table-fixed text-left text-xs',
+								!logsController.hasMore &&
+									'[&_tbody_tr:last-child_td:first-child]:rounded-bl-xl [&_tbody_tr:last-child_td:last-child]:rounded-br-xl'
+							)}
+						>
+							<thead class="sticky top-14 z-10 bg-card shadow-[inset_0_-1px_0_0_var(--color-border)]">
 								<tr>
 									<th scope="col" class={heading}>事件</th>
 									{#if showAccountColumn}<th scope="col" class={cn(heading, 'w-28 lg:w-32')}>账号</th>{/if}
@@ -442,8 +473,8 @@
 									{#if showOutcomeColumn}<th scope="col" class={cn(heading, 'w-20')}>状态</th>{/if}
 									{#if showUpstreamColumn}<th scope="col" class={cn(heading, 'w-16')}>上游</th>{/if}
 									<th scope="col" class={cn(heading, 'w-28 lg:w-32')}>时间</th>
-									{#if showLatencyColumn}<th scope="col" class={cn(heading, 'w-16')}>延迟</th>{/if}
-									<th scope="col" class={cn(heading, inspectorOpen ? 'w-28 xl:w-36' : 'w-32 lg:w-44')}>诊断</th>
+									<th scope="col" class={cn(heading, 'w-16')}>延迟</th>
+									<th scope="col" class={cn(heading, 'w-32 lg:w-44')}>诊断</th>
 								</tr>
 							</thead>
 							<tbody class="divide-y divide-border/70">
@@ -502,15 +533,13 @@
 										{/if}
 										<td
 											class={cn(cell, 'tabular whitespace-nowrap font-mono')}
-											title={formatDateTime(event.created_at)}
+											title={formatDateTimeMs(event.created_at_ms)}
 										>
-											{formatLogTime(event.created_at)}
+											{formatLogTimeMs(event.created_at_ms)}
 										</td>
-										{#if showLatencyColumn}
-											<td class={cn(cell, 'tabular whitespace-nowrap font-mono')}>
-												{formatLatency(event.latency_ms)}
-											</td>
-										{/if}
+										<td class={cn(cell, 'tabular whitespace-nowrap font-mono')}>
+											{formatLatency(event.latency_ms)}
+										</td>
 										<td class={cell}>
 											{@render diagnosticCell(event)}
 										</td>
@@ -545,14 +574,14 @@
 									</div>
 
 									<div class="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-										{#if showAccountColumn}
+										{#if !logsController.accountId}
 											<span class="truncate">{logsController.accountDisplayName(event.account_id)}</span>
 										{/if}
 										{#if event.event_type === 'music_url'}
 											{@render qualityCell(event.detail)}
 										{/if}
-										<span class="tabular font-mono" title={formatDateTime(event.created_at)}>
-											{formatLogTime(event.created_at)}
+										<span class="tabular font-mono" title={formatDateTimeMs(event.created_at_ms)}>
+											{formatLogTimeMs(event.created_at_ms)}
 										</span>
 										{#if event.latency_ms !== null}
 											<span class="tabular font-mono">{formatLatency(event.latency_ms)}</span>
@@ -605,16 +634,17 @@
 			</CardContent>
 		</Card>
 
-		<LogInspector
-			event={selectedEvent}
-			correlationLogs={logsController.correlationLogs}
-			loadingCorrelation={logsController.loadingCorrelation}
-			correlationError={logsController.correlationError}
-			onSelect={(logId) => handleSelectEvent(logId)}
-			onRetryCorrelation={() => {
-				if (selectedEvent) void logsController.loadCorrelation(selectedEvent.correlation_id, true);
-			}}
-			onClose={() => handleSelectEvent(null)}
-		/>
-	</div>
+	<LogInspector
+		event={selectedEvent}
+		correlationLogs={logsController.correlationLogs}
+		loadingCorrelation={logsController.loadingCorrelation}
+		correlationError={logsController.correlationError}
+		{prevLogId}
+		{nextLogId}
+		onSelect={(logId) => handleSelectEvent(logId)}
+		onRetryCorrelation={() => {
+			if (selectedEvent) void logsController.loadCorrelation(selectedEvent.correlation_id, true);
+		}}
+		onClose={() => handleSelectEvent(null)}
+	/>
 </div>

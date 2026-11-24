@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onDestroy } from 'svelte';
 	import { resolve } from '$app/paths';
-	import { Alert, Button, Card, CardContent, CardHeader, Skeleton, StatusBadge } from '$lib/components/ui';
+	import { Alert, Button, Skeleton, StatusBadge } from '$lib/components/ui';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import type { StoredEvent } from '$lib/api/types';
 	import { logsController } from '$lib/features/logs/controller.svelte';
@@ -16,9 +16,11 @@
 		eventTriggerLabel,
 		eventTypeLabel,
 		formatBitRate,
-		formatClockTime,
 		formatDateTime,
+		formatDateTimeMs,
 		formatLatency,
+		formatLogTimeMs,
+		formatRelativeOffsetMs,
 		isEntitlementAlreadyDone,
 		isEventSuccess,
 		labelOf,
@@ -34,15 +36,18 @@
 	import { cn } from '$lib/utils.js';
 
 	/**
-	 * Master-Detail 事件详情检查器：
-	 *   - 桌面端（lg+）：右侧 sticky 分栏展开，不遮挡左侧表格，支持 Escape 关闭
-	 *   - 移动端（< lg）：通过 bits-ui Dialog（Portal + 焦点陷阱 + Escape）弹出详情
+	 * 事件详情抽屉检查器：
+	 *   - 桌面端（sm+）：右侧贴边全高抽屉，不受页头高度与外层滚动位置影响，不挤压主表列宽
+	 *   - 移动端（< sm）：底部抽屉
+	 *   - 统一经 bits-ui Dialog 管理滚动锁定、焦点陷阱与 Escape 关闭，支持页内上一条/下一条切换
 	 */
 	let {
 		event,
 		correlationLogs,
 		loadingCorrelation,
 		correlationError,
+		prevLogId = null,
+		nextLogId = null,
 		onSelect,
 		onRetryCorrelation,
 		onClose
@@ -51,35 +56,15 @@
 		correlationLogs: StoredEvent[];
 		loadingCorrelation: boolean;
 		correlationError: string | null;
+		prevLogId?: string | null;
+		nextLogId?: string | null;
 		onSelect: (logId: string) => void;
 		onRetryCorrelation: () => void;
 		onClose: () => void;
 	} = $props();
 
-	let isDesktop = $state(
-		typeof window !== 'undefined' ? window.matchMedia('(min-width: 1024px)').matches : true
-	);
-
-	onMount(() => {
-		const mql = window.matchMedia('(min-width: 1024px)');
-		isDesktop = mql.matches;
-		const onChange = (e: MediaQueryListEvent) => {
-			isDesktop = e.matches;
-		};
-		mql.addEventListener('change', onChange);
-
-		const onKeydown = (e: KeyboardEvent) => {
-			if (e.key === 'Escape' && isDesktop && event) {
-				onClose();
-			}
-		};
-		window.addEventListener('keydown', onKeydown);
-
-		return () => {
-			mql.removeEventListener('change', onChange);
-			window.removeEventListener('keydown', onKeydown);
-			if (copyTimer) clearTimeout(copyTimer);
-		};
+	onDestroy(() => {
+		if (copyTimer) clearTimeout(copyTimer);
 	});
 
 	let copiedField = $state<string | null>(null);
@@ -115,6 +100,7 @@
 	{@const headline = describeEventHeadline(ev)}
 	{@const accountLabel = logsController.accountDisplayName(ev.account_id)}
 	{@const sourceName = logsController.sourceDisplayName(ev.account_id, ev.source_id)}
+	{@const rawEventJson = JSON.stringify(ev, null, 2)}
 
 	<div class="space-y-5 text-xs">
 		{#if diagError}
@@ -135,7 +121,7 @@
 				</dd>
 
 				<dt class="text-muted-foreground">时间</dt>
-				<dd class="tabular font-mono">{formatDateTime(ev.created_at)}</dd>
+				<dd class="tabular font-mono">{formatDateTimeMs(ev.created_at_ms)}</dd>
 
 				<dt class="text-muted-foreground">耗时 / 序号</dt>
 				<dd class="tabular font-mono">
@@ -313,7 +299,7 @@
 								{copiedField === 'reported_types' ? '已复制 JSON' : '复制 JSON'}
 							</Button>
 						</div>
-						<pre class="max-h-48 overflow-auto rounded-lg border border-border bg-muted/60 p-2.5 font-mono text-xs leading-relaxed text-foreground">{reportedJson}</pre>
+						<pre class="overflow-x-auto rounded-lg border border-border bg-muted/60 p-2.5 font-mono text-xs leading-relaxed text-foreground">{reportedJson}</pre>
 					</div>
 				{/if}
 			{:else if ev.event_type === 'token_refresh'}
@@ -345,7 +331,7 @@
 					{/if}
 
 					{#if d.upstream_day}
-						<dt class="text-muted-foreground">上游日</dt>
+						<dt class="text-muted-foreground">统计日期</dt>
 						<dd class="tabular font-mono">{d.upstream_day} (UTC+8)</dd>
 					{/if}
 
@@ -361,7 +347,7 @@
 					{#if d.upstream_code !== undefined && d.upstream_code !== null}
 						<dt class="text-muted-foreground">上游码</dt>
 						<dd class="tabular font-mono">
-							{d.upstream_code}{alreadyDone ? '（今日已达标幂等码）' : ''}
+							{d.upstream_code}{alreadyDone ? '（今日已领，无需重复）' : ''}
 						</dd>
 					{/if}
 
@@ -418,11 +404,13 @@
 			{:else if correlationLogs.length === 0}
 				<p class="text-muted-foreground">暂无关联链路记录。</p>
 			{:else}
+				{@const firstCreatedAt = correlationLogs[0]?.created_at_ms ?? ev.created_at_ms}
 				<ol class="space-y-1.5">
-					{#each correlationLogs as item (item.log_id)}
+					{#each correlationLogs as item, idx (item.log_id)}
 						{@const itemBadge = eventOutcomeBadge(item)}
 						{@const itemHeadline = describeEventHeadline(item)}
 						{@const isCurrent = item.log_id === ev.log_id}
+						{@const offsetText = idx === 0 ? '+0ms' : formatRelativeOffsetMs(item.created_at_ms - firstCreatedAt)}
 						<li>
 							<button
 								type="button"
@@ -443,13 +431,25 @@
 										<span class="font-medium text-foreground">
 											{labelOf(eventTypeLabel, item.event_type)} · {itemHeadline.title}
 										</span>
-										<span class="tabular shrink-0 font-mono text-caption text-muted-foreground">
-											{formatClockTime(item.created_at)}
+										<span
+											class="tabular shrink-0 font-mono text-caption text-muted-foreground"
+											title={formatDateTimeMs(item.created_at_ms)}
+										>
+											{formatLogTimeMs(item.created_at_ms)}
 										</span>
 									</div>
 									{#if itemHeadline.subtitle}
 										<p class="mt-0.5 truncate text-muted-foreground">{itemHeadline.subtitle}</p>
 									{/if}
+									<div
+										class="tabular mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-caption text-muted-foreground"
+									>
+										<span>{offsetText}</span>
+										{#if item.latency_ms !== null}
+											<span>耗时 {formatLatency(item.latency_ms)}</span>
+										{/if}
+										<span>#{item.seq}</span>
+									</div>
 								</div>
 							</button>
 						</li>
@@ -457,62 +457,109 @@
 				</ol>
 			{/if}
 		</section>
+
+		<!-- 原始 JSON -->
+		<section class="space-y-2.5 border-t border-border/70 pt-4">
+			<div class="flex flex-wrap items-center justify-between gap-2">
+				<h3 class="text-xs font-semibold tracking-wide text-muted-foreground uppercase">原始 JSON</h3>
+				<div class="flex flex-wrap items-center gap-1.5">
+					<Button
+						variant="ghost"
+						size="sm"
+						class="h-7 shrink-0 px-2 text-xs md:h-7"
+						onclick={() => copyText('raw_event', rawEventJson, '本条 JSON')}
+					>
+						{copiedField === 'raw_event' ? '已复制本条' : '复制本条 JSON'}
+					</Button>
+					{#if correlationLogs.length > 1}
+						<Button
+							variant="ghost"
+							size="sm"
+							class="h-7 shrink-0 px-2 text-xs md:h-7"
+							onclick={() =>
+								copyText('raw_chain', JSON.stringify(correlationLogs, null, 2), '整链 JSON')}
+						>
+							{copiedField === 'raw_chain' ? '已复制整链' : '复制整链 JSON'}
+						</Button>
+					{/if}
+				</div>
+			</div>
+
+			<details>
+				<summary
+					class="cursor-pointer select-none rounded-md px-1 py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+				>
+					查看本条原始 JSON
+				</summary>
+				<pre class="mt-2 overflow-x-auto rounded-lg border border-border bg-muted/60 p-2.5 font-mono text-xs leading-relaxed text-foreground">{rawEventJson}</pre>
+			</details>
+		</section>
 	</div>
 {/snippet}
 
-{#if event && isDesktop}
-	<aside
-		aria-label="事件详情检查器"
-		class="hidden lg:sticky lg:top-20 lg:block lg:w-96 lg:shrink-0 lg:self-start xl:w-104"
-	>
-		<Card class="flex max-h-[calc(100vh-6rem)] flex-col overflow-hidden">
-			<CardHeader class="shrink-0 border-b border-border/70 py-3.5">
-				{@const badge = eventOutcomeBadge(event)}
-				<div class="flex items-center justify-between gap-2">
-					<div class="flex min-w-0 items-center gap-2">
-						<StatusBadge tone="neutral">{labelOf(eventTypeLabel, event.event_type)}</StatusBadge>
-						<StatusBadge tone={badge.tone} class="font-mono">{badge.label}</StatusBadge>
-					</div>
-					<Button variant="ghost" size="sm" onclick={onClose} aria-label="关闭事件详情">
-						关闭
-					</Button>
+<Dialog.Root
+	open={Boolean(event)}
+	onOpenChange={(open) => {
+		if (!open) onClose();
+	}}
+>
+	{#if event}
+		{@const badge = eventOutcomeBadge(event)}
+		<Dialog.Content
+			variant="drawer"
+			aria-label="事件详情检查器"
+			tabindex={-1}
+			class="focus:outline-none"
+			onOpenAutoFocus={(e) => {
+				e.preventDefault();
+				(e.currentTarget as HTMLElement | null)?.focus();
+			}}
+		>
+			<div class="flex shrink-0 items-center justify-between gap-2 border-b border-border/70 px-5 py-3.5">
+				<div class="flex min-w-0 items-center gap-2">
+					<Dialog.Title class="sr-only">
+						{labelOf(eventTypeLabel, event.event_type)} 事件详情
+					</Dialog.Title>
+					<StatusBadge tone="neutral">{labelOf(eventTypeLabel, event.event_type)}</StatusBadge>
+					<StatusBadge tone={badge.tone} class="font-mono">{badge.label}</StatusBadge>
 				</div>
-			</CardHeader>
-			<CardContent class="overflow-y-auto p-5">
-				{@render inspectorBody(event)}
-			</CardContent>
-		</Card>
-	</aside>
-{/if}
-
-{#if !isDesktop}
-	<Dialog.Root
-		open={Boolean(event)}
-		onOpenChange={(open) => {
-			if (!open) onClose();
-		}}
-	>
-		{#if event}
-			{@const badge = eventOutcomeBadge(event)}
-			<Dialog.Content>
-				<div class="flex shrink-0 items-center justify-between gap-2 border-b border-border/70 px-5 py-3.5">
-					<div class="flex min-w-0 items-center gap-2">
-						<Dialog.Title class="sr-only">
-							{labelOf(eventTypeLabel, event.event_type)} 事件详情
-						</Dialog.Title>
-						<StatusBadge tone="neutral">{labelOf(eventTypeLabel, event.event_type)}</StatusBadge>
-						<StatusBadge tone={badge.tone} class="font-mono">{badge.label}</StatusBadge>
-					</div>
+				<div class="flex shrink-0 items-center gap-1">
+					{#if prevLogId || nextLogId}
+						<Button
+							variant="ghost"
+							size="sm"
+							class="px-2"
+							disabled={!prevLogId}
+							onclick={() => {
+								if (prevLogId) onSelect(prevLogId);
+							}}
+							aria-label="上一条事件"
+						>
+							上一条
+						</Button>
+						<Button
+							variant="ghost"
+							size="sm"
+							class="px-2"
+							disabled={!nextLogId}
+							onclick={() => {
+								if (nextLogId) onSelect(nextLogId);
+							}}
+							aria-label="下一条事件"
+						>
+							下一条
+						</Button>
+					{/if}
 					<Dialog.Close>
 						{#snippet child({ props })}
 							<Button variant="ghost" size="sm" {...props}>关闭</Button>
 						{/snippet}
 					</Dialog.Close>
 				</div>
-				<div class="overflow-y-auto p-5">
-					{@render inspectorBody(event)}
-				</div>
-			</Dialog.Content>
-		{/if}
-	</Dialog.Root>
-{/if}
+			</div>
+			<div class="min-h-0 flex-1 overflow-y-auto p-5">
+				{@render inspectorBody(event)}
+			</div>
+		</Dialog.Content>
+	{/if}
+</Dialog.Root>

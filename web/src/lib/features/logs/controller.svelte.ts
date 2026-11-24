@@ -1,10 +1,12 @@
 import { adminSession, handleAuthError } from '$lib/state/admin-session.svelte';
+import { toast } from '$lib/state/toast.svelte';
 import { createVisibilityAwareTimer } from '$lib/utils/polling';
 import { describeApiError, sortEventsAscending } from '$lib/domain';
 import type { AccountItem, EventType, LogView, StoredEvent } from '$lib/api/types';
 
 const PAGE_SIZE = 30;
-const POLL_INTERVAL_MS = 5000;
+const INCREMENTAL_LIMIT = 100;
+const POLL_INTERVAL_MS = 3000;
 const NEW_ROW_MARK_MS = 1000;
 
 export interface LogFilters {
@@ -17,12 +19,13 @@ export interface LogFilters {
  * 全站事件日志与因果链路控制器。
  *
  * - 支持多维筛选（事件类别 / 账号归属 / 仅错误）
- * - 支持游标分页（before_seq = next_before_seq 加载更早记录），并在轮询刷新顶部时保留已展开的更早记录
+ * - 支持游标分页（before_seq = next_before_seq 加载更早记录）与增量轮询（after_seq 合并新事件并保留已展开的更早页）
  * - 支持按 correlation_id 拉取完整正序因果链路供检查器展示
  */
 class LogsController {
 	logs = $state<StoredEvent[]>([]);
 	accounts = $state<AccountItem[]>([]);
+	accountsLoaded = $state(false);
 	view = $state<LogView>('all');
 	eventType = $state<EventType | undefined>(undefined);
 	accountId = $state<string | undefined>(undefined);
@@ -46,10 +49,10 @@ class LogsController {
 	private correlationRequestId = 0;
 	private accountsRequestId = 0;
 	private active = false;
-	private olderPagesLoaded = false;
 	private skipNextHighlight = false;
 	private newRowTimer: ReturnType<typeof setTimeout> | null = null;
 	private pending = new Set<number>();
+	private onStaleSelection: (() => void) | null = null;
 
 	private timer = createVisibilityAwareTimer({
 		intervalMs: POLL_INTERVAL_MS,
@@ -69,7 +72,10 @@ class LogsController {
 		);
 	}
 
-	start(initial: LogFilters & { selectedLogId: string | null }) {
+	start(
+		initial: LogFilters & { selectedLogId: string | null },
+		options?: { onStaleSelection?: () => void }
+	) {
 		this.stop();
 		this.active = true;
 		this.view = initial.view;
@@ -77,6 +83,7 @@ class LogsController {
 		this.accountId = initial.accountId;
 		this.selectedLogId = initial.selectedLogId;
 		this.skipNextHighlight = true;
+		this.onStaleSelection = options?.onStaleSelection ?? null;
 
 		void this.loadAccounts();
 		void this.loadLogs(false);
@@ -91,11 +98,12 @@ class LogsController {
 		this.accountsRequestId++;
 		this.pending.clear();
 		this.clearNewRowTimer();
+		this.onStaleSelection = null;
 
 		this.logs = [];
+		this.accountsLoaded = false;
 		this.hasMore = false;
 		this.nextBeforeSeq = null;
-		this.olderPagesLoaded = false;
 		this.error = null;
 		this.newLogIds = new Set();
 		this.lastUpdatedAt = null;
@@ -155,7 +163,6 @@ class LogsController {
 
 	refresh() {
 		if (!this.active || this.loading) return;
-		this.olderPagesLoaded = false;
 		void this.loadLogs(false);
 		void this.loadAccounts();
 		const selected = this.selectedEvent;
@@ -185,7 +192,6 @@ class LogsController {
 			this.logs = [...this.logs, ...appended];
 			this.hasMore = res.has_more;
 			this.nextBeforeSeq = res.next_before_seq;
-			this.olderPagesLoaded = true;
 			this.error = null;
 		} catch (e: unknown) {
 			if (handleAuthError(e)) return;
@@ -197,14 +203,20 @@ class LogsController {
 	}
 
 	async loadCorrelation(correlationId: string, force = false) {
-		if (!force && this.correlationId === correlationId && this.correlationLogs.length > 0 && !this.correlationError) {
+		if (
+			!force &&
+			this.correlationId === correlationId &&
+			this.correlationLogs.length > 0 &&
+			!this.correlationError
+		) {
 			return;
 		}
 		const reqId = ++this.correlationRequestId;
+		const sameCorrelation = this.correlationLogs[0]?.correlation_id === correlationId;
 		this.correlationId = correlationId;
-		this.loadingCorrelation = true;
+		this.loadingCorrelation = !sameCorrelation || !force;
 		this.correlationError = null;
-		if (force || this.correlationLogs.length === 0 || this.correlationLogs[0]?.correlation_id !== correlationId) {
+		if (!sameCorrelation) {
 			this.correlationLogs = [];
 		}
 
@@ -250,10 +262,11 @@ class LogsController {
 		this.view = next.view;
 		this.eventType = next.eventType;
 		this.accountId = next.accountId;
+		this.selectedLogId = null;
+		this.clearCorrelation();
 		this.logs = [];
 		this.hasMore = false;
 		this.nextBeforeSeq = null;
-		this.olderPagesLoaded = false;
 		this.error = null;
 		this.skipNextHighlight = true;
 		void this.loadLogs(false);
@@ -268,6 +281,10 @@ class LogsController {
 		} catch (e: unknown) {
 			if (handleAuthError(e)) return;
 			// 账号列表用于筛选条与名称映射，失败时不阻塞日志主体展示
+		} finally {
+			if (this.active && reqId === this.accountsRequestId) {
+				this.accountsLoaded = true;
+			}
 		}
 	}
 
@@ -276,36 +293,73 @@ class LogsController {
 		this.pending.add(requestId);
 		if (!silent) this.loading = true;
 
+		const useIncremental = silent && this.logs.length > 0;
+
 		try {
 			const res = await adminSession.api.listLogs({
-				limit: PAGE_SIZE,
+				limit: useIncremental ? INCREMENTAL_LIMIT : PAGE_SIZE,
 				view: this.view,
 				eventType: this.eventType,
 				accountId: this.accountId,
+				afterSeq: useIncremental ? this.logs[0].seq : undefined,
 			});
 			if (!this.active || requestId !== this.requestId) return;
 
 			const knownIds = new Set(this.logs.map((log) => log.log_id));
 			const hadRows = this.logs.length > 0;
+			let newlyAdded: StoredEvent[] = [];
 
-			if (silent && this.olderPagesLoaded && res.items.length > 0) {
-				const topIds = new Set(res.items.map((item) => item.log_id));
-				const minTopSeq = Math.min(...res.items.map((item) => item.seq));
-				const preservedOlder = this.logs.filter(
-					(item) => !topIds.has(item.log_id) && item.seq < minTopSeq
-				);
-				this.logs = [...res.items, ...preservedOlder];
+			if (useIncremental && res.has_more) {
+				// 突发超过 100 条：回退做一次全量头部刷新
+				const fullRes = await adminSession.api.listLogs({
+					limit: PAGE_SIZE,
+					view: this.view,
+					eventType: this.eventType,
+					accountId: this.accountId,
+				});
+				if (!this.active || requestId !== this.requestId) return;
+
+				newlyAdded = fullRes.items.filter((item) => !knownIds.has(item.log_id));
+				this.logs = fullRes.items;
+				this.hasMore = fullRes.has_more;
+				this.nextBeforeSeq = fullRes.next_before_seq;
+			} else if (useIncremental) {
+				if (res.items.length > 0) {
+					newlyAdded = res.items.filter((item) => !knownIds.has(item.log_id));
+					if (newlyAdded.length > 0) {
+						this.logs = [...newlyAdded, ...this.logs];
+					}
+				}
 			} else {
+				newlyAdded = res.items.filter((item) => !knownIds.has(item.log_id));
 				this.logs = res.items;
 				this.hasMore = res.has_more;
 				this.nextBeforeSeq = res.next_before_seq;
-				this.olderPagesLoaded = false;
 			}
 
 			this.lastUpdatedAt = Math.floor(Date.now() / 1000);
-			this.markNewRows(res.items, knownIds, hadRows);
+			this.markNewRows(newlyAdded, knownIds, hadRows);
 			this.error = null;
-			this.ensureCorrelationForSelected();
+
+			if (!silent && this.selectedLogId && !this.loadingCorrelation && this.selectedEvent === null) {
+				this.selectedLogId = null;
+				this.clearCorrelation();
+				toast.push({
+					tone: 'info',
+					message: '未在最近日志中找到指定记录，可尝试加载更早记录。',
+				});
+				this.onStaleSelection?.();
+			} else {
+				this.ensureCorrelationForSelected();
+				const selected = this.selectedEvent;
+				if (
+					silent &&
+					selected &&
+					newlyAdded.some((item) => item.correlation_id === selected.correlation_id)
+				) {
+					void this.loadCorrelation(selected.correlation_id, true);
+				}
+			}
 		} catch (e: unknown) {
 			if (handleAuthError(e)) return;
 			if (!this.active || requestId !== this.requestId) return;
@@ -339,7 +393,9 @@ class LogsController {
 			this.newLogIds = new Set();
 			return;
 		}
-		const added = new Set(items.filter((item) => !knownIds.has(item.log_id)).map((item) => item.log_id));
+		const added = new Set(
+			items.filter((item) => !knownIds.has(item.log_id)).map((item) => item.log_id)
+		);
 		if (added.size === 0) return;
 
 		this.newLogIds = added;

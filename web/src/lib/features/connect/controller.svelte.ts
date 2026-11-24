@@ -10,7 +10,7 @@ const CONNECT_TIMEOUT_MS = 8000;
 /**
  * 连接流程控制器。
  *
- * 与 sources / qr-login / source-logs 保持同一形态（模块级单例 + $state），
+ * 与 accounts / logs / qr-login 保持同一形态（模块级单例 + $state），
  * 使「网络调用」始终只出现在 features 层，组件与页面只消费状态。
  *
  * 注意：因为是单例，登录后返回本页会残留上一次的 Token。

@@ -21,7 +21,9 @@
 
 	function isActive(href: string) {
 		const pathname = page.url.pathname;
-		return pathname === href || pathname.startsWith(`${href}/`);
+		if (pathname === href || pathname.startsWith(`${href}/`)) return true;
+		if (href === '/accounts' && (pathname === '/bind' || pathname.startsWith('/bind/'))) return true;
+		return false;
 	}
 
 	/**
@@ -106,9 +108,6 @@
 				</Tooltip.Trigger>
 				<Tooltip.Content>{adminSession.serverBaseUrl || '当前域名'}</Tooltip.Content>
 			</Tooltip.Root>
-			<Button href="/bind" size="sm" variant={isActive('/bind') ? 'outline' : 'default'}>
-				绑定账号
-			</Button>
 			<Button variant="ghost" size="sm" onclick={() => adminSession.logout()}>断开连接</Button>
 		</div>
 	</div>

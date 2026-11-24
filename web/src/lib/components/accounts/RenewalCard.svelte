@@ -27,9 +27,9 @@
 	import { cn } from '$lib/utils.js';
 
 	/**
-	 * 会员权益与每日领升工作台卡片：
+	 * 会员权益工作台卡片：
 	 *   - 上半区：100% 只读的上游确认快照（account.entitlements）
-	 *   - 下半区：bg-muted/50 内嵌面板，隔离本地自动领升调度、2 步微型进度、
+	 *   - 下半区：bg-muted/50 内嵌面板，隔离本地自动领取 VIP 调度、2 步微型进度、
 	 *            9 态状态与可见性感知倒计时、本地预计到期（不覆盖上方快照）
 	 */
 	let {
@@ -57,7 +57,11 @@
 		account.entitlements?.find((item) => item.product_type === 'svip')?.end_at ?? null
 	);
 	const showEstimatedEndAt = $derived(
-		renewal.estimated_end_at !== null && renewal.estimated_end_at !== svipEndAt
+		renewal.estimated_end_at !== null &&
+			renewal.estimated_end_at !== svipEndAt &&
+			(svipEndAt === null ||
+				renewal.svip_confirmation_required ||
+				svipEndAt < renewal.estimated_end_at - 60)
 	);
 
 	let nowSec = $state(Math.floor(Date.now() / 1000));
@@ -121,12 +125,7 @@
 <Card>
 	<CardHeader class="border-b border-border/70 pb-4">
 		<div class="flex flex-wrap items-center justify-between gap-3">
-			<div>
-				<h2 class="text-subheading">会员权益与每日领升</h2>
-				<p class="mt-0.5 text-xs text-muted-foreground">
-					上方为上游确认快照，下方为每日领升调度状态。
-				</p>
-			</div>
+			<h2 class="text-subheading">会员权益</h2>
 			<Button
 				variant="outline"
 				size="sm"
@@ -188,16 +187,16 @@
 			{/if}
 		</section>
 
-		<!-- 下半区：明度内嵌面板，清晰隔离本地自动领升与上游快照 -->
+		<!-- 下半区：明度内嵌面板，清晰隔离本地自动领取 VIP 与上游快照 -->
 		<section
 			aria-labelledby={autoTitleId}
 			class="space-y-4 rounded-xl bg-muted/50 p-4"
 		>
 			<div class="flex flex-wrap items-start justify-between gap-4">
 				<div class="min-w-0 flex-1 space-y-1">
-					<h3 id={autoTitleId} class="text-sm font-medium">每日自动领升</h3>
+					<h3 id={autoTitleId} class="text-sm font-medium">自动领取 VIP</h3>
 					<p id={autoDescId} class="text-xs leading-relaxed text-muted-foreground">
-						有高品播放且概念版VIP 剩余不足 48 小时或过期遇拒时后台自动领升，无定时任务；过期补领约需 2 分钟生效。
+						播放歌曲时，若概念版VIP 剩余不足 48 小时或因过期被拒，将在后台自动领取并升级（无定时任务）；过期补领后约需 2 分钟生效。
 					</p>
 				</div>
 
@@ -215,7 +214,7 @@
 				</Switch>
 			</div>
 
-			<!-- 9 态状态徽章 + 上游日 -->
+			<!-- 9 态状态徽章 + 统计日期 -->
 			<div class="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3">
 				<div class="flex flex-wrap items-center gap-2">
 					<StatusBadge
@@ -226,7 +225,7 @@
 						{labelOf(renewalStateLabel, renewal.state)}
 					</StatusBadge>
 					<span class="tabular text-xs text-muted-foreground">
-						上游日 {renewal.upstream_day} (UTC+8)
+						统计日期 {renewal.upstream_day} (UTC+8)
 					</span>
 				</div>
 			</div>
@@ -280,7 +279,7 @@
 					{control.label}
 				</Button>
 
-				{#if renewal.svip_confirmation_required && renewal.state !== 'completed'}
+				{#if renewal.svip_confirmation_required && (renewal.state === 'awaiting_upgrade' || renewal.state === 'propagating')}
 					<span class="text-xs text-muted-foreground">完成后可通过上方「同步权益」确认到账</span>
 				{/if}
 			</div>

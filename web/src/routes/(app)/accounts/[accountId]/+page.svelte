@@ -31,16 +31,11 @@
 		eventOutcomeBadge,
 		eventTypeLabel,
 		formatDateTime,
+		formatDateTimeMs,
 		formatLatency,
-		formatLogTime,
+		formatLogTimeMs,
 		labelOf,
-		providerLabel,
-		renewalStateLabel,
-		renewalStateTone,
-		summarizeEntitlements,
-		vipEntitlementEmphasis,
-		VIP_ENTITLEMENT_TONE,
-		vipProductLabel
+		providerLabel
 	} from '$lib/domain';
 
 	let accountId = $derived(page.params.accountId ?? '');
@@ -60,7 +55,6 @@
 			: '账号详情'
 	);
 	const pageTitle = $derived(account ? `${primaryTitle} | kg2lx` : '账号详情 | kg2lx');
-	const headerEntitlements = $derived(account ? summarizeEntitlements(account) : null);
 
 	let renamedSourceIds = $state<Set<string>>(new Set());
 
@@ -136,10 +130,7 @@
 				toast.success(action === 'refresh' ? 'Token 已刷新。' : '权益已同步。');
 			} else if (result.status === 'unconfirmed') {
 				toast.error('操作已完成，请重新加载详情查看结果。');
-			} else if (
-				result.status === 'failed' &&
-				(action === 'refresh' || !account.entitlements_sync_failed)
-			) {
+			} else if (result.status === 'failed') {
 				toast.error(result.message);
 			}
 		}
@@ -152,13 +143,18 @@
 		const id = account.account_id;
 		const res = await accountsController.setRenewalEnabled(id, next);
 		if (res === 'ok') {
-			toast.success(next ? '已开启每日自动领升。' : '已关闭每日自动领升。');
+			toast.success(next ? '已开启自动领取 VIP。' : '已关闭自动领取 VIP。');
 			void loadRecentLogs(id, true);
+		} else {
+			toast.error(accountsController.error ?? '保存失败，请重试。');
 		}
 	}
 
-	function handleQualityFallbackChange(sourceId: string, next: boolean) {
-		void accountsController.setQualityFallback(sourceId, next);
+	async function handleQualityFallbackChange(sourceId: string, next: boolean) {
+		const res = await accountsController.setQualityFallback(sourceId, next);
+		if (res === 'failed') {
+			toast.error(accountsController.error ?? '保存失败，请重试。');
+		}
 	}
 </script>
 
@@ -224,37 +220,13 @@
 				</p>
 			</div>
 
-			<div class="flex shrink-0 flex-wrap items-center gap-2">
-				<StatusBadge tone={accountStatusTone(account.status)} dot>
-					{labelOf(accountStatusLabel, account.status)}
-				</StatusBadge>
-				{#if headerEntitlements && headerEntitlements.state !== 'failed'}
-					{#each headerEntitlements.named as entitlement, index (`${entitlement.product_type}:${index}`)}
-						<StatusBadge
-							tone={VIP_ENTITLEMENT_TONE}
-							emphasis={vipEntitlementEmphasis(entitlement.product_type)}
-						>
-							{labelOf(vipProductLabel, entitlement.product_type)}
-						</StatusBadge>
-					{/each}
-				{/if}
-				{#if account.renewal.enabled || account.renewal.state !== 'ready'}
-					<StatusBadge
-						tone={renewalStateTone(account.renewal.state)}
-						dot
-						pulse={account.renewal.state === 'propagating'}
-					>
-						{labelOf(renewalStateLabel, account.renewal.state)}
+			{#if account.status !== 'active'}
+				<div class="flex shrink-0 items-center">
+					<StatusBadge tone={accountStatusTone(account.status)} dot>
+						{labelOf(accountStatusLabel, account.status)}
 					</StatusBadge>
-				{/if}
-				<Button
-					variant="outline"
-					size="sm"
-					href={`${resolve('/logs')}?account=${encodeURIComponent(account.account_id)}`}
-				>
-					查看事件日志
-				</Button>
-			</div>
+				</div>
+			{/if}
 		</header>
 
 		{#if accountsController.error}
@@ -494,9 +466,9 @@
 										</StatusBadge>
 										<span
 											class="tabular font-mono text-xs text-muted-foreground"
-											title={formatDateTime(event.created_at)}
+											title={formatDateTimeMs(event.created_at_ms)}
 										>
-											{formatLogTime(event.created_at)}
+											{formatLogTimeMs(event.created_at_ms)}
 										</span>
 										<span class="tabular w-12 text-right font-mono text-xs text-muted-foreground">
 											{event.latency_ms === null ? '—' : formatLatency(event.latency_ms)}

@@ -23,10 +23,18 @@ export function isEventSuccess(event: SourceEvent): boolean {
 	return event.ok;
 }
 
-/** 状态列胶囊文案与色调（统一处理 131001 / 297002 幂等已完成）。 */
+/** 状态列胶囊文案与色调（统一处理已完成、已延后与待确认状态）。 */
 export function eventOutcomeBadge(event: SourceEvent): { tone: Tone; label: string } {
-	if (event.event_type === 'entitlement' && isEntitlementAlreadyDone(event.detail)) {
-		return { tone: 'success', label: '已完成' };
+	if (event.event_type === 'entitlement') {
+		if (isEntitlementAlreadyDone(event.detail)) {
+			return { tone: 'success', label: '已完成' };
+		}
+		if (event.detail.outcome === 'deferred') {
+			return { tone: 'info', label: '已延后' };
+		}
+		if (event.detail.outcome === 'uncertain') {
+			return { tone: 'warning', label: '待确认' };
+		}
 	}
 	return {
 		tone: requestOutcomeTone(event.ok),

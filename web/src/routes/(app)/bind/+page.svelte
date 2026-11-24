@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
 	import { goto, replaceState } from '$app/navigation';
+	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import QrLoginPanel from '$lib/components/qr-login/QrLoginPanel.svelte';
 	import { qrLoginController } from '$lib/features/qr-login/controller.svelte';
@@ -74,6 +75,12 @@
 	<title>绑定酷狗账号 | kg2lx</title>
 </svelte:head>
 
-<div class="mx-auto max-w-md">
+<div class="mx-auto max-w-md space-y-4">
+	<nav aria-label="面包屑" class="flex items-center gap-1.5 text-xs text-muted-foreground">
+		<a href={resolve('/accounts')} class="hover:text-foreground hover:underline">账号</a>
+		<span aria-hidden="true">/</span>
+		<span class="truncate text-foreground">绑定酷狗账号</span>
+	</nav>
+
 	<QrLoginPanel onRestart={startNewLogin} />
 </div>

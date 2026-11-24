@@ -12,7 +12,7 @@
 	 *
 	 * - 支持作为页头主标题（as="h1"）或多源卡片小标题（as="h2"）
 	 * - 使用独立的 accountsController.savingSourceName[source.source_id]，
-	 *   绝不被账号级动作（刷新 Token / 同步权益 / 领升）锁死
+	 *   绝不被账号级动作（刷新 Token / 同步权益 / 手动领取 VIP）锁死
 	 */
 	let {
 		source,
@@ -63,7 +63,10 @@
 			submitted === '' ? null : submitted
 		);
 
-		if (res.status === 'failed') return;
+		if (res.status === 'failed') {
+			toast.error(accountsController.error ?? '保存失败，请重试。');
+			return;
+		}
 
 		if (submitted === '') {
 			toast.success(`已恢复默认标题「${res.name}」。`);

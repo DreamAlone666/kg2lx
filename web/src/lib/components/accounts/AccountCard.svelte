@@ -93,13 +93,13 @@
 			<Badge variant="secondary">{labelOf(providerLabel, account.provider)}</Badge>
 
 			<div class="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
-				{#if primarySource?.quality_fallback}
-					<StatusBadge
-						tone="success"
+				{#if account.sources.some((s) => s.quality_fallback)}
+					<Badge
+						variant="secondary"
 						title="音质自动降级已开启：上游拒绝所选音质时会自动改请求更低档位，下载同样生效"
 					>
 						自动降级
-					</StatusBadge>
+					</Badge>
 				{/if}
 				{#each snapshot.state === 'failed' ? [] : snapshot.named as entitlement, index (`${entitlement.product_type}:${index}`)}
 					<StatusBadge

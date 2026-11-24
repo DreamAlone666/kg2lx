@@ -21,7 +21,7 @@
 		<div>
 			<h1 class="text-heading tracking-tight">账号管理</h1>
 			<p class="mt-1 text-sm text-muted-foreground">
-				管理已绑定的酷狗概念版账号、每日领升状态，并获取洛雪音乐脚本链接。
+				管理已绑定的酷狗概念版账号、会员权益与自动领取 VIP，并获取洛雪音乐脚本链接。
 			</p>
 		</div>
 
@@ -39,6 +39,9 @@
 			>
 				刷新列表
 			</Button>
+			{#if accountsController.loadingList || accountsController.accounts.length > 0 || accountsController.error}
+				<Button href="/bind">绑定账号</Button>
+			{/if}
 		</div>
 	</header>
 

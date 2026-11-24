@@ -147,7 +147,7 @@ const renewalStateTones: Record<RenewalState, Tone> = {
 	attempts_exhausted: 'danger',
 };
 
-/** 每日领升 9 态语义色调。 */
+/** 自动领取 VIP 9 态语义色调。 */
 export function renewalStateTone(state: RenewalState | string | null | undefined): Tone {
 	return renewalStateTones[state as RenewalState] ?? 'neutral';
 }
@@ -158,7 +158,7 @@ const renewalStepTones: Record<StepState, Tone> = {
 	done: 'success',
 };
 
-/** 每日领升单步状态（领取 / 升级）语义色调。 */
+/** 自动领取 VIP 单步状态（领取 / 升级）语义色调。 */
 export function renewalStepTone(step: StepState | string | null | undefined): Tone {
 	return renewalStepTones[step as StepState] ?? 'neutral';
 }
@@ -171,7 +171,7 @@ const renewalOutcomeTones: Record<RenewalOutcome, Tone> = {
 	deferred: 'info',
 };
 
-/** 每日领升单次执行回执色调（already_done 视为已完成，不按错误着红）。 */
+/** 自动领取 VIP 单次执行回执色调（already_done 视为已完成，不按错误着红）。 */
 export function renewalOutcomeTone(outcome: RenewalOutcome | string | null | undefined): Tone {
 	return renewalOutcomeTones[outcome as RenewalOutcome] ?? 'neutral';
 }

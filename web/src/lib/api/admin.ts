@@ -2,13 +2,11 @@ import { HttpClient } from './http';
 import type {
   AccountItem,
   RenewalStatus,
-  SourceSummary,
   SourceDetail,
   QrLoginStartResponse,
   QrLoginPollResponse,
   RefreshTokenResponse,
   SyncEntitlementsResponse,
-  SourceLogsResponse,
   GlobalLogsResponse,
   EventType,
   LogView,
@@ -20,10 +18,6 @@ export class AdminApi {
 
   async healthz(signal?: AbortSignal): Promise<{ ok: boolean }> {
     return this.http.get('/healthz', { signal });
-  }
-
-  async listSources(signal?: AbortSignal): Promise<{ items: SourceSummary[] }> {
-    return this.http.get('/api/v1/admin/sources', { signal });
   }
 
   async getSource(sourceId: string, signal?: AbortSignal): Promise<SourceDetail> {
@@ -56,19 +50,6 @@ export class AdminApi {
     if (patch.name !== undefined) body.name = patch.name;
     if (patch.quality_fallback !== undefined) body.quality_fallback = patch.quality_fallback;
     return this.http.patch(`/api/v1/admin/sources/${sourceId}`, body, { signal });
-  }
-
-  async listSourceLogs(
-    sourceId: string,
-    query?: { limit?: number; view?: LogView; eventType?: EventType },
-    signal?: AbortSignal,
-  ): Promise<SourceLogsResponse> {
-    const params = new URLSearchParams();
-    if (query?.limit) params.set('limit', query.limit.toString());
-    if (query?.view) params.set('view', query.view);
-    if (query?.eventType) params.set('event_type', query.eventType);
-    const queryString = params.toString();
-    return this.http.get(`/api/v1/admin/sources/${sourceId}/logs${queryString ? `?${queryString}` : ''}`, { signal });
   }
 
   async startQrLogin(signal?: AbortSignal): Promise<QrLoginStartResponse> {
@@ -124,6 +105,7 @@ export class AdminApi {
       sourceId?: string;
       correlationId?: string;
       beforeSeq?: number;
+      afterSeq?: number;
       includeRenewal?: boolean;
     },
     signal?: AbortSignal,
@@ -136,6 +118,7 @@ export class AdminApi {
     if (query?.sourceId) params.set('source_id', query.sourceId);
     if (query?.correlationId) params.set('correlation_id', query.correlationId);
     if (query?.beforeSeq !== undefined) params.set('before_seq', query.beforeSeq.toString());
+    if (query?.afterSeq !== undefined) params.set('after_seq', query.afterSeq.toString());
     if (query?.includeRenewal !== undefined) {
       params.set('include_renewal', query.includeRenewal ? 'true' : 'false');
     }

@@ -18,20 +18,6 @@ export type EntitlementSnapshot = {
   entitlements_sync_failed: boolean;
 };
 
-export type SourceSummary = EntitlementSnapshot & {
-  source_id: string;
-  account_id: string;
-  provider: ProviderKind;
-  name: string;
-  default_name: string;
-  quality_fallback: boolean;
-  script_url: string;
-  userid: string;
-  account_status: AccountStatus | '';
-  last_refresh_at: number | null;
-  updated_at: number;
-};
-
 export type AccountEntitlement = {
   product_type: string;
   /** Upstream's active flag at the time of the snapshot. */
@@ -226,7 +212,8 @@ export type SourceEvent = {
   ok: boolean;
   latency_ms: number | null;
   error_code: string | null;
-  created_at: number;
+  /** Unix timestamp in milliseconds. */
+  created_at_ms: number;
 } & (
   | { event_type: 'music_url'; detail: MusicUrlEvent }
   | { event_type: 'token_refresh'; detail: TokenRefreshEvent }
@@ -265,13 +252,6 @@ export type GlobalLogsResponse = {
   items: StoredEvent[];
 };
 
-export type SourceLogsResponse = {
-  source_id: string;
-  view: LogView;
-  event_type: EventType | null;
-  limit: number;
-  items: SourceEvent[];
-};
 export type ApiErrorPayload = {
   code?: string;
   message?: string;

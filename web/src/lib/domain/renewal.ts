@@ -7,11 +7,10 @@ import type {
 	RenewalStatus,
 	StepState,
 } from '$lib/api/types';
-import { formatDateTime } from './format';
 import type { Tone } from './tone';
 
 /**
- * 每日领升（Renewal）领域词典与状态推演 —— 唯一事实来源。
+ * 自动领取 VIP（Renewal）领域词典与状态推演 —— 唯一事实来源。
  *
  * 集中收敛后端 RenewalState（9 态）、StepState（3 态）、RenewalReason（7 因）、
  * RenewalOutcome（5 态）、EntitlementAction（4 动作），以及：
@@ -22,8 +21,8 @@ import type { Tone } from './tone';
  */
 
 export const renewalStateLabel: Record<RenewalState, string> = {
-	ready: '待领升',
-	waiting_for_reconciliation: '待核对日记录',
+	ready: '今日未领取',
+	waiting_for_reconciliation: '待核对记录',
 	verification_paused: '今日已暂停',
 	upstream_unavailable: '上游暂不可用',
 	rate_limited: '限流冷却中',
@@ -41,12 +40,12 @@ export const renewalStepLabel: Record<StepState, string> = {
 
 export const renewalReasonLabel: Record<RenewalReason, string> = {
 	manual: '手动触发',
-	t1_low_battery: '余量不足预领 (T1)',
-	t2_expired_refusal: '过期遇拒补领 (T2)',
-	confirm_snapshot: '确认权益快照',
-	reconcile_mismatch: '权益矛盾对账',
-	recover_write: '继续完成领升',
-	post_refresh: '刷新后后台同步',
+	t1_low_battery: '有效期不足自动领取',
+	t2_expired_refusal: '过期播歌受阻补领',
+	confirm_snapshot: '确认会员快照',
+	reconcile_mismatch: '状态不一致核对',
+	recover_write: '继续完成升级',
+	post_refresh: '刷新后同步',
 };
 
 export const renewalOutcomeLabel: Record<RenewalOutcome, string> = {
@@ -58,13 +57,13 @@ export const renewalOutcomeLabel: Record<RenewalOutcome, string> = {
 };
 
 export const entitlementActionLabel: Record<EntitlementAction, string> = {
-	sync: '同步快照',
+	sync: '同步权益',
 	claim: '领取畅听VIP',
 	upgrade: '升级概念版VIP',
-	reconcile_record: '核对日记录',
+	reconcile_record: '核对今日记录',
 };
 
-/** 131001 / 297002 为上游「今日已领/已升级」幂等返回码，不应误作错误。 */
+/** 131001 / 297002 为上游「今日已领/已升级」返回码，不应误作错误。 */
 export function isEntitlementAlreadyDone(detail: EntitlementEventDetail): boolean {
 	return (
 		detail.outcome === 'already_done' ||
@@ -87,7 +86,7 @@ export interface RenewalDeadline extends RenewalDeadlineTarget {
  *
  * 与后端 domain/renewal.rs 严格对齐：
  * - propagating -> propagating_until（升级后 ~120s 播放生效窗）
- * - verification_paused / upstream_unavailable -> paused_until（日级暂停至下一个上游日）
+ * - verification_paused / upstream_unavailable -> paused_until（暂停至次日 UTC+8）
  * - rate_limited -> rate_limit_until（限流退避窗）
  * - waiting_for_reconciliation / awaiting_upgrade / ready -> retry_at（短冷却 / 切日窗口）
  */
@@ -150,7 +149,7 @@ export function describeRenewalState(
 	switch (renewal.state) {
 		case 'ready':
 			if (renewal.retry_at && renewal.retry_at > nowSec) {
-				return '处于暂缓窗口（如切日前留余或读取退避），冷却结束后可继续。';
+				return '当前处于冷却窗口，冷却结束后可继续。';
 			}
 			if (renewal.svip_confirmation_required) {
 				return renewal.enabled
@@ -158,28 +157,20 @@ export function describeRenewalState(
 					: '尚未确认概念版VIP 有效期；自动开关已关闭，可先「同步权益」或按需手动领取。';
 			}
 			return renewal.enabled
-				? '今日尚未领升，将在高品播放且概念版VIP 剩余不足 48 小时或过期遇拒时自动执行。'
-				: '今日尚未领升；自动开关已关闭，仍可按需手动领取。';
+				? '今日尚未领取；播放歌曲时若概念版VIP 剩余不足 48 小时或因过期被拒，将自动领取并升级。'
+				: '今日尚未领取；自动开关已关闭，仍可按需手动领取。';
 		case 'waiting_for_reconciliation':
-			return '上次写入未收到明确回执，需先核对上游日记录确认进度，避免重复提交。';
+			return '上次操作未能确认是否成功，需先核对今日记录后再继续，避免重复提交。';
 		case 'verification_paused':
-			return renewal.paused_until && renewal.paused_until > nowSec
-				? '上游触发人机验证，领升已暂停至 ' +
-						formatDateTime(renewal.paused_until) +
-						'。如需立即续期，可在酷狗概念版 App 手动领取后点击上方「同步权益」。'
-				: '上游触发人机验证，今日领升已暂停；可在酷狗概念版 App 手动领取后点击上方「同步权益」。';
+			return '上游触发人机验证，今日自动领取已暂停；如需立即续期，可在酷狗概念版 App 手动领取后点击上方「同步权益」。';
 		case 'upstream_unavailable':
-			return renewal.paused_until && renewal.paused_until > nowSec
-				? '上游网关返回不明异常，为避免异常重试已暂停至 ' +
-						formatDateTime(renewal.paused_until) +
-						'。可查看事件日志或在 App 手动领取后点击上方「同步权益」。'
-				: '上游网关返回不明异常，今日领升已暂停；可查看事件日志或在 App 手动领取后同步。';
+			return '上游接口返回异常，今日自动领取已暂停；可查看事件日志或在酷狗概念版 App 手动领取后点击上方「同步权益」。';
 		case 'rate_limited':
 			return renewal.rate_limit_until && renewal.rate_limit_until > nowSec
 				? '上游接口触发频率限制，请等待冷却结束。'
 				: '限流冷却窗口已过，可再次尝试或同步权益查看状态。';
 		case 'propagating':
-			return '今日概念版VIP 已升级，上游播放约需 2 分钟生效；期间高品歌曲可能暂不可用。';
+			return '今日概念版VIP 已升级，上游播放约需 2 分钟生效；期间部分会员歌曲可能暂不可用。';
 		case 'awaiting_upgrade':
 			return '今日已领取畅听VIP，升级概念版VIP 尚未完成，可手动点击「继续升级」或在下次播放时自动续跑。';
 		case 'completed':
@@ -187,7 +178,7 @@ export function describeRenewalState(
 				? '今日畅听VIP 领取与概念版VIP 升级均已完成，可点击上方「同步权益」确认上游快照。'
 				: '今日畅听VIP 领取与概念版VIP 升级均已完成。';
 		case 'attempts_exhausted':
-			return '今日超时重试次数已用尽，可稍后在酷狗概念版 App 手动领取并点击「同步权益」，或等待下一个上游日（UTC+8）。';
+			return '今日超时重试次数已用尽，可稍后在酷狗概念版 App 手动领取并点击「同步权益」，或等待次日（UTC+8）重置。';
 	}
 }
 
@@ -196,7 +187,7 @@ export interface RenewalActionControl {
 	disabled: boolean;
 }
 
-/** 计算手动领升按钮的准确文案与可用态。 */
+/** 计算手动领取 VIP 按钮的准确文案与可用态。 */
 export function renewalActionControl(
 	renewal: RenewalStatus,
 	nowSec: number = Math.floor(Date.now() / 1000)
@@ -215,7 +206,7 @@ export function renewalActionControl(
 		case 'waiting_for_reconciliation':
 			return retryActive
 				? { label: '等待核对冷却', disabled: true }
-				: { label: '核对日记录', disabled: false };
+				: { label: '核对今日记录', disabled: false };
 		case 'propagating':
 			return renewal.propagating_until !== null && renewal.propagating_until <= nowSec
 				? { label: '今日已完成', disabled: true }
@@ -233,7 +224,7 @@ export function renewalActionControl(
 		case 'rate_limited':
 			if (renewal.rate_limit_until !== null && renewal.rate_limit_until <= nowSec) {
 				if (renewal.claim === 'uncertain' || renewal.upgrade === 'uncertain') {
-					return { label: '核对日记录', disabled: false };
+					return { label: '核对今日记录', disabled: false };
 				}
 				return {
 					label: renewal.claim === 'done' && renewal.upgrade !== 'done' ? '继续升级' : '领取今日 VIP',
@@ -257,8 +248,8 @@ export function describeClaimResult(status: RenewalStatus): { tone: Tone; messag
 			return {
 				tone: 'success',
 				message: status.svip_confirmation_required
-					? '今日领升步骤已完成，可点击「同步权益」确认概念版VIP 快照。'
-					: '今日领升已完成。',
+					? '今日VIP 领取与升级已完成，可点击「同步权益」确认概念版VIP 快照。'
+					: '今日VIP 领取与升级已完成。',
 			};
 		case 'propagating':
 			return {
@@ -285,12 +276,12 @@ export function describeClaimResult(status: RenewalStatus): { tone: Tone; messag
 		case 'waiting_for_reconciliation':
 			return {
 				tone: 'warning',
-				message: '上游返回状态不明确，已进入待核对状态，请核对日记录或查看日志。',
+				message: '上游返回状态不明确，已进入待核对状态，请核对今日记录或查看日志。',
 			};
 		case 'verification_paused':
 			return {
 				tone: 'danger',
-				message: '上游要求安全或人机校验，今日自动领升已暂停。',
+				message: '上游要求安全或人机校验，今日自动领取 VIP 已暂停。',
 			};
 		case 'rate_limited':
 			return {
@@ -309,7 +300,7 @@ export function describeClaimResult(status: RenewalStatus): { tone: Tone; messag
 			};
 		case 'ready':
 			if (status.last_outcome === 'failed') {
-				return { tone: 'warning', message: '本次领升未成功，请查看事件日志。' };
+				return { tone: 'warning', message: '本次领取未成功，请查看事件日志。' };
 			}
 			if (status.last_outcome === 'uncertain') {
 				return { tone: 'warning', message: '操作结果待核对，请查看事件日志。' };
@@ -320,7 +311,7 @@ export function describeClaimResult(status: RenewalStatus): { tone: Tone; messag
 			if (status.last_outcome === 'already_done') {
 				return { tone: 'success', message: '今日相关步骤已处理。' };
 			}
-			return { tone: 'info', message: '领升状态已更新。' };
+			return { tone: 'info', message: '自动领取 VIP 状态已更新。' };
 	}
 }
 
@@ -329,27 +320,27 @@ export interface CardRenewalHint {
 	text: string;
 }
 
-/** 账号卡片上的克制一行领升提示。 */
+/** 账号卡片上的克制一行自动领取 VIP 提示。 */
 export function accountCardRenewalHint(renewal: RenewalStatus): CardRenewalHint {
 	switch (renewal.state) {
 		case 'propagating':
-			return { tone: 'info', text: '领升生效等待中' };
+			return { tone: 'info', text: 'VIP 生效等待中' };
 		case 'waiting_for_reconciliation':
-			return { tone: 'warning', text: '领升待核对日记录' };
+			return { tone: 'warning', text: '待核对今日领取记录' };
 		case 'verification_paused':
-			return { tone: 'danger', text: '每日领升今日已暂停' };
+			return { tone: 'danger', text: '自动领取 VIP 今日已暂停' };
 		case 'upstream_unavailable':
-			return { tone: 'warning', text: '领升上游暂不可用' };
+			return { tone: 'warning', text: '自动领取 VIP 上游暂不可用' };
 		case 'rate_limited':
-			return { tone: 'warning', text: '领升限流冷却中' };
+			return { tone: 'warning', text: '自动领取 VIP 限流冷却中' };
 		case 'awaiting_upgrade':
 			return { tone: 'warning', text: '待升级概念版VIP' };
 		case 'attempts_exhausted':
-			return { tone: 'danger', text: '今日领升重试已用尽' };
+			return { tone: 'danger', text: '今日自动领取重试已用尽' };
 		case 'ready':
 		case 'completed':
 			return renewal.enabled
-				? { tone: 'muted', text: '每日自动领升已开启' }
-				: { tone: 'muted', text: '每日自动领升未开启' };
+				? { tone: 'muted', text: '自动领取 VIP 已开启' }
+				: { tone: 'muted', text: '自动领取 VIP 未开启' };
 	}
 }

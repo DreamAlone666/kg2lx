@@ -26,6 +26,10 @@ function pad2(n: number): string {
 	return n.toString().padStart(2, '0');
 }
 
+function pad3(n: number): string {
+	return n.toString().padStart(3, '0');
+}
+
 /** Unix 秒级时间戳 → 本地时间（24 小时制），用于日志这类需要精确到秒的场景。 */
 export function formatClockTime(ts: number | null | undefined): string {
 	if (ts === null || ts === undefined || !Number.isFinite(ts)) return '--:--:--';
@@ -43,7 +47,7 @@ export function formatClockTime(ts: number | null | undefined): string {
  * 时间列于是从「排序依据」退化成了错误信息——用户会把四个月前的失败当成刚发生的。
  *
  * 当天不补日期是为了保住 8 字符的紧凑宽度（绝大多数行都是当天），跨天才加宽到
- * 14 字符。精确到年仍可在 title 里读到（见 LogsPanel），不必为长尾牺牲常态列宽。
+ * 14 字符。精确到年仍可在 title 里读到（见事件日志页面），不必为长尾牺牲常态列宽。
  */
 export function formatLogTime(ts: number | null | undefined, now: number = Date.now()): string {
 	const clock = formatClockTime(ts);
@@ -55,6 +59,56 @@ export function formatLogTime(ts: number | null | undefined, now: number = Date.
 		d.getMonth() === t.getMonth() &&
 		d.getDate() === t.getDate();
 	return sameDay ? clock : `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${clock}`;
+}
+
+/**
+ * Unix 毫秒级时间戳 → 完整本地时间 `YYYY-MM-DD HH:mm:ss.SSS`（24 小时制）。
+ * 明确按毫秒处理，专用于事件日志 created_at_ms。
+ */
+export function formatDateTimeMs(tsMs: number | null | undefined, fallback = '从未'): string {
+	if (tsMs === null || tsMs === undefined || !Number.isFinite(tsMs)) return fallback;
+	const d = new Date(tsMs);
+	const date = [d.getFullYear(), pad2(d.getMonth() + 1), pad2(d.getDate())].join('-');
+	return `${date} ${formatClockTimeMs(tsMs)}`;
+}
+
+/** Unix 毫秒级时间戳 → 本地时间 `HH:mm:ss.SSS`（24 小时制）。 */
+export function formatClockTimeMs(tsMs: number | null | undefined): string {
+	if (tsMs === null || tsMs === undefined || !Number.isFinite(tsMs)) return '--:--:--.---';
+	const d = new Date(tsMs);
+	return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}.${pad3(d.getMilliseconds())}`;
+}
+
+/**
+ * 毫秒级事件日志行的紧凑时刻：当天 `HH:mm:ss`，跨天 `MM-DD HH:mm:ss`。
+ * 保持主表格时间列紧凑宽度不抖动；完整毫秒精度在 `title` 中通过 formatDateTimeMs 展示。
+ */
+export function formatLogTimeMs(tsMs: number | null | undefined, now: number = Date.now()): string {
+	if (tsMs === null || tsMs === undefined || !Number.isFinite(tsMs)) return '--:--:--';
+	const d = new Date(tsMs);
+	const clock = `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+	const t = new Date(now);
+	const sameDay =
+		d.getFullYear() === t.getFullYear() &&
+		d.getMonth() === t.getMonth() &&
+		d.getDate() === t.getDate();
+	return sameDay ? clock : `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${clock}`;
+}
+
+/**
+ * 因果链路相对首条事件的毫秒偏移：`+0ms` / `+312ms` / `+1.42s`。
+ * 超过 1000ms 使用秒并保留 1-2 位小数；负值与无效值妥善处理。
+ */
+export function formatRelativeOffsetMs(deltaMs: number | null | undefined): string {
+	if (deltaMs === null || deltaMs === undefined || !Number.isFinite(deltaMs)) return '—';
+	const rounded = Math.round(deltaMs);
+	if (rounded === 0) return '+0ms';
+	const sign = rounded < 0 ? '-' : '+';
+	const abs = Math.abs(deltaMs);
+	if (abs < 1000) return `${sign}${Math.round(abs)}ms`;
+	const seconds = abs / 1000;
+	const fixed = seconds >= 10 ? seconds.toFixed(1) : seconds.toFixed(2);
+	return `${sign}${fixed}s`;
 }
 
 /**

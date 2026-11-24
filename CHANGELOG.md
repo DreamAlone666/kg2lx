@@ -6,10 +6,10 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- **独立账号操作与全站事件日志**。管理后台升级为「账号」与「日志」双工作区：账号详情拆分为账号域（会员权益、每日领升、登录会话）与音源域（脚本接入、音质降级），保留旧 `/sources` 与 `/sources/{id}` 路由自动重定向。独立 `/logs` 页展示全站事件（含无归属扫码过期与失败），支持事件类型分段筛选、账号筛选、游标分页加载更早记录，以及结构化详情检查器与同 `correlation_id` 因果时间线。
-- **账号聚合与全站日志管理接口**。新增 `GET /api/v1/admin/accounts`、`GET /api/v1/admin/accounts/{account_id}`（按数组返回关联音源，不写死 1:1）及 `GET /api/v1/admin/logs`（支持按账号、音源、事件类别、仅错误、`before_seq` 游标与 `correlation_id` 因果链路查询，默认包含领升事件）。
+- **独立账号操作与全站事件日志**。管理后台升级为「账号」与「日志」双工作区：账号详情拆分为账号域（会员权益、自动领取 VIP、登录会话）与音源域（脚本接入、音质降级），保留旧 `/sources` 与 `/sources/{id}` 路由自动重定向。独立 `/logs` 页展示全站事件（含无归属扫码过期与失败），支持事件类型分段筛选、账号筛选、`after_seq` 增量轮询与 `before_seq` 加载更早记录；右侧全高抽屉检查器支持毫秒级时间、同 `correlation_id` 因果链相对偏移/耗时、「上一条 / 下一条」翻阅及原始 JSON 查看与一键复制（单条或整链）。
+- **账号聚合与全站日志管理接口**。新增 `GET /api/v1/admin/accounts`、`GET /api/v1/admin/accounts/{account_id}`（按数组返回关联音源，不写死 1:1）及 `GET /api/v1/admin/logs`（支持按账号、音源、事件类别、仅错误、`before_seq` 游标分页、`after_seq` 增量拉取与 `correlation_id` 因果链路查询，默认包含自动领取 VIP 事件）；事件日志创建时间升级为毫秒级 `created_at_ms`。
 - **事件保留上限**。使用 `EVENT_LOG_LIMIT` 设置取链保留数量，默认 10,000 条。
-- **每日权益领升**。支持在账号详情页开启按需自动领升、查看两步进度与传播/退避倒计时、独立标注本地预计到期，以及手动领取、继续升级或核对日记录。领取与升级分步落盘，结果不明时按日记录恢复。
+- **自动领取 VIP**。支持在账号详情页开启按需自动领取 VIP、查看两步进度与生效/冷却倒计时、独立标注本地预计到期，以及手动领取、继续升级或核对今日记录。领取与升级分步落盘，结果不明时按上游记录恢复。
 
 ### Changed
 
@@ -18,7 +18,8 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
-- **每日权益领升**。识别 KuGouMusicApi 以 HTTP 502 返回的领升幂等码。快照、领升和日记录请求绕过代理的共享缓存。
+- **配置校验与鉴权加固**。启动期拒绝空或纯空白 `ADMIN_TOKEN`，`verify_admin` 同步拒绝空配置 Token 以防无鉴权放行；可选路径/地址环境变量将空串视作未设置，`UPSTREAM_TIMEOUT_MS` 与 `ACCOUNT_REFRESH_TTL` 遇到 `0` 或非法值时记录告警并回退默认值。
+- **自动领取 VIP**。识别 KuGouMusicApi 以 HTTP 502 返回的今日已完成返回码。快照、领取升级与记录核对请求绕过代理的共享缓存。
 
 ## [0.2.0] - 2026-09-22
 
