@@ -14,7 +14,7 @@ fn verify_admin(headers: &HeaderMap, token: &str) -> Result<(), AppError> {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     let bearer = auth.strip_prefix("Bearer ").unwrap_or("");
-    if bearer == token {
+    if !token.is_empty() && bearer == token {
         Ok(())
     } else {
         Err(AppError::admin_unauthorized())
@@ -263,6 +263,7 @@ pub struct ListGlobalLogsParams {
     pub source_id: Option<String>,
     pub correlation_id: Option<String>,
     pub before_seq: Option<String>,
+    pub after_seq: Option<String>,
     pub include_renewal: Option<String>,
 }
 
@@ -311,6 +312,22 @@ pub async fn list_global_logs(
         ),
     };
 
+    let after_seq = match params.after_seq.as_deref() {
+        None => None,
+        Some(s) => Some(
+            s.parse::<i64>()
+                .ok()
+                .filter(|&n| n > 0)
+                .ok_or_else(|| AppError::invalid_request("invalid after_seq"))?,
+        ),
+    };
+
+    if before_seq.is_some() && after_seq.is_some() {
+        return Err(AppError::invalid_request(
+            "before_seq and after_seq cannot be combined",
+        ));
+    }
+
     let include_renewal = match params.include_renewal.as_deref() {
         None | Some("true") => true,
         Some("false") => false,
@@ -327,6 +344,7 @@ pub async fn list_global_logs(
             source_id: non_empty(params.source_id),
             correlation_id: non_empty(params.correlation_id),
             before_seq,
+            after_seq,
             include_renewal,
         })
         .await?;
@@ -384,6 +402,11 @@ mod tests {
         let body = parse(r#"{"quality_fallback":null}"#);
         assert_eq!(body.name, None);
         assert_eq!(body.quality_fallback, None);
+    }
+
+    #[test]
+    fn verify_admin_rejects_empty_configured_token() {
+        assert!(verify_admin(&HeaderMap::new(), "").is_err());
     }
 
     /// 两个字段同时出现（含 `name: null`）时都要被识别为「已提供」。

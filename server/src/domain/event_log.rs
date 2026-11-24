@@ -1,4 +1,4 @@
-use crate::domain::account::now_ts;
+use crate::domain::account::now_ts_ms;
 use crate::domain::renewal::{RenewalOutcome, RenewalReason};
 use crate::error::ErrorCode;
 
@@ -58,7 +58,8 @@ pub struct EventLog {
     pub log_id: String,
     #[serde(flatten)]
     pub context: EventContext,
-    pub created_at: i64,
+    /// 事件创建时间戳（Unix 毫秒）。
+    pub created_at_ms: i64,
     pub ok: bool,
     pub latency_ms: Option<u64>,
     pub error_code: Option<String>,
@@ -76,7 +77,7 @@ impl EventLog {
         Self {
             log_id: format!("log_{}", uuid::Uuid::new_v4()),
             context,
-            created_at: now_ts(),
+            created_at_ms: now_ts_ms(),
             ok: error.is_none(),
             latency_ms,
             error_code: error.map(|code| code.as_str().into()),
@@ -222,6 +223,29 @@ pub struct ListGlobalEvents {
     pub event_type: Option<EventType>,
     pub view: LogView,
     pub before_seq: Option<i64>,
+    pub after_seq: Option<i64>,
     pub limit: usize,
     pub include_renewal: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_log_created_at_ms_uses_unix_milliseconds() {
+        let log = EventLog::new(
+            EventContext::new(EventTrigger::Admin, Some("acc_1".into()), None),
+            Event::AccountLogin {
+                outcome: LoginOutcome::Bound,
+            },
+            None,
+            None,
+        );
+        assert!(
+            log.created_at_ms >= 1_000_000_000_000,
+            "expected millisecond timestamp, got {}",
+            log.created_at_ms
+        );
+    }
 }

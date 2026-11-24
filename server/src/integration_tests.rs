@@ -1066,6 +1066,10 @@ async fn global_logs_api_supports_unowned_events_filters_pagination_and_correlat
         "before_seq=0",
         "before_seq=-3",
         "before_seq=xyz",
+        "after_seq=0",
+        "after_seq=-3",
+        "after_seq=abc",
+        "before_seq=10&after_seq=5",
         "event_type=invalid_kind",
         "include_renewal=maybe",
     ] {
@@ -1200,6 +1204,11 @@ async fn global_logs_api_supports_unowned_events_filters_pagination_and_correlat
     assert!(all["next_before_seq"].is_null());
     let items = all["items"].as_array().unwrap();
     assert_eq!(items.len(), 6);
+    assert!(
+        items
+            .iter()
+            .all(|i| i["created_at_ms"].as_i64().unwrap() >= 1_000_000_000_000)
+    );
     assert!(items.iter().any(|i| i["account_id"].is_null() && i["source_id"].is_null() && i["detail"]["outcome"] == "expired"));
     assert!(items.iter().any(|i| i["detail"]["action"] == "claim"));
 
@@ -1290,4 +1299,58 @@ async fn global_logs_api_supports_unowned_events_filters_pagination_and_correlat
     assert_eq!(chain_truncated["items"].as_array().unwrap().len(), 2);
     assert_eq!(chain_truncated["has_more"], true);
     assert!(chain_truncated["next_before_seq"].is_null());
+
+    // Incremental polling with after_seq
+    let max_seq = expected_seqs[0];
+    let (status, empty_after) = app
+        .admin(Method::GET, &format!("/api/v1/admin/logs?after_seq={max_seq}"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(empty_after["items"].as_array().unwrap().len(), 0);
+    assert_eq!(empty_after["has_more"], false);
+    assert!(empty_after["next_before_seq"].is_null());
+
+    // Pivot at expected_seqs[3] (older) so 3 newer rows exist (expected_seqs[0..3])
+    let pivot_seq = expected_seqs[3];
+    let (status, after_limited) = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/admin/logs?after_seq={pivot_seq}&limit=2"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let after_limited_items = after_limited["items"].as_array().unwrap();
+    assert_eq!(after_limited_items.len(), 2);
+    assert_eq!(after_limited["has_more"], true);
+    assert!(after_limited["next_before_seq"].is_null());
+    assert!(
+        after_limited_items
+            .iter()
+            .all(|item| item["seq"].as_i64().unwrap() > pivot_seq)
+    );
+    assert_eq!(
+        after_limited_items
+            .iter()
+            .map(|item| item["seq"].as_i64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![expected_seqs[0], expected_seqs[1]]
+    );
+
+    let (status, after_all) = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/admin/logs?after_seq={pivot_seq}&limit=10"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let after_all_items = after_all["items"].as_array().unwrap();
+    assert_eq!(
+        after_all_items
+            .iter()
+            .map(|item| item["seq"].as_i64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![expected_seqs[0], expected_seqs[1], expected_seqs[2]]
+    );
+    assert_eq!(after_all["has_more"], false);
+    assert!(after_all["next_before_seq"].is_null());
 }

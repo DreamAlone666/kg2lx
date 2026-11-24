@@ -26,12 +26,59 @@ pub struct Config {
 ///
 /// 旧名 `REFRESH_INTERVAL_SECS` 仍然读，但只作回退、且会打一条 warn。`INTERVAL` 与
 /// 「自动刷新间隔」会让人脑补出一个定时轮询任务，而那个任务从来不存在——这正是改名的原因。
+fn optional_non_empty_env(key: &str) -> Option<String> {
+    optional_non_empty(env::var(key).ok())
+}
+
+fn optional_non_empty(raw: Option<String>) -> Option<String> {
+    raw.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_owned())
+    })
+}
+
+fn parse_admin_token(raw: Option<String>) -> Result<String, &'static str> {
+    let raw = raw.ok_or("ADMIN_TOKEN is required")?;
+    if raw.trim().is_empty() {
+        return Err("ADMIN_TOKEN must not be empty");
+    }
+    Ok(raw)
+}
+
+fn parse_positive_u64(key: &str, raw: Option<String>, default: u64) -> u64 {
+    let Some(value) = optional_non_empty(raw) else {
+        return default;
+    };
+    match value.parse::<u64>() {
+        Ok(n) if n > 0 => n,
+        _ => {
+            tracing::warn!(
+                "{key} must be a positive integer, using the default ({default})"
+            );
+            default
+        }
+    }
+}
+
+fn parse_event_log_limit(raw: Option<String>) -> u32 {
+    let Some(value) = optional_non_empty(raw) else {
+        return DEFAULT_EVENT_LOG_LIMIT;
+    };
+    match value.parse::<u32>() {
+        Ok(n @ 1..=100_000) => n,
+        _ => {
+            tracing::warn!("EVENT_LOG_LIMIT must be in 1..=100000, using the default");
+            DEFAULT_EVENT_LOG_LIMIT
+        }
+    }
+}
+
 fn refresh_ttl_from_env() -> u64 {
     // 6 小时。只在这里出现一次。
     const DEFAULT_TTL: u64 = 6 * 3600;
 
-    let new = env::var("ACCOUNT_REFRESH_TTL").ok();
-    let old = env::var("REFRESH_INTERVAL_SECS").ok();
+    let new = optional_non_empty_env("ACCOUNT_REFRESH_TTL");
+    let old = optional_non_empty_env("REFRESH_INTERVAL_SECS");
     if old.is_some() {
         // 两个名字都在时也要报：一个躺在 .env 里的旧值被静默忽略，是这条改名最容易留下的
         // 隐患——它会让人以为生效的仍是那个值。
@@ -48,38 +95,34 @@ fn refresh_ttl_from_env() -> u64 {
             );
         }
     }
-    new.or(old)
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_TTL)
+    if new.is_some() {
+        parse_positive_u64("ACCOUNT_REFRESH_TTL", new, DEFAULT_TTL)
+    } else {
+        parse_positive_u64("REFRESH_INTERVAL_SECS", old, DEFAULT_TTL)
+    }
 }
 
 impl Config {
     pub fn from_env() -> Self {
         warn_if_source_name_prefix_present();
         Self {
-            listen_addr: env::var("LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:8787".into()),
+            listen_addr: optional_non_empty_env("LISTEN_ADDR")
+                .unwrap_or_else(|| "127.0.0.1:8787".into()),
             public_base_url: require_http_base_url("PUBLIC_BASE_URL"),
-            admin_token: env::var("ADMIN_TOKEN").expect("ADMIN_TOKEN is required"),
+            admin_token: parse_admin_token(env::var("ADMIN_TOKEN").ok())
+                .unwrap_or_else(|err| panic!("{err}")),
             kugou_api_base_url: require_http_base_url("KUGOU_API_BASE_URL"),
-            data_dir: env::var("DATA_DIR")
-                .unwrap_or_else(|_| "./data".into())
+            data_dir: optional_non_empty_env("DATA_DIR")
+                .unwrap_or_else(|| "./data".into())
                 .into(),
-            upstream_timeout_ms: env::var("UPSTREAM_TIMEOUT_MS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(10000),
+            upstream_timeout_ms: parse_positive_u64(
+                "UPSTREAM_TIMEOUT_MS",
+                env::var("UPSTREAM_TIMEOUT_MS").ok(),
+                10_000,
+            ),
             account_refresh_ttl: refresh_ttl_from_env(),
-            web_dist_dir: env::var("WEB_DIST_DIR").ok().map(PathBuf::from),
-            event_log_limit: env::var("EVENT_LOG_LIMIT")
-                .ok()
-                .and_then(|value| match value.parse::<u32>() {
-                    Ok(n @ 1..=100_000) => Some(n),
-                    _ => {
-                        tracing::warn!("EVENT_LOG_LIMIT must be in 1..=100000, using the default");
-                        None
-                    }
-                })
-                .unwrap_or(DEFAULT_EVENT_LOG_LIMIT),
+            web_dist_dir: optional_non_empty_env("WEB_DIST_DIR").map(PathBuf::from),
+            event_log_limit: parse_event_log_limit(env::var("EVENT_LOG_LIMIT").ok()),
         }
     }
 
@@ -296,5 +339,36 @@ mod tests {
                 "input {input:?} must be rejected at startup"
             );
         }
+    }
+
+    #[test]
+    fn admin_token_rejects_missing_and_blank_values() {
+        assert!(parse_admin_token(None).is_err());
+        assert!(parse_admin_token(Some(String::new())).is_err());
+        assert!(parse_admin_token(Some("   \t ".into())).is_err());
+        assert_eq!(parse_admin_token(Some("secret".into())).unwrap(), "secret");
+    }
+
+    #[test]
+    fn optional_non_empty_treats_blank_as_unset() {
+        assert_eq!(optional_non_empty(None), None);
+        assert_eq!(optional_non_empty(Some(String::new())), None);
+        assert_eq!(optional_non_empty(Some("   ".into())), None);
+        assert_eq!(optional_non_empty(Some(" /app/web ".into())), Some("/app/web".into()));
+    }
+
+    #[test]
+    fn numeric_env_parsers_reject_zero_and_invalid_values() {
+        assert_eq!(parse_positive_u64("UPSTREAM_TIMEOUT_MS", None, 10_000), 10_000);
+        assert_eq!(parse_positive_u64("UPSTREAM_TIMEOUT_MS", Some(String::new()), 10_000), 10_000);
+        assert_eq!(parse_positive_u64("UPSTREAM_TIMEOUT_MS", Some("0".into()), 10_000), 10_000);
+        assert_eq!(parse_positive_u64("UPSTREAM_TIMEOUT_MS", Some("abc".into()), 10_000), 10_000);
+        assert_eq!(parse_positive_u64("UPSTREAM_TIMEOUT_MS", Some("5000".into()), 10_000), 5_000);
+
+        assert_eq!(parse_event_log_limit(None), DEFAULT_EVENT_LOG_LIMIT);
+        assert_eq!(parse_event_log_limit(Some(String::new())), DEFAULT_EVENT_LOG_LIMIT);
+        assert_eq!(parse_event_log_limit(Some("0".into())), DEFAULT_EVENT_LOG_LIMIT);
+        assert_eq!(parse_event_log_limit(Some("100001".into())), DEFAULT_EVENT_LOG_LIMIT);
+        assert_eq!(parse_event_log_limit(Some("2500".into())), 2_500);
     }
 }

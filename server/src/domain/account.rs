@@ -52,6 +52,13 @@ pub fn now_ts() -> i64 {
         .as_secs() as i64
 }
 
+pub fn now_ts_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -17,7 +17,7 @@
 **必填项：**
 
 - `PUBLIC_BASE_URL`：本服务的对外可访问地址。
-- `ADMIN_TOKEN`：管理后台接口的鉴权 Token。
+- `ADMIN_TOKEN`：管理后台接口的鉴权 Token（不能为空或纯空白）。
 - `KUGOU_API_BASE_URL`：`KuGouMusicApi` 上游服务的地址。
 
 **选填项：**
@@ -89,18 +89,18 @@ curl \
 
 **5. 账号查询、刷新登录与同步权益**
 
-- **查询账号**。`GET /api/v1/admin/accounts` 与 `GET /api/v1/admin/accounts/{account_id}` 返回账号会话、权益快照、领升调度状态及关联音源列表（`sources` 数组）。
+- **查询账号**。`GET /api/v1/admin/accounts` 与 `GET /api/v1/admin/accounts/{account_id}` 返回账号会话、权益快照、自动领取 VIP 调度状态及关联音源列表（`sources` 数组）。
 - **刷新 Token**。发送 `POST /api/v1/admin/accounts/{account_id}/refresh-token` 更新登录凭据。
 - **同步权益**。发送 `POST /api/v1/admin/accounts/{account_id}/entitlements/sync` 读取上游快照，失败时保留上次成功记录。
 - **旧刷新地址**。`POST /api/v1/admin/sources/{source_id}/refresh` 保留原回执，刷新 Token 成功后在后台同步权益。
-- **全站事件日志**。`GET /api/v1/admin/logs` 默认包含每日领升事件，支持 `event_type`、`view`、`account_id`、`source_id`、`correlation_id`（按时间正序返回因果链路）及 `before_seq` 游标分页；旧 `GET /api/v1/admin/sources/{source_id}/logs` 仍保留。
+- **全站事件日志**。`GET /api/v1/admin/logs` 默认包含每日领取与升级事件，支持 `event_type`、`view`、`account_id`、`source_id`、`correlation_id`（按时间正序返回因果链路）、`before_seq` 游标分页及 `after_seq` 增量拉取（仅返回 `seq > after_seq` 的新事件，与 `before_seq` 互斥；若超过 `limit` 仅设置 `has_more=true` 且 `next_before_seq=null`）；事件日志以 `created_at_ms`（Unix 毫秒）记录创建时间，旧 `GET /api/v1/admin/sources/{source_id}/logs` 仍保留。
 
-### 每日权益领升
+### 每日领取与升级（自动领取 VIP）
 
 - `PATCH /api/v1/admin/accounts/{account_id}/entitlements/renewal` 接收 `{"enabled":true}` 或 `{"enabled":false}`。开关按账号生效，存量和新绑定账号默认为关闭。
-- `POST /api/v1/admin/accounts/{account_id}/entitlements/renewal/claim` 手动领取或继续升级。手动操作在自动领取关闭时仍可用，共用每日进度、互斥和退避。响应返回当前调度状态，业务结果见 `last_outcome`。例如，`awaiting_upgrade` 表示已领待升级，`waiting_for_reconciliation` 表示要先核对日记录。
-- 音源列表的 `renewal` 和详情的 `account.renewal` 回显调度状态，两个领升接口也返回该结构。它包含领升进度、上游日、是否需要确认 `svip`、退避截止及传播等待。时间戳单位为 Unix 秒。`estimated_end_at` 是本地推算，确认的到期信息由 `entitlements` 和 `entitlements_synced_at` 提供。
-- 日志查询加 `include_renewal=true` 可查看领取、升级与日记录对账。后台领升沿用触发它的播放请求 ID。业务码 `131001` 和 `297002` 分别作为领取和升级的幂等完成记录。
+- `POST /api/v1/admin/accounts/{account_id}/entitlements/renewal/claim` 手动领取或继续升级。手动操作在自动领取 VIP 关闭时仍可用，共用每日进度、互斥和退避。响应返回当前调度状态，业务结果见 `last_outcome`。例如，`awaiting_upgrade` 表示已领待升级，`waiting_for_reconciliation` 表示要先核对日记录。
+- 音源列表的 `renewal` 和详情的 `account.renewal` 回显调度状态，两个自动领取 VIP 接口也返回该结构。它包含每日领取与升级进度、上游日、是否需要确认 `svip`、退避截止及传播等待。账号、权益快照与自动领取 VIP 调度中的时间戳单位为 Unix 秒，事件日志时间戳字段为 `created_at_ms`（Unix 毫秒）。`estimated_end_at` 是本地推算，确认的到期信息由 `entitlements` 和 `entitlements_synced_at` 提供。
+- 日志查询加 `include_renewal=true` 可查看领取、升级与日记录对账。后台自动领取 VIP 沿用触发它的播放请求 ID。业务码 `131001` 和 `297002` 分别作为领取和升级的幂等完成记录。
 
 自动领取在目标档返回可用链接且已确认的 `svip` 剩余不足 48 小时但仍在期时触发。权益确认已过期时，只有目标档明确返回 `status: 2` 才触发。两种情况均由后续后台任务处理，本次取链照常返回链接、执行降档或返回拒绝。升级确认后有约 120 秒传播等待。
 

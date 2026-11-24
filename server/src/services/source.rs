@@ -153,6 +153,7 @@ pub struct GlobalLogsQuery {
     pub source_id: Option<String>,
     pub correlation_id: Option<String>,
     pub before_seq: Option<i64>,
+    pub after_seq: Option<i64>,
     pub include_renewal: bool,
 }
 
@@ -558,6 +559,7 @@ impl SourceService {
             event_type: input.event_type,
             view: input.view,
             before_seq: input.before_seq,
+            after_seq: input.after_seq,
             limit: input.limit + 1,
             include_renewal: input.include_renewal,
         };
@@ -566,11 +568,12 @@ impl SourceService {
         if has_more {
             items.truncate(input.limit);
         }
-        let next_before_seq = if input.correlation_id.is_none() && has_more {
-            items.last().map(|item| item.seq)
-        } else {
-            None
-        };
+        let next_before_seq =
+            if input.correlation_id.is_none() && input.after_seq.is_none() && has_more {
+                items.last().map(|item| item.seq)
+            } else {
+                None
+            };
         Ok(GlobalLogsResponse {
             view: input.view,
             event_type: input.event_type,

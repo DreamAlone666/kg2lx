@@ -74,6 +74,10 @@ fn list_global_sql_and_params(query: &ListGlobalEvents) -> (String, Vec<Box<dyn 
         clauses.push("seq < ?");
         params.push(Box::new(before_seq));
     }
+    if let Some(after_seq) = query.after_seq {
+        clauses.push("seq > ?");
+        params.push(Box::new(after_seq));
+    }
 
     let where_clause = if clauses.is_empty() {
         String::new()
@@ -401,6 +405,7 @@ mod tests {
                         event_type: None,
                         view: LogView::All,
                         before_seq: None,
+                        after_seq: None,
                         limit: 10,
                         include_renewal: true,
                     },
@@ -411,13 +416,42 @@ mod tests {
                         account_id: Some("acc_1".into()),
                         source_id: None,
                         correlation_id: None,
+                        event_type: None,
+                        view: LogView::All,
+                        before_seq: None,
+                        after_seq: Some(1),
+                        limit: 10,
+                        include_renewal: true,
+                    },
+                    "event_logs_by_account_all (account_id=? AND seq>?)",
+                ),
+                (
+                    ListGlobalEvents {
+                        account_id: Some("acc_1".into()),
+                        source_id: None,
+                        correlation_id: None,
                         event_type: Some(EventType::Entitlement),
                         view: LogView::All,
                         before_seq: Some(100),
+                        after_seq: None,
                         limit: 10,
                         include_renewal: false,
                     },
                     "event_logs_by_account_all_type (account_id=? AND event_type=? AND seq<?)",
+                ),
+                (
+                    ListGlobalEvents {
+                        account_id: Some("acc_1".into()),
+                        source_id: None,
+                        correlation_id: None,
+                        event_type: Some(EventType::Entitlement),
+                        view: LogView::All,
+                        before_seq: None,
+                        after_seq: Some(1),
+                        limit: 10,
+                        include_renewal: false,
+                    },
+                    "event_logs_by_account_all_type (account_id=? AND event_type=? AND seq>?)",
                 ),
                 (
                     ListGlobalEvents {
@@ -427,6 +461,7 @@ mod tests {
                         event_type: Some(EventType::AccountLogin),
                         view: LogView::Errors,
                         before_seq: None,
+                        after_seq: None,
                         limit: 10,
                         include_renewal: true,
                     },
@@ -440,6 +475,7 @@ mod tests {
                         event_type: Some(EventType::Entitlement),
                         view: LogView::All,
                         before_seq: None,
+                        after_seq: None,
                         limit: 10,
                         include_renewal: true,
                     },
@@ -453,6 +489,7 @@ mod tests {
                         event_type: None,
                         view: LogView::All,
                         before_seq: None,
+                        after_seq: None,
                         limit: 10,
                         include_renewal: true,
                     },
@@ -466,6 +503,7 @@ mod tests {
                         event_type: None,
                         view: LogView::All,
                         before_seq: None,
+                        after_seq: None,
                         limit: 10,
                         include_renewal: true,
                     },
@@ -479,6 +517,7 @@ mod tests {
                         event_type: Some(EventType::Entitlement),
                         view: LogView::Errors,
                         before_seq: None,
+                        after_seq: None,
                         limit: 10,
                         include_renewal: false,
                     },
@@ -492,10 +531,25 @@ mod tests {
                         event_type: None,
                         view: LogView::All,
                         before_seq: Some(10),
+                        after_seq: None,
                         limit: 10,
                         include_renewal: true,
                     },
                     "INTEGER PRIMARY KEY (rowid<?)",
+                ),
+                (
+                    ListGlobalEvents {
+                        account_id: None,
+                        source_id: None,
+                        correlation_id: None,
+                        event_type: None,
+                        view: LogView::All,
+                        before_seq: None,
+                        after_seq: Some(1),
+                        limit: 10,
+                        include_renewal: true,
+                    },
+                    "INTEGER PRIMARY KEY (rowid>?)",
                 ),
             ];
 
@@ -535,6 +589,7 @@ mod tests {
                 event_type: None,
                 view: LogView::All,
                 before_seq: None,
+                after_seq: None,
                 limit: 10,
                 include_renewal: true,
             })
@@ -553,6 +608,7 @@ mod tests {
                 event_type: None,
                 view: LogView::All,
                 before_seq: None,
+                after_seq: None,
                 limit: 10,
                 include_renewal: true,
             })
